@@ -1,0 +1,11 @@
+{
+  "name": "dogfood",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "collect": "node collect.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}

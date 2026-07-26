@@ -227,6 +227,32 @@ Repo shape: pnpm monorepo like react-scan (`packages/core`, later
 `packages/cli`, `apps/demo`). The demo app with a deliberately wasteful chart
 is both the test bed and the launch asset.
 
+## Dogfood findings (2026-07-26) — read before starting M2
+
+Full report: `packages/dogfood/FINDINGS.md` (raw data in
+`packages/dogfood/results/`). Harness: `packages/dogfood/collect.mjs` runs any
+instrumented app in headless Chrome (hidden preview tabs pause rAF — headless
+does not) and aggregates per-window status distributions. The IIFE bundle
+(`pnpm --filter canvas-scan exec esbuild src/auto.ts --bundle --format=iife
+--outfile=dist/canvas-scan.iife.js`) makes any third-party app instrumentable
+via one script tag.
+
+- Hypothesis PARTIALLY validated: konva-style apps report honest
+  `same`/`changed` (zero false `same` at 60fps), and the tool surfaced a real
+  candidate — konva redraws hit canvases command-identically during drags.
+- **chart.js is 100% `unknown`: it draws through `Path2D` objects, which our
+  rules poison. Path2D construction-capture (wrap constructor + path methods,
+  hash the build stream, treat the object as identity + build-hash token) is
+  the gating M2 work** — before overlay/alpha polish. Likely same treatment
+  for CanvasGradient.
+- Reports need `unknownReason` (the capture layer knows which arg poisoned).
+- Attribution walk should skip library-internal wrappers (react-konva's
+  `StageWrap` reported instead of the user's component) — add a filter list
+  like react-scan/react-grab ship.
+- react-scan coexistence verified live (shared hook, zero errors). StrictMode
+  produces no false-`same` storm.
+- Excalidraw run deferred until Path2D capture lands.
+
 ## Later phases / launch checklist
 
 - **M1 — correctness/overhead hardening** (the acceptance suite lives here):

@@ -1,0 +1,109 @@
+{
+  "url": "http://localhost:5174",
+  "scenario": "workbench",
+  "reactScanPresent": true,
+  "warnings": [],
+  "pageErrors": [],
+  "pollFrames": 1750,
+  "byCanvas": {
+    "canvas:1": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 0.5,
+      "maxGap": 0
+    },
+    "canvas:2": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 9,
+      "maxGap": 0
+    },
+    "canvas:3": {
+      "owner": "StageWrap",
+      "kind": "container-only",
+      "windows": 12,
+      "same": 1,
+      "changed": 10,
+      "unknown": 1,
+      "rasterOps": 132,
+      "selfTimeMs": 0.30000000000000004,
+      "maxGap": 1494
+    },
+    "canvas:4": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 12,
+      "same": 9,
+      "changed": 2,
+      "unknown": 1,
+      "rasterOps": 32,
+      "selfTimeMs": 0.30000000000000004,
+      "maxGap": 1494
+    },
+    "canvas:5": {
+      "owner": "StageWrap",
+      "kind": "container-only",
+      "windows": 1750,
+      "same": 0,
+      "changed": 1750,
+      "unknown": 0,
+      "rasterOps": 3500,
+      "selfTimeMs": 39.60000000000025,
+      "maxGap": 1
+    },
+    "canvas:6": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1750,
+      "same": 0,
+      "changed": 1750,
+      "unknown": 0,
+      "rasterOps": 3500,
+      "selfTimeMs": 11.299999999999978,
+      "maxGap": 1
+    },
+    "canvas:7": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 2
+    },
+    "canvas:8": {
+      "owner": "ChartComponent",
+      "kind": "jsx-owner",
+      "windows": 344,
+      "same": 0,
+      "changed": 0,
+      "unknown": 344,
+      "rasterOps": 22016,
+      "selfTimeMs": 44.60000000000014,
+      "maxGap": 238
+    },
+    "canvas:9": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 0.1,
+      "maxGap": 0
+    }
+  }
+}
