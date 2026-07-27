@@ -80,6 +80,13 @@ start({
 
 `window.__CANVAS_SCAN__.getReports()` returns the latest report per canvas.
 
+## canvas-scan init
+
+Run `npx canvas-scan init` in your project to detect the framework and print
+the exact install step. Add `--write` to apply it: the command prepends
+`import 'canvas-scan/auto'` to a Vite entry, or creates
+`instrumentation-client.ts` for Next.js. The command is idempotent.
+
 ## Report shape
 
 ```ts
@@ -120,6 +127,11 @@ so the tool cannot instrument itself.
 - CanvasPattern arguments poison the window to `unknown`.
 - Measured overhead is ~0.3µs per captured operation. A 1,000-op frame pays
   ~0.23ms.
+
+## Publishing (maintainers)
+
+Publish with `pnpm publish`, never `npm publish`. The dist entry points live
+in `publishConfig.exports`, which only pnpm applies.
 
 ## License
 

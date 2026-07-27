@@ -1,13 +1,26 @@
 {
   "name": "canvas-scan",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Find wasted canvas redraws in React apps. Drop-in Canvas2D observability: owner attribution, draw-batch stats, command-signature comparison.",
   "type": "module",
+  "license": "MIT",
+  "repository": "github:yomete/canvas-scan",
+  "keywords": ["react", "canvas", "performance", "devtools", "profiling"],
+  "bin": { "canvas-scan": "./bin/canvas-scan.mjs" },
+  "files": ["dist", "bin", "README.md"],
   "exports": {
     ".": "./src/index.ts",
     "./auto": "./src/auto.ts"
   },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "./auto": { "types": "./dist/auto.d.ts", "default": "./dist/auto.js" }
+    }
+  },
   "scripts": {
+    "build": "esbuild src/index.ts src/auto.ts --bundle --splitting --format=esm --outdir=dist --external:bippy && esbuild src/auto.ts --bundle --format=iife --outfile=dist/canvas-scan.iife.js --minify && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
