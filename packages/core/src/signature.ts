@@ -19,17 +19,25 @@ const UNKNOWN_SOURCES = new Set([
   'Path2D',
 ]);
 
-function mixString(sig: WindowSignature, value: string) {
-  for (let index = 0; index < value.length; index++) {
-    sig.hash = Math.imul(sig.hash ^ value.charCodeAt(index), 0x01000193) >>> 0;
+function mixRaw(sig: WindowSignature, text: string) {
+  for (let index = 0; index < text.length; index++) {
+    sig.hash = Math.imul(sig.hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
   }
+}
+
+// Known one-char tags and length-prefixed bodies make the token stream uniquely decodable.
+function mixToken(sig: WindowSignature, tag: string, body: string): void {
+  mixRaw(sig, tag);
+  mixRaw(sig, String(body.length));
+  mixRaw(sig, ':');
+  mixRaw(sig, body);
 }
 
 function mixNumber(sig: WindowSignature, value: number) {
   const quantized = Number.isFinite(value)
     ? Math.round(value * 100) / 100
     : value;
-  mixString(sig, String(quantized));
+  mixToken(sig, 'n', String(quantized));
 }
 
 function mixValue(sig: WindowSignature, value: unknown) {
@@ -39,26 +47,27 @@ function mixValue(sig: WindowSignature, value: unknown) {
   }
 
   if (typeof value === 'string') {
-    mixString(sig, value);
+    mixToken(sig, 's', value);
     return;
   }
 
   if (typeof value === 'boolean') {
-    mixString(sig, value ? 'boolean:true' : 'boolean:false');
+    mixToken(sig, 'b', value ? '1' : '0');
     return;
   }
 
   if (value === null) {
-    mixString(sig, 'null');
+    mixToken(sig, 'z', '');
     return;
   }
 
   if (value === undefined) {
-    mixString(sig, 'undefined');
+    mixToken(sig, 'u', '');
     return;
   }
 
   if (Array.isArray(value)) {
+    mixToken(sig, 'A', String(value.length));
     for (const item of value) {
       if (typeof item !== 'number') {
         markUnknown(sig, 'array-element');
@@ -79,8 +88,11 @@ function mixValue(sig: WindowSignature, value: unknown) {
     if (build.unknown) {
       markUnknown(sig, `${value.constructor?.name ?? 'object'}:dirty`);
     } else {
-      mixString(sig, `${value.constructor?.name ?? 'object'}#`);
-      mixNumber(sig, build.hash);
+      mixToken(
+        sig,
+        'k',
+        `${value.constructor?.name ?? 'object'}#${build.hash}`,
+      );
     }
     return;
   }
@@ -99,7 +111,7 @@ function mixValue(sig: WindowSignature, value: unknown) {
       naturalHeight?: number;
     };
     const image = <ImageSource>value;
-    mixString(sig, image.currentSrc || image.src || '');
+    mixToken(sig, 'i', image.currentSrc || image.src || '');
     mixNumber(sig, image.naturalWidth ?? 0);
     mixNumber(sig, image.naturalHeight ?? 0);
     return;
@@ -127,7 +139,8 @@ export function captureOp(
   method: string,
   args: readonly unknown[],
 ): void {
-  mixString(sig, method);
+  mixToken(sig, 'C', method);
+  mixRaw(sig, `/${args.length};`);
   for (const arg of args) {
     mixValue(sig, arg);
   }
@@ -139,7 +152,7 @@ export function captureSet(
   prop: string,
   value: unknown,
 ): void {
-  mixString(sig, prop);
+  mixToken(sig, 'S', prop);
   mixValue(sig, value);
   sig.opCount++;
 }

@@ -299,6 +299,13 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
 2. P0: signature framing — the hash concatenates unframed chars, so
    `fillRect(1, 23, …)` vs `fillRect(12, 3, …)` collide deterministically.
    Type-tagged, length-framed tokens + op boundaries + adversarial tests.
+   **DONE 2026-07-27**: every token is now `tag + length + ':' + body`
+   (uniquely decodable stream); ops carry method + arity frames, setters a
+   distinct tag, arrays a length header, build tokens/images their own
+   tags. 14 adversarial tests (boundaries, type confusion, method/arg
+   bleed, arity shifts, setter/op confusion, build-token spoofing);
+   quantization semantics unchanged. Workbench dogfood re-run matches the
+   pre-framing baseline exactly — no classification drift. 96 tests.
 3. P0: persistent context state — complete the setter list (`filter`,
    `lineDashOffset`, `direction`, spacing/kerning), per-window effective-
    state fingerprint, save/restore + transform + clip + cross-window path
