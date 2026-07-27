@@ -1,6 +1,7 @@
 import { safelyInstallRDTHook } from 'bippy';
 import { addSkippedOwners } from './attribution';
 import { latestReports, startFrameLoop } from './frame-loop';
+import { mountOverlay } from './overlay';
 import type { CanvasScanOptions } from './types';
 import { installCanvasPatch } from './wrap-context';
 import { installPath2DPatch } from './wrap-path2d';
@@ -16,6 +17,7 @@ export function start(options: CanvasScanOptions = {}): void {
   installPath2DPatch();
   if (options.skipOwners?.length) addSkippedOwners(options.skipOwners);
   startFrameLoop(options);
+  if (options.overlay !== false) mountOverlay();
   (window as any).__CANVAS_SCAN__ = {
     version: '0.0.0',
     getReports: () => Object.fromEntries(latestReports),

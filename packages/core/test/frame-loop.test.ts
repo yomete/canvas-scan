@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { processRecord } from '../src/frame-loop';
+import {
+  emitReport,
+  processRecord,
+  subscribeToReports,
+} from '../src/frame-loop';
+import type { DrawBatchReport } from '../src/types';
 import type { CanvasRecord } from '../src/wrap-context';
 
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
@@ -262,5 +267,67 @@ describe('processRecord', () => {
       ].sort(),
     );
     expect(processed?.report.sourceLocation).toBeNull();
+  });
+});
+
+describe('report subscribers', () => {
+  const report: DrawBatchReport = {
+    canvasId: 'test-canvas',
+    nearestReactOwner: 'Fake',
+    attributionKind: 'jsx-owner',
+    sourceLocation: null,
+    rasterOperationCount: 2,
+    canvasApiSelfTimeMs: 0.5,
+    signatureStatus: 'same',
+    unknownReason: null,
+    sampled: false,
+    comparisonGap: 1,
+  };
+
+  it('delivers reports until unsubscribed', () => {
+    const canvas = {};
+    const listener = vi.fn();
+    const unsubscribe = subscribeToReports(listener);
+
+    emitReport(report, canvas);
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(report, canvas);
+
+    unsubscribe();
+    emitReport(report, canvas);
+
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('removes a throwing listener without interrupting other listeners', () => {
+    const error = new Error('listener failed');
+    const throwingListener = vi.fn(() => {
+      throw error;
+    });
+    const listener = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unsubscribeThrowing = subscribeToReports(throwingListener);
+    const unsubscribe = subscribeToReports(listener);
+
+    emitReport(report, {});
+
+    expect(throwingListener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      '[canvas-scan] report listener removed after error',
+      error,
+    );
+
+    emitReport(report, {});
+
+    expect(throwingListener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledOnce();
+
+    unsubscribeThrowing();
+    unsubscribe();
+    warn.mockRestore();
   });
 });

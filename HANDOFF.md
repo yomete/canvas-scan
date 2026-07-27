@@ -287,6 +287,15 @@ via one script tag.
 - **M2 — console/API OSS alpha.**
 - **M3 — simple original overlay + minimal HUD** (react-scan's visual
   grammar, not its worker/SAB pipeline — see Decisions locked).
+  **Status 2026-07-27: slice 1 DONE.** `overlay.ts`: shadow-DOM host
+  (fixed, pointer-events:none, survival re-append), red outline flash +
+  `"<Owner> · identical redraw ×N"` label on `same` windows, HUD pill with
+  per-canvas stats, `start({ overlay: false })` opt-out. Frame loop gained a
+  subscriber API (`subscribeToReports`/`emitReport`, bad listeners ejected).
+  Overlay is DOM-only — deliberately no canvas, so it can't instrument
+  itself. 74 tests; verified by headless screenshot (the flash CSS had a
+  fade-in/fade-out transition conflict only a real render could catch —
+  keep screenshot checks in the loop for overlay work).
 - **M4 — installer + framework expansion**: `npx canvas-scan init` CLI
   (framework detection — copy react-scan's); React 18 and Next 15.3+ after
   fixtures pass (`instrumentation-client.ts` is the preferred early-load

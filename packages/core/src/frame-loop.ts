@@ -6,7 +6,32 @@ import { records } from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
 
+export type ReportListener = (report: DrawBatchReport, canvas: unknown) => void;
+
+const reportListeners = new Set<ReportListener>();
+
 let windowIndex = 0;
+
+export function subscribeToReports(listener: ReportListener): () => void {
+  reportListeners.add(listener);
+  return () => {
+    reportListeners.delete(listener);
+  };
+}
+
+export function emitReport(
+  report: DrawBatchReport,
+  canvas: unknown,
+): void {
+  for (const listener of reportListeners) {
+    try {
+      listener(report, canvas);
+    } catch (error) {
+      reportListeners.delete(listener);
+      console.warn('[canvas-scan] report listener removed after error', error);
+    }
+  }
+}
 
 export interface ProcessedRecord {
   report: DrawBatchReport;
@@ -85,6 +110,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       if (!processed) continue;
       latestReports.set(processed.report.canvasId, processed.report);
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
+      emitReport(processed.report, record.canvas);
     }
 
     if (windowIndex % 120 === 0) {

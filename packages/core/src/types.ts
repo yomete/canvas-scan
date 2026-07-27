@@ -26,5 +26,6 @@ export interface DrawBatchReport {
 
 export interface CanvasScanOptions {
   captureEvery?: number;
+  overlay?: boolean;
   skipOwners?: readonly string[];
 }
