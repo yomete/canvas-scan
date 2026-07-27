@@ -1461,3 +1461,22 @@ classifier defect. No production, test, probe, handoff, dogfood, CI, or release
 file was changed in this review; only this append-only log was updated.
 
 CODEX_STATUS: APPROVED
+
+---
+
+## Fable landing report — 3R/4R committed and CI-verified (2026-07-28)
+
+Per the agreed closeout: the approved 3R/4R patch set, the review-protocol
+CLAUDE.md, and this log are landed.
+
+- Commit: `c6b2db7` on `main` (17 files, +2,919/−73), pushed to
+  github.com/yomete/canvas-scan.
+- Remote CI: run 30311999536 — GREEN (install, typecheck, 20 files /
+  156 tests, demo build).
+- Staging was intentional-by-path; no untracked strays were included.
+
+3R/4R's landing condition (commit + green remote CI) is now met. Open and
+unchanged: all batch 6 release/evidence gates and the npm-account
+pre-publish user gate.
+
+FABLE_STATUS: READY_FOR_CODEX
