@@ -1,4 +1,5 @@
 import { safelyInstallRDTHook } from 'bippy';
+import { addSkippedOwners } from './attribution';
 import { latestReports, startFrameLoop } from './frame-loop';
 import type { CanvasScanOptions } from './types';
 import { installCanvasPatch } from './wrap-context';
@@ -13,6 +14,7 @@ export function start(options: CanvasScanOptions = {}): void {
   safelyInstallRDTHook();
   installCanvasPatch();
   installPath2DPatch();
+  if (options.skipOwners?.length) addSkippedOwners(options.skipOwners);
   startFrameLoop(options);
   (window as any).__CANVAS_SCAN__ = {
     version: '0.0.0',

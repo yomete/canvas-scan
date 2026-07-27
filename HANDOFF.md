@@ -251,9 +251,11 @@ via one script tag.
   scenario. CanvasPattern deliberately stays poison.
 - Reports now carry `unknownReason` (e.g. 'HTMLVideoElement', 'Path2D:dirty',
   'canvas-resize', 'first-window') — shipped with the same slice.
-- Attribution walk should skip library-internal wrappers (react-konva's
-  `StageWrap` reported instead of the user's component) — add a filter list
-  like react-scan/react-grab ship.
+- Attribution wrapper-skip: RESOLVED 2026-07-27. The owner walk skips a
+  deny-list (`StageWrap`, `Stage`; extensible via `start({ skipOwners })`)
+  plus 1–2-char names (minified library internals), falling back to the
+  nearest named composite, never null. konva canvases now attribute to the
+  user's component (verified: `KonvaSection` in the re-run).
 - react-scan coexistence verified live (shared hook, zero errors). StrictMode
   produces no false-`same` storm.
 - Excalidraw run deferred until Path2D capture lands.

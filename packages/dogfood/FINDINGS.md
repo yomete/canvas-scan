@@ -63,8 +63,15 @@ canvas went from 311 windows / 100% `unknown` to **367 windows / 0 `unknown`
 rerender-same-data clicks being caught, which is the product's headline
 scenario working on real chart.js. Konva results unchanged; coexistence still
 clean; no kill-switch trips. Finding 1 is resolved; finding 3
-(`unknownReason`) shipped in the same slice. Findings 4 (wrapper-name
-attribution) remains open.
+(`unknownReason`) shipped in the same slice.
+
+Finding 4 resolved 2026-07-27: the owner walk now skips a library-wrapper
+deny-list (`StageWrap`, `Stage`; extensible via `start({ skipOwners })`) AND
+1–2-character names (minified library internals — react-konva's dist exposed
+an `m` between Stage and the user component), always falling back to the
+nearest named composite rather than null. Re-run: konva canvases attribute to
+`KonvaSection` (container-only), chart unchanged (`ChartComponent`,
+jsx-owner).
 
 ## Verdict
 
