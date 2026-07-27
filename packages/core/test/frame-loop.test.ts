@@ -27,6 +27,12 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
       attributionKind: 'jsx-owner',
     },
     lastStatus: null,
+    props: new Map(),
+    matrix: [1, 0, 0, 1, 0, 0],
+    matrixUnknown: false,
+    pathHash: 0x811c9dc5,
+    clipHash: 0x811c9dc5,
+    stateStack: [],
     ...overrides,
   };
 }

@@ -87,14 +87,31 @@ describe('canvas patch hardening', () => {
   it('poisons the window when the canvas is resized', () => {
     const canvas = new FakeCanvas();
     const context = canvas.getContext('2d') as FakeContext;
+    const record = getRecord(canvas)!;
 
     context.fillRect(1, 2, 3, 4);
+    record.props.set('fillStyle', 'red');
+    record.matrix = [2, 0, 0, 2, 5, 5];
+    record.matrixUnknown = true;
+    record.pathHash = 1;
+    record.clipHash = 2;
+    record.stateStack.push({
+      matrix: [1, 0, 0, 1, 0, 0],
+      matrixUnknown: false,
+      clipHash: 0x811c9dc5,
+    });
     canvas.width = 300;
 
     expect(canvas.width).toBe(300);
-    expect(getRecord(canvas)?.sig.unknown).toBe(true);
-    expect(getRecord(canvas)?.sig.unknownReason).toBe('canvas-resize');
-    expect(getRecord(canvas)?.activeInWindow).toBe(true);
+    expect(record.sig.unknown).toBe(true);
+    expect(record.sig.unknownReason).toBe('canvas-resize');
+    expect(record.activeInWindow).toBe(true);
+    expect(record.props.size).toBe(0);
+    expect(record.matrix).toEqual([1, 0, 0, 1, 0, 0]);
+    expect(record.matrixUnknown).toBe(false);
+    expect(record.pathHash).toBe(0x811c9dc5);
+    expect(record.clipHash).toBe(0x811c9dc5);
+    expect(record.stateStack).toEqual([]);
   });
 
   it('passes resize through for an unregistered canvas', () => {

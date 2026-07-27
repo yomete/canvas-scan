@@ -2,7 +2,7 @@ import { resolveAttribution } from './attribution';
 import { computeStatus, newWindowSignature } from './signature';
 import type { CanvasScanOptions, DrawBatchReport } from './types';
 import type { CanvasRecord } from './wrap-context';
-import { records } from './wrap-context';
+import { records, setWindowCaptured } from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
 
@@ -101,6 +101,7 @@ export function processRecord(
 export function startFrameLoop(options: CanvasScanOptions): void {
   const raf = window.requestAnimationFrame.bind(window);
   const captureEvery = options.captureEvery ?? 1;
+  setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
   const tick = () => {
     windowIndex++;
@@ -112,6 +113,8 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
       emitReport(processed.report, record.canvas);
     }
+
+    setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
     if (windowIndex % 120 === 0) {
       for (const [canvasId, report] of latestReports) {

@@ -1,5 +1,6 @@
-import { trackBuild } from './build-registry';
+import { getBuildSignature, trackBuild } from './build-registry';
 import {
+  captureHeadState,
   captureOp,
   captureSet,
   markUnknown,
@@ -29,6 +30,16 @@ export interface CanvasRecord {
     attributionKind: AttributionKind;
   } | null;
   lastStatus: SignatureStatus | null;
+  props: Map<string, unknown>;
+  matrix: [number, number, number, number, number, number];
+  matrixUnknown: boolean;
+  pathHash: number;
+  clipHash: number;
+  stateStack: Array<{
+    matrix: CanvasRecord['matrix'];
+    matrixUnknown: boolean;
+    clipHash: number;
+  }>;
 }
 
 const CAPTURED_METHODS = [
@@ -83,6 +94,17 @@ const RASTER_OPS = new Set([
   'fill',
   'stroke',
 ]);
+const BARE_PATH_OPS = new Set([
+  'moveTo',
+  'lineTo',
+  'bezierCurveTo',
+  'quadraticCurveTo',
+  'arc',
+  'arcTo',
+  'ellipse',
+  'rect',
+  'roundRect',
+]);
 const CAPTURED_SETTERS = [
   'fillStyle',
   'strokeStyle',
@@ -100,6 +122,16 @@ const CAPTURED_SETTERS = [
   'shadowColor',
   'shadowOffsetX',
   'shadowOffsetY',
+  'filter',
+  'lineDashOffset',
+  'direction',
+  'letterSpacing',
+  'wordSpacing',
+  'fontKerning',
+  'fontStretch',
+  'fontVariantCaps',
+  'textRendering',
+  'imageSmoothingQuality',
 ];
 
 export const records = new Set<CanvasRecord>();
@@ -110,6 +142,202 @@ const recordByContext = new WeakMap<object, CanvasRecord>();
 let installed = false;
 let killed = false;
 let nextCanvasId = 1;
+let windowCaptured = true;
+
+export function setWindowCaptured(captured: boolean): void {
+  windowCaptured = captured;
+}
+
+function quantize(value: number): number {
+  return Number.isFinite(value)
+    ? Math.round(value * 100) / 100
+    : value;
+}
+
+function mixIntoHash(hash: number, text: string): number {
+  for (let index = 0; index < text.length; index++) {
+    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+function sortedEntries(
+  props: Map<string, unknown>,
+): Array<[string, unknown]> {
+  return [...props.entries()].sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+}
+
+function headState(record: CanvasRecord) {
+  const entries = sortedEntries(record.props);
+  entries.push(['__matrix', record.matrix.map(quantize)]);
+  entries.push(['__path', record.pathHash]);
+  entries.push(['__clip', record.clipHash]);
+  return { entries, matrixUnknown: record.matrixUnknown };
+}
+
+function clearPersistentState(record: CanvasRecord): void {
+  record.props.clear();
+  record.matrix = [1, 0, 0, 1, 0, 0];
+  record.matrixUnknown = false;
+  record.pathHash = 0x811c9dc5;
+  record.clipHash = 0x811c9dc5;
+  record.stateStack.length = 0;
+}
+
+function finiteArgs(args: unknown[], count: number): number[] | null {
+  if (
+    args.length < count ||
+    args.slice(0, count).some(
+      (value) => typeof value !== 'number' || !Number.isFinite(value),
+    )
+  ) {
+    return null;
+  }
+  return <number[]>args.slice(0, count);
+}
+
+function updateMatrix(
+  record: CanvasRecord,
+  name: string,
+  args: unknown[],
+): boolean {
+  if (
+    name === 'resetTransform' ||
+    (name === 'setTransform' && args.length === 0)
+  ) {
+    record.matrix = [1, 0, 0, 1, 0, 0];
+    record.matrixUnknown = false;
+    return true;
+  }
+
+  const required =
+    name === 'translate' || name === 'scale'
+      ? 2
+      : name === 'rotate'
+        ? 1
+        : name === 'transform' || name === 'setTransform'
+          ? 6
+          : 0;
+  if (required === 0) return false;
+
+  const values = finiteArgs(args, required);
+  if (!values) {
+    record.matrixUnknown = true;
+    return true;
+  }
+
+  if (name === 'setTransform') {
+    record.matrix = <CanvasRecord['matrix']>values;
+    record.matrixUnknown = false;
+    return true;
+  }
+
+  const [a, b, c, d, e, f] = record.matrix;
+  if (name === 'translate') {
+    const [x, y] = values;
+    record.matrix = [a, b, c, d, e + a * x + c * y, f + b * x + d * y];
+  } else if (name === 'scale') {
+    const [x, y] = values;
+    record.matrix = [a * x, b * x, c * y, d * y, e, f];
+  } else if (name === 'rotate') {
+    const cosine = Math.cos(values[0]);
+    const sine = Math.sin(values[0]);
+    record.matrix = [
+      a * cosine + c * sine,
+      b * cosine + d * sine,
+      -a * sine + c * cosine,
+      -b * sine + d * cosine,
+      e,
+      f,
+    ];
+  } else {
+    const [nextA, nextB, nextC, nextD, nextE, nextF] = values;
+    record.matrix = [
+      a * nextA + c * nextB,
+      b * nextA + d * nextB,
+      a * nextC + c * nextD,
+      b * nextC + d * nextD,
+      a * nextE + c * nextF + e,
+      b * nextE + d * nextF + f,
+    ];
+  }
+  return true;
+}
+
+function updatePathHash(
+  record: CanvasRecord,
+  name: string,
+  args: unknown[],
+): void {
+  let hash = mixIntoHash(record.pathHash, name);
+  for (const arg of args) {
+    hash = mixIntoHash(
+      hash,
+      typeof arg === 'number' ? String(quantize(arg)) : '?',
+    );
+  }
+  // Canvas path points are transformed when they are added, not when they are drawn.
+  for (const value of record.matrix) {
+    hash = mixIntoHash(hash, String(quantize(value)));
+  }
+  record.pathHash = hash;
+}
+
+function updateClipHash(record: CanvasRecord, args: unknown[]): void {
+  const pathArg = hasPath2DArgument(args) ? <object>args[0] : null;
+  const build = pathArg ? getBuildSignature(pathArg) : undefined;
+  const pathHash = pathArg
+    ? String(build?.hash ?? 'untracked')
+    : String(record.pathHash);
+  const fillRule = String(args[pathArg ? 1 : 0] ?? 'nonzero');
+  record.clipHash = mixIntoHash(
+    mixIntoHash(record.clipHash, pathHash),
+    fillRule,
+  );
+}
+
+function updateMethodState(
+  record: CanvasRecord,
+  name: string,
+  args: unknown[],
+): void {
+  if (updateMatrix(record, name, args)) {
+    return;
+  }
+  if (name === 'save') {
+    record.stateStack.push({
+      matrix: <CanvasRecord['matrix']>[...record.matrix],
+      matrixUnknown: record.matrixUnknown,
+      clipHash: record.clipHash,
+    });
+  } else if (name === 'restore') {
+    const state = record.stateStack.pop();
+    if (state) {
+      record.matrix = state.matrix;
+      record.matrixUnknown = state.matrixUnknown;
+      record.clipHash = state.clipHash;
+    }
+  } else if (name === 'clip') {
+    updateClipHash(record, args);
+  } else if (name === 'beginPath') {
+    record.pathHash = 0x811c9dc5;
+  } else if (BARE_PATH_OPS.has(name)) {
+    updatePathHash(record, name, args);
+  } else if (name === 'reset') {
+    clearPersistentState(record);
+  }
+}
+
+function hasPath2DArgument(args: unknown[]): boolean {
+  const first = args[0];
+  return (
+    typeof first === 'object' &&
+    first !== null &&
+    first.constructor?.name === 'Path2D'
+  );
+}
 
 function kill(error: unknown) {
   if (killed) return;
@@ -176,6 +404,12 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         prev: null,
         attribution: null,
         lastStatus: null,
+        props: new Map(),
+        matrix: [1, 0, 0, 1, 0, 0],
+        matrixUnknown: false,
+        pathHash: 0x811c9dc5,
+        clipHash: 0x811c9dc5,
+        stateStack: [],
       };
       records.add(record);
       recordByCanvas.set(this, record);
@@ -197,6 +431,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         if (!record || killed) return;
         // resize resets context state the signature can't model
         markUnknown(record.sig, 'canvas-resize');
+        clearPersistentState(record);
         record.activeInWindow = true;
       },
     });
@@ -210,6 +445,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const record = recordByContext.get(this);
       if (!record || killed) return original.apply(this, args);
 
+      const firstActivity = !record.activeInWindow;
       const start = performance.now();
       let result: unknown;
       try {
@@ -219,8 +455,21 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         record.selfTimeMs += performance.now() - start;
         record.activeInWindow = true;
         if (RASTER_OPS.has(name)) record.rasterOps++;
+        const headEntries =
+          windowCaptured && firstActivity
+            ? headState(record)
+            : null;
+        updateMethodState(record, name, args);
         try {
-          captureOp(record.sig, name, args);
+          if (headEntries) {
+            captureHeadState(record.sig, headEntries.entries);
+            if (headEntries.matrixUnknown) {
+              markUnknown(record.sig, 'transform-unmodeled');
+            }
+          }
+          if (windowCaptured) {
+            captureOp(record.sig, name, args);
+          }
           if (
             GRADIENT_CREATORS.has(name) &&
             result &&
@@ -246,8 +495,21 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         originalSet.call(this, value);
         const record = recordByContext.get(this);
         if (!record || killed) return;
+        const firstActivity = !record.activeInWindow;
+        record.activeInWindow = true;
+        const headEntries =
+          windowCaptured && firstActivity
+            ? headState(record)
+            : null;
+        record.props.set(name, value);
         try {
-          captureSet(record.sig, name, value);
+          if (headEntries) {
+            captureHeadState(record.sig, headEntries.entries);
+            if (headEntries.matrixUnknown) {
+              markUnknown(record.sig, 'transform-unmodeled');
+            }
+          }
+          if (windowCaptured) captureSet(record.sig, name, value);
         } catch (error) {
           kill(error);
         }

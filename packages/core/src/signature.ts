@@ -157,6 +157,17 @@ export function captureSet(
   sig.opCount++;
 }
 
+export function captureHeadState(
+  sig: WindowSignature,
+  entries: ReadonlyArray<readonly [string, unknown]>,
+): void {
+  mixToken(sig, 'H', String(entries.length));
+  for (const [name, value] of entries) {
+    mixToken(sig, 'P', name);
+    mixValue(sig, value);
+  }
+}
+
 export function computeStatus(
   prev: { hash: number; unknown: boolean } | null,
   cur: WindowSignature,

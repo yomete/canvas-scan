@@ -321,6 +321,21 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
    a skipped window never yields a stale `same`; (e) after an `unknown`
    establishes a new baseline, the next comparable window recovers to
    `same`/`changed`.
+   **DONE 2026-07-27, with a design lesson.** First attempt used carried
+   dirty-flags + lazy poisons; the workbench gate caught it cold — konva
+   applies a permanent baseline `scale()` at canvas init, so every konva
+   window poisoned to `carried-transform` (the dogfood regression gate
+   exists for exactly this). Revision MODELS the three carried channels
+   instead: the real 2D matrix (numeric composition, save/restore-stacked),
+   a rolling current-path hash (mixes the CTM — path points transform at
+   build time), and a clip hash. All three feed the head-of-window
+   fingerprint as synthetic entries; stable baselines fingerprint
+   identically, real drift reads as honest `changed`. The one remaining
+   poison: object-form `setTransform(DOMMatrix)` → 'transform-unmodeled'.
+   Setter list completed; head fingerprint + always-on props/state
+   tracking; Contract 1 sampling with all five tests. Workbench re-run:
+   konva baseline restored exactly (9/12 hit-canvas same, zero carried
+   unknowns), chart.js unchanged. 117 tests.
 4. Tracked-canvas source tokens (above) + Excalidraw re-run with action
    markers; konva workbench results must not regress.
 5. Count-only capture path + Chrome benchmark as a required release command
