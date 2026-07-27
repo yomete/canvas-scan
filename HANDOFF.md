@@ -8,6 +8,13 @@ Measurement claims are relabeled to what the mechanism actually measures,
 Tier 2's commit-timestamp error is corrected, attribution gains confidence
 levels, and later phases are re-sequenced M0–M4.
 
+Rev 3 (2026-07-27): M0–M4 slice 1 are all built and verified (statuses
+inline below); repo lives at github.com/yomete/canvas-scan (private, 7
+commits, CI added but failing — fix is hardening batch 1). Two dogfood runs
+(konva/chart.js workbench + Excalidraw) validated and sharpened the design.
+A cross-review with Codex found two P0 classifier-trust defects — see
+"Hardening queue" below; 0.1.0 does not publish until it clears.
+
 ## What this is
 
 **canvas-scan** (working name) — an open-source, drop-in dev tool for
@@ -203,7 +210,8 @@ lives in bippy. Two surprises worth remembering:
 **Status: DONE (2026-07-26).** Built via plan-build-judge (Codex coder, Claude
 judge). All four verification commands pass (typecheck, 20/20 vitest, demo
 build) and the contract was verified live in Chrome, including
-`signatureStatus: "same"` on the forced identical redraw. Not yet committed.
+`signatureStatus: "same"` on the forced identical redraw. Committed as
+`e1386e3` (the repo's root commit).
 
 > Done = in Chrome, on a Vite + React 19 dev fixture with two main-thread
 > Canvas2D canvases (one drawing on a rAF loop, one drawing from an effect on
@@ -258,7 +266,61 @@ via one script tag.
   user's component (verified: `KonvaSection` in the re-run).
 - react-scan coexistence verified live (shared hook, zero errors). StrictMode
   produces no false-`same` storm.
-- Excalidraw run deferred until Path2D capture lands.
+- Excalidraw run DONE 2026-07-27 (separate session; see the Excalidraw
+  section of `packages/dogfood/FINDINGS.md`). Attribution produced real
+  component names with zero configuration, idle is genuinely silent, and
+  the honesty rule worked — which is the problem: the main scene canvas is
+  15/17 windows `unknown` (`drawImage(HTMLCanvasElement)`) because
+  Excalidraw composites per-element cache canvases. Cache compositing is a
+  pattern also used by konva cached shapes and pixi render textures (an
+  observed pattern, one dogfood run — not a category claim), so **tracked-canvas
+  source tokens (identity + content-version, version bumped per draw batch
+  and on resize) are the gating M2 slice 2** — the Path2D fix generalized.
+  Untracked/worker/video sources still poison; CanvasPattern stays poison.
+
+## Hardening queue (agreed in the 2026-07-27 cross-review with Codex)
+
+Codex's progress review found two P0 classifier-trust defects; the full
+exchange (findings, my verified responses, the sampling-contract decision)
+is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
+0.1.0 does NOT publish until batches 1–6 land. Order:
+
+1. CI fix (drop the pnpm `version:` input — it fights the packageManager
+   pin) + claim-discipline copy sweep ("wasted"/"identical redraw" violate
+   Rev 2 labels; use "same signature ×N" / "review candidate") + a copy
+   regression test. Copy only — no behavioral changes in this batch.
+2. P0: signature framing — the hash concatenates unframed chars, so
+   `fillRect(1, 23, …)` vs `fillRect(12, 3, …)` collide deterministically.
+   Type-tagged, length-framed tokens + op boundaries + adversarial tests.
+3. P0: persistent context state — complete the setter list (`filter`,
+   `lineDashOffset`, `direction`, spacing/kerning), per-window effective-
+   state fingerprint, save/restore + transform + clip + cross-window path
+   modeled or conservatively poisoned, post-assignment gradient mutation
+   poisons. Sampling follows "Contract 1": skip full serialization on
+   uncaptured windows, keep lightweight persistent-state AND
+   source-mutation tracking always on, poison only on unmodeled
+   intervening mutation, and hash the effective state at the head of each
+   captured command stream. Five agreed sampling tests: (a) continuous
+   identical draws at `captureEvery: 2` can reach `same`; (b) an idle
+   skipped window does not poison; (c) a setter change in a skipped window
+   never yields a stale `same`; (d) path/clip/gradient/source mutation in
+   a skipped window never yields a stale `same`; (e) after an `unknown`
+   establishes a new baseline, the next comparable window recovers to
+   `same`/`changed`.
+4. Tracked-canvas source tokens (above) + Excalidraw re-run with action
+   markers; konva workbench results must not regress.
+5. Count-only capture path + Chrome benchmark as a required release command
+   (persists samples + browser/hardware metadata + pass/fail, where
+   pass/fail ASSERTS the documented budgets: <1ms p95 added work and <10%
+   median slowdown in count-only mode — the budgets bind to this command,
+   not to CI); the Node overhead test stays a generous tripwire. Overlay
+   `same` flashes weighted by rasterOperationCount land here (behavioral
+   tuning, kept out of batch 1 by agreement).
+6. Release hardening: prepack build, pack-from-clean CI, tarball install
+   into clean Vite + Next 15.3 fixtures, CLI prints the required install
+   command, Next path version-gated to >= 15.3.
+7. 0.1.0 publish — additionally gated on Yomi confirming the npm account
+   (personal, not work).
 
 ## Later phases / launch checklist
 
@@ -281,9 +343,11 @@ via one script tag.
   1,000-op frame adds ~0.23ms median (inside budget); a 10,000-op frame adds
   ~3.2ms (over budget, acceptable — that IS the pathology the tool flags; a
   true count-only mode that skips capture during uncaptured sampling windows
-  is a future optimization). bippy pinned exactly 0.6.1. Remaining M1 items:
-  react-scan coexistence check (needs a visible browser session), StrictMode
-  demo fixture, taint controls (blocked on the post-M0 audit mode).
+  is a future optimization — now formalized as hardening batch 5). bippy
+  pinned exactly 0.6.1. react-scan coexistence and the StrictMode fixture
+  were both closed by the workbench dogfood run (headless, StrictMode ON,
+  react-scan loaded alongside). Remaining M1 item: taint controls (blocked
+  on the post-M0 audit mode).
 - **M2 — console/API OSS alpha.**
 - **M3 — simple original overlay + minimal HUD** (react-scan's visual
   grammar, not its worker/SAB pipeline — see Decisions locked).
@@ -301,6 +365,18 @@ via one script tag.
   fixtures pass (`instrumentation-client.ts` is the preferred early-load
   path); demo site, README GIF, install docs per framework. Budget as much
   time for this polish as for the core — it's what makes these tools land.
+  **Status 2026-07-27: slice 1 DONE.** Packaging: ESM dist with code
+  splitting (`.` and `./auto` share one chunk — module state is
+  load-bearing) + d.ts + IIFE; dist entry points live in
+  `publishConfig.exports`, so publish with `pnpm publish` ONLY. Zero-dep
+  `canvas-scan init` CLI (vite/next detection, idempotent `--write`).
+  README + demo GIF + CI shipped. Repo: github.com/yomete/canvas-scan
+  (private). npm name `canvas-scan` verified unclaimed; claiming is
+  DEFERRED — Yomi must first check which npm account their CLI uses
+  (`npm whoami`; work vs personal — this project publishes from the
+  personal account only). Remaining M4:
+  React 18 fixtures, Next fixture validation, demo site, real 0.1.0
+  publish.
 - WebGL phase. Then maybe commit-correlation (Tier 2) improvements.
 - Launch case study: dogfood on the Polar Signals profiler page (canvas
   flamegraph; a June 2026 perf hunt there found a 31ms redraw and shipped a
@@ -321,8 +397,10 @@ via one script tag.
 
 ## Context that does NOT carry over
 
-- This folder is not yet a git repo and has no tooling. First session: `git
-  init`, scaffold the pnpm monorepo, then the tracer bullet.
+- (Rev 3: stale — kept for history.) ~~This folder is not yet a git repo and
+  has no tooling. First session: `git init`, scaffold the pnpm monorepo, then
+  the tracer bullet.~~ The repo is scaffolded, tested, and pushed to
+  github.com/yomete/canvas-scan; continue from the Hardening queue.
 - Yomi's global CLAUDE.md auto-loads (commit/push only with explicit approval
   in the current turn; minimal-first working style; lead with the outcome).
 - The polarsignals repo's conventions/memory do not apply here.
