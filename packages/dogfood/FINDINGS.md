@@ -82,3 +82,94 @@ capture is the gating work before the tool is broadly useful; do it before any
 overlay/alpha work. Excalidraw run deferred until after Path2D capture (its
 rough.js renderer draws direct-to-context, but the repo's yarn/corepack setup
 under node 25 needs its own session).
+
+# Dogfood findings — Excalidraw run, 2026-07-27
+
+Setup: excalidraw/excalidraw @ `b2e81e3` (shallow clone in a scratch dir, React
+19, on-demand renderer, no react-scan), instrumented by injecting the IIFE
+bundle as the first script tag of `excalidraw-app/index.html` (served from the
+repo's vite publicDir; vite's injected module scripts are deferred, so the
+synchronous IIFE still evaluates before React). Driven by `collect.mjs`
+scenario `excalidraw` in headless Chrome: 3s idle → two rectangles drawn via
+mouse drags (`r` tool key) → hand-tool pan → 5s idle. Raw data:
+`results/2026-07-27-excalidraw.json`. A one-off timeline probe (same scenario,
+per-window timestamps interleaved with scenario phase marks) backed findings
+3–4. `collect.mjs` gained per-canvas `unknownReasons` aggregation for this run.
+
+Install friction, for the record: brew's yarn 1.22.22 matched the repo's
+`packageManager` pin exactly (no corepack needed), but the full-workspace
+install died on network timeouts fetching `@next/swc-*` binaries needed only
+by `examples/*` — trimming that workspace from the throwaway clone plus
+`--network-timeout 600000` got a clean install in ~16 min.
+
+## Per-canvas summary
+
+24 canvases observed, 77 windows total. No kill-switch warnings, no page
+errors.
+
+| canvas | inferred identity | owner (kind) | windows | same/changed/unknown | unknownReason |
+|---|---|---|---|---|---|
+| 2 | static scene canvas | StaticCanvas (container-only) | 17 | 2/0/**15** | HTMLCanvasElement ×15 |
+| 3 | interactive UI canvas | InteractiveCanvas (jsx-owner) | 18 | 2/16/0 | — |
+| 4, 15 | in-progress-shape canvas (remounted per drawing session) | NewElementCanvas (jsx-owner) | 11 each | 0/0/11 | first-window ×1, HTMLCanvasElement ×10 |
+| 5–14, 16–25 | one-shot canvases (element caches / text-measure / cursor utilities) | — (unattributed) | 1 each | 0/0/1 | canvas-resize |
+
+## Findings
+
+1. **The flagship expectation is refuted — the main canvas is unknown-heavy,
+   and the honesty rule is doing exactly its job.** The premise was that
+   rough.js draws direct-to-context, so Excalidraw would read as
+   `same`/`changed`. rough.js *does* draw direct-to-context — but into
+   per-element **cache canvases**, not the scene canvas (verified in source:
+   `packages/element/src/renderElement.ts` — `generateElementCanvas`,
+   `elementWithCanvasCache` WeakMap, then `context.drawImage(...)` onto the
+   scene). Every content redraw of StaticCanvas includes
+   `drawImage(HTMLCanvasElement)`, which is mandatory-unknown (a source
+   canvas's pixels can change without the command stream changing), so the
+   canvas that matters most is 15/17 `unknown`. Same pattern on
+   NewElementCanvas during drags.
+2. **Where draws stay direct, the signal stays readable.** InteractiveCanvas
+   (selection UI, scrollbars) reported 16 `changed` / 2 `same` / 0 `unknown`
+   across drags and pan — no false `same` during 60fps interaction.
+3. **Idle is genuinely silent.** Zero windows during both the 3s leading and
+   5s trailing idle phases (timeline probe) — Excalidraw is an on-demand
+   renderer, so the feared idle-redraw false-`same` storm can't occur outside
+   text editing (cursor blink lives in DOM editing, untested here).
+4. **The 4 `same` windows are honest micro-repaints, and they hint at an
+   overlay UX rule.** Timeline: the mount double-draw at t≈0 (both canvases,
+   1 op, gap 1) and a wake-up repaint on each canvas at interaction start
+   (1 op, gap ≈365). Command-identical, so `same` is correct — but a 1-op
+   `same` window is noise next to the konva hit-canvas find (9/12 windows of
+   real work). The overlay should probably weight `same` flags by
+   rasterOperationCount before shouting. Observation only; no core change
+   made.
+5. **Attribution is flagship-quality out of the box.** Real component names
+   (`StaticCanvas`, `InteractiveCanvas`, `NewElementCanvas`) with sensible
+   kinds, zero `skipOwners` configuration, no minified-wrapper leakage.
+   Caveat: Excalidraw is the app here; for a host app *embedding*
+   `@excalidraw/excalidraw`, these same names become library wrappers —
+   future `skipOwners` preset candidates.
+6. **`unknownReason` paid for itself.** Diagnosing finding 1 took zero
+   library-source grepping — the field named the poisoning arg type directly
+   (contrast: the chart.js/Path2D diagnosis required reading chart.js
+   internals). The 20 one-shot utility canvases self-explained as
+   `canvas-resize`.
+7. **Core design consequence — tracked-canvas source tokens are the next
+   Path2D-shaped gap (M2 slice 2 candidate).** The element cache canvases are
+   same-realm and already wrapped by our `getContext` patch — the tool
+   *observes every draw into them*. Treating a drawImage source that is a
+   **tracked** canvas as an (identity + content-version) token — version
+   bumped per draw batch into that canvas — would let compositing canvases
+   classify honestly, exactly as Path2D build-hash tokens fixed chart.js.
+   Untracked canvases, worker/OffscreenCanvas, and video must still poison.
+   Not implemented in this run (rule: the failure is the finding).
+
+## Verdict
+
+On the flagship real-world app, attribution and the honesty infrastructure
+worked flawlessly, but the headline signature signal is largely **mute where
+it matters most**: cache-canvas compositing — the architecture every serious
+canvas app converges on (Excalidraw element caches, konva cached shapes, pixi
+render textures) — poisons the compositing canvas to `unknown` by design.
+Canvas-source capture (finding 7) is the gating work for this class of app,
+and it is the same shape of work as the Path2D fix that unlocked chart.js.

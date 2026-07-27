@@ -3,7 +3,7 @@
 // report window, runs a scripted interaction scenario, and prints a JSON
 // summary of signatureStatus distribution / attribution / overhead per canvas.
 //
-// Usage: node collect.mjs <url> <scenario: workbench|idle> [durationMs]
+// Usage: node collect.mjs <url> <scenario: workbench|excalidraw|idle> [durationMs]
 import { chromium } from 'playwright-core';
 
 const url = process.argv[2] ?? 'http://localhost:5174';
@@ -43,11 +43,15 @@ await page.evaluate(() => {
         rasterOps: 0,
         selfTimeMs: 0,
         maxGap: 0,
+        unknownReasons: {},
       });
       c.owner = r.nearestReactOwner;
       c.kind = r.attributionKind;
       c.windows++;
       c[r.signatureStatus]++;
+      if (r.signatureStatus === 'unknown' && r.unknownReason) {
+        c.unknownReasons[r.unknownReason] = (c.unknownReasons[r.unknownReason] ?? 0) + 1;
+      }
       c.rasterOps += r.rasterOperationCount;
       c.selfTimeMs += r.canvasApiSelfTimeMs;
       if (r.comparisonGap && r.comparisonGap > c.maxGap) c.maxGap = r.comparisonGap;
@@ -80,6 +84,30 @@ if (scenario === 'workbench') {
     await page.mouse.up();
   }
   await sleep(2000);
+} else if (scenario === 'excalidraw') {
+  await sleep(3000); // mount + welcome screen settle; watch for idle redraws
+  const drag = async (x1, y1, x2, y2) => {
+    await page.mouse.move(x1, y1);
+    await page.mouse.down();
+    const steps = 10;
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(x1 + ((x2 - x1) * i) / steps, y1 + ((y2 - y1) * i) / steps);
+      await sleep(30);
+    }
+    await page.mouse.up();
+  };
+  // Two rectangles: 'r' selects the rectangle tool (Excalidraw reverts to
+  // selection after each shape, so press it again for the second).
+  await page.keyboard.press('r');
+  await drag(400, 300, 550, 400);
+  await sleep(500);
+  await page.keyboard.press('r');
+  await drag(600, 350, 750, 480);
+  await sleep(500);
+  // Pan with the hand tool.
+  await page.keyboard.press('h');
+  await drag(500, 400, 320, 280);
+  await sleep(5000); // trailing idle: false-`same` watch
 } else {
   await sleep(idleMs);
 }
