@@ -47,7 +47,7 @@ export function App() {
       <EffectChart value={value} nonce={nonce} />
       <p>
         <button onClick={() => setValue((v) => v + 1)}>change data</button>{' '}
-        <button onClick={() => setNonce((n) => n + 1)}>force identical redraw</button>
+        <button onClick={() => setNonce((n) => n + 1)}>force same-signature redraw</button>
       </p>
     </main>
   );

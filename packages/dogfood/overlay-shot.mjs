@@ -7,9 +7,9 @@ await page.goto('http://localhost:5173', { waitUntil: 'load' });
 await page.waitForFunction(() => window.__CANVAS_SCAN__ != null, null, { timeout: 15000 });
 await page.waitForTimeout(1200);
 
-await page.click('text=force identical redraw');
+await page.click('text=force same-signature redraw');
 await page.waitForTimeout(80);
-await page.click('text=force identical redraw');
+await page.click('text=force same-signature redraw');
 await page.waitForTimeout(250);
 
 const hudText = await page.evaluate(() => {

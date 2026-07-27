@@ -289,6 +289,13 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
    pin) + claim-discipline copy sweep ("wasted"/"identical redraw" violate
    Rev 2 labels; use "same signature ×N" / "review candidate") + a copy
    regression test. Copy only — no behavioral changes in this batch.
+   **DONE 2026-07-27**: pnpm version input dropped; overlay/README/package
+   description now use "same signature ×N" / "review candidates";
+   `test/claim-discipline.test.ts` guards user-facing copy (disclaimer
+   negations allowed); GIF + screenshot regenerated with the new copy;
+   82 tests. (Also unblocked: node_modules relinked from the global pnpm
+   store — a Codex-sandbox run had left it pointing at a deleted repo-local
+   store, breaking `pnpm add`.)
 2. P0: signature framing — the hash concatenates unframed chars, so
    `fillRect(1, 23, …)` vs `fillRect(12, 3, …)` collide deterministically.
    Type-tagged, length-framed tokens + op boundaries + adversarial tests.
@@ -353,7 +360,8 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
   grammar, not its worker/SAB pipeline — see Decisions locked).
   **Status 2026-07-27: slice 1 DONE.** `overlay.ts`: shadow-DOM host
   (fixed, pointer-events:none, survival re-append), red outline flash +
-  `"<Owner> · identical redraw ×N"` label on `same` windows, HUD pill with
+  `"<Owner> · same signature ×N"` label on `same` windows (copy updated in
+  hardening batch 1), HUD pill with
   per-canvas stats, `start({ overlay: false })` opt-out. Frame loop gained a
   subscriber API (`subscribeToReports`/`emitReport`, bad listeners ejected).
   Overlay is DOM-only — deliberately no canvas, so it can't instrument

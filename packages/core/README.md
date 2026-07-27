@@ -1,6 +1,7 @@
 # canvas-scan
 
-Find wasted canvas redraws in React apps.
+Surface repeated canvas command signatures — likely redundant redraws — in
+React apps.
 
 canvas-scan is a drop-in dev tool for canvas-heavy React apps. One early
 import instruments every observable main-thread Canvas2D canvas on the page.
@@ -9,7 +10,7 @@ canvas API self-time, and a frame-over-frame command-signature comparison.
 When a canvas repeats the previous window's command signature, the overlay
 flashes a red outline with the owner's name.
 
-![The overlay flags an identical redraw on the demo chart](docs/demo.gif)
+![The overlay flags a repeated command signature on the demo chart](docs/demo.gif)
 
 ## Status
 

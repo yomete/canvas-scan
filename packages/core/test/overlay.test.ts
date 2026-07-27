@@ -55,7 +55,7 @@ describe('overlay', () => {
     expect(hosts[0]?.shadowRoot?.querySelector('.hud')).not.toBeNull();
   });
 
-  it('reuses and updates an outline for identical redraws', () => {
+  it('reuses and updates an outline for repeated same-signature windows', () => {
     mountOverlay();
     const canvas = makeCanvas();
     const host = document.querySelector('[data-canvas-scan]');
@@ -97,7 +97,7 @@ describe('overlay', () => {
       '1 canvases',
     );
     expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '0 wasted',
+      '0 review candidates',
     );
   });
 
@@ -110,7 +110,7 @@ describe('overlay', () => {
 
     expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
     expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '1 canvases · 1 wasted',
+      '1 canvases · 1 review candidates',
     );
   });
 

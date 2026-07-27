@@ -67,7 +67,7 @@ function updateHud(): void {
     totalSame += canvasStats.same;
   }
 
-  const text = `canvas-scan · ${stats.size} canvases · ${totalSame} wasted`;
+  const text = `canvas-scan · ${stats.size} canvases · ${totalSame} review candidates`;
   if (hudText.nodeValue !== text) hudText.nodeValue = text;
 
   const now = Date.now();
@@ -109,11 +109,11 @@ function flashOutline(
   outline.style.height = `${rect.height + 4}px`;
   const label = outline.querySelector('.label');
   if (label) {
-    label.textContent = `${report.nearestReactOwner ?? report.canvasId} · identical redraw ×${same}`;
+    label.textContent = `${report.nearestReactOwner ?? report.canvasId} · same signature ×${same}`;
   }
 
   outline.classList.remove('flash', 'fading');
-  // Force reflow so repeated identical redraws restart the flash.
+  // Force reflow so consecutive same-signature windows restart the flash.
   void outline.offsetWidth;
   outline.classList.add('flash');
   requestAnimationFrame(() => outline.classList.add('fading'));
@@ -160,7 +160,7 @@ export function mountOverlay(): void {
 
   hud = document.createElement('div');
   hud.className = 'hud';
-  hudText = document.createTextNode('canvas-scan · 0 canvases · 0 wasted');
+  hudText = document.createTextNode('canvas-scan · 0 canvases · 0 review candidates');
   hudList = document.createElement('ul');
   hudList.className = 'hud-list';
   hud.append(hudText, hudList);
