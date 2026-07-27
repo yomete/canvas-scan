@@ -1,0 +1,342 @@
+{
+  "url": "http://localhost:3210",
+  "scenario": "excalidraw",
+  "reactScanPresent": false,
+  "warnings": [],
+  "pageErrors": [],
+  "pollFrames": 1233,
+  "byCanvas": {
+    "canvas:2": {
+      "owner": "StaticCanvas",
+      "kind": "container-only",
+      "windows": 17,
+      "same": 3,
+      "changed": 14,
+      "unknown": 0,
+      "rasterOps": 44,
+      "selfTimeMs": 0.5,
+      "maxGap": 366,
+      "unknownReasons": {}
+    },
+    "canvas:3": {
+      "owner": "InteractiveCanvas",
+      "kind": "jsx-owner",
+      "windows": 18,
+      "same": 2,
+      "changed": 16,
+      "unknown": 0,
+      "rasterOps": 40,
+      "selfTimeMs": 0.7,
+      "maxGap": 363,
+      "unknownReasons": {}
+    },
+    "canvas:4": {
+      "owner": "NewElementCanvas",
+      "kind": "jsx-owner",
+      "windows": 11,
+      "same": 0,
+      "changed": 10,
+      "unknown": 1,
+      "rasterOps": 21,
+      "selfTimeMs": 1.0999999999999999,
+      "maxGap": 5,
+      "unknownReasons": {
+        "first-window": 1
+      }
+    },
+    "canvas:5": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.5,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:6": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:7": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:8": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:9": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:10": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:11": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.2,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:12": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:13": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:14": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:15": {
+      "owner": "NewElementCanvas",
+      "kind": "jsx-owner",
+      "windows": 11,
+      "same": 0,
+      "changed": 10,
+      "unknown": 1,
+      "rasterOps": 21,
+      "selfTimeMs": 0.4,
+      "maxGap": 5,
+      "unknownReasons": {
+        "first-window": 1
+      }
+    },
+    "canvas:16": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:17": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:18": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:19": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:20": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:21": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:22": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:23": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:24": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:25": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    }
+  }
+}

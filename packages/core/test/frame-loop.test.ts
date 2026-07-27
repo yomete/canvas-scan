@@ -11,6 +11,13 @@ import type { CanvasRecord } from '../src/wrap-context';
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
     canvas: {},
+    contentSig: {
+      hash: 0x811c9dc5,
+      unknown: false,
+      opCount: 0,
+      unknownReason: null,
+    },
+    contentVersion: 0,
     id: 'test-canvas',
     sig: {
       hash: 0x1234,

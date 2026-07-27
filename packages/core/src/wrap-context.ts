@@ -19,6 +19,8 @@ export interface PatchTargets {
 
 export interface CanvasRecord {
   canvas: any;
+  contentSig: WindowSignature;
+  contentVersion: number;
   id: string;
   sig: WindowSignature;
   rasterOps: number;
@@ -159,6 +161,14 @@ function mixIntoHash(hash: number, text: string): number {
     hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
   }
   return hash;
+}
+
+export function bumpContentVersion(record: CanvasRecord): void {
+  record.contentSig.hash = 0x811c9dc5;
+  record.contentSig.hash = mixIntoHash(
+    record.contentSig.hash,
+    `${record.id}#${record.contentVersion}`,
+  );
 }
 
 function sortedEntries(
@@ -396,6 +406,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const elementId = this.getAttribute('id');
       const record: CanvasRecord = {
         canvas: this,
+        contentSig: newWindowSignature(),
+        contentVersion: 0,
         id: elementId || `canvas:${nextCanvasId++}`,
         sig: newWindowSignature(),
         rasterOps: 0,
@@ -411,6 +423,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         clipHash: 0x811c9dc5,
         stateStack: [],
       };
+      bumpContentVersion(record);
+      trackBuild(this, record.contentSig);
       records.add(record);
       recordByCanvas.set(this, record);
       recordByContext.set(context, record);
@@ -429,6 +443,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         originalSet.call(this, value);
         const record = recordByCanvas.get(this);
         if (!record || killed) return;
+        record.contentVersion++;
+        bumpContentVersion(record);
         // resize resets context state the signature can't model
         markUnknown(record.sig, 'canvas-resize');
         clearPersistentState(record);

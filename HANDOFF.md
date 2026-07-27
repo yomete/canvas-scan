@@ -338,6 +338,17 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
    unknowns), chart.js unchanged. 117 tests.
 4. Tracked-canvas source tokens (above) + Excalidraw re-run with action
    markers; konva workbench results must not regress.
+   **DONE 2026-07-27.** Instrumented canvases register in the build
+   registry as (canvasId + contentVersion) tokens; the version bumps at
+   window finalize unless the window provably hashed `same` (so a
+   cache canvas redrawn identically keeps consumers at `same`), on
+   resize, and conservatively for uncaptured raster activity. Untracked
+   canvases / OffscreenCanvas / video still poison; CanvasPattern stays
+   poison. Excalidraw re-run: StaticCanvas 15/17 `unknown` → 3 same /
+   14 changed / 0 unknown (zero HTMLCanvasElement poisons repo-wide;
+   the 3 `same` are real cache-recomposite candidates). Workbench gate:
+   exact baseline. 125 tests. Results:
+   `packages/dogfood/results/2026-07-27-excalidraw-after-tokens.json`.
 5. Count-only capture path + Chrome benchmark as a required release command
    (persists samples + browser/hardware metadata + pass/fail, where
    pass/fail ASSERTS the documented budgets: <1ms p95 added work and <10%

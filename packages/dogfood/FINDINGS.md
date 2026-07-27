@@ -164,6 +164,17 @@ errors.
    Untracked canvases, worker/OffscreenCanvas, and video must still poison.
    Not implemented in this run (rule: the failure is the finding).
 
+## Addendum — re-run after tracked-canvas tokens (hardening batch 4, 2026-07-27)
+
+Raw data: `results/2026-07-27-excalidraw-after-tokens.json`. StaticCanvas
+went from 2/0/15 (`HTMLCanvasElement` ×15) to **3 same / 14 changed /
+0 unknown**; NewElementCanvas from 0/0/11 to 0/10/1 (first-window only).
+Zero `HTMLCanvasElement` poisons anywhere. The 3 StaticCanvas `same`
+windows are command-identical recomposites of unchanged caches — the
+first real review candidates surfaced THROUGH a compositing layer.
+Finding 7 is resolved; the verdict below is superseded for
+cache-compositing apps.
+
 ## Verdict
 
 On the flagship real-world app, attribution and the honesty infrastructure

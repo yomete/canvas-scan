@@ -2,7 +2,11 @@ import { resolveAttribution } from './attribution';
 import { computeStatus, newWindowSignature } from './signature';
 import type { CanvasScanOptions, DrawBatchReport } from './types';
 import type { CanvasRecord } from './wrap-context';
-import { records, setWindowCaptured } from './wrap-context';
+import {
+  bumpContentVersion,
+  records,
+  setWindowCaptured,
+} from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
 
@@ -89,6 +93,16 @@ export function processRecord(
       windowIndex: currentWindowIndex,
     };
     processed = { report, shouldLog };
+  }
+
+  if (record.rasterOps > 0) {
+    // Identical captured raster streams preserve the source token; all other raster activity advances it.
+    const provablySame =
+      processed !== null && processed.report.signatureStatus === 'same';
+    if (!provablySame) {
+      record.contentVersion++;
+      bumpContentVersion(record);
+    }
   }
 
   record.sig = newWindowSignature();
