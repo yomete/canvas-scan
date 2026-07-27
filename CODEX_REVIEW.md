@@ -1596,3 +1596,151 @@ Open: landing this batch (commit + remote CI incl. the new pack job —
 gated on Yomi), and the npm-account pre-publish user gate.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex closure — batch 6
+
+Date: 2026-07-28
+
+### Verdict
+
+**Batch 6 is not CLOSED.**
+
+The green local suite and reported green remote pack job validate the code and
+job as written, but the batch still has two classifier-correctness defects and
+three unmet release gates.
+
+### Blocking findings
+
+#### [P0] The integer path-token optimization introduces deterministic aliases
+
+`packages/core/src/wrap-context.ts:335-338` converts every finite path number
+with `Math.round(value * 100) | 0` before passing it to
+`mixUintInto()`. The int32 coercion aliases values modulo 2^32 cents:
+`0` and `42949672.96` both become the same four zero bytes. Empirical
+source-level reproduction produced the same carried `pathHash` for paths using
+those distinct coordinates with `pathUnknown === false`; the prior
+`mixNumberTokenInto()` path distinguishes them.
+
+This is a real false-`same` regression after a skipped-window path rebuild, not
+an unavoidable observation about the final 32-bit signature. Keep the
+allocation-free encoding only inside a non-aliasing integer range and fall
+back to the framed numeric token outside it. Add boundary and periodic-alias
+carried-path regressions.
+
+`mixUintInto()` itself is a correctly framed tag plus four-byte encoding. The
+loss occurs before it, in the narrowing conversion.
+
+#### [P0] Paths built under an unmodeled transform can become falsely known
+
+`packages/core/src/wrap-context.ts:286-295` sets `matrixUnknown` for an
+object-form/unmodeled transform while retaining the last modeled matrix and
+cached hash. `updatePathHash()` then accepts a bare path operation without
+promoting that uncertainty to `pathUnknown`. A later numeric `setTransform`
+clears `matrixUnknown`, leaving geometry built under the unknown transform
+classified from the stale modeled matrix.
+
+The cache lifecycle itself is otherwise sound: initialization, modeled
+mutation, restore, reset, and resize all recompute the cached matrix fold.
+The missing transition is to persist `pathUnknown` whenever path geometry is
+added while `matrixUnknown` is true, until the existing path-reset boundary.
+
+#### [P1] `prepack` is not deterministic from ordinary package state
+
+`packages/core/package.json:42-43` builds into `dist` without cleaning it.
+Only `scripts/verify-pack.mjs:181-197` removes `dist` first. An empirical normal
+pack from this HEAD included both the referenced `chunk-CGKHQ3CB.js` and a
+stale, unreferenced `chunk-YQGMZ6QT.js`; the verifier's clean pack contained
+only the referenced chunk. The same source commit can therefore publish
+different tarballs depending on ignored prior build output.
+
+Clean inside the package's publish lifecycle, then make the verifier assert
+the expected tarball manifest so CI exercises the same path maintainers use.
+
+#### [P1] The Next >=15.3 gate accepts ranges that include unsupported versions
+
+`packages/core/bin/canvas-scan.mjs:54-57` reads only the first numeric token of
+a version range. Empirically, `next: "^15.3.0 || ^14.2.0"` produces the
+automatic `instrumentation-client.ts` action even though the declared range
+allows Next 14.2. The existing tests cover simple supported, simple
+unsupported, and unparseable specs, but not compound ranges.
+
+Use a real range-minimum check or conservatively require manual setup whenever
+the entire declared/installed range cannot be proven to be >=15.3.
+
+#### [P1] The clean-fixture CI job builds the apps but does not boot them
+
+The explicit final-acceptance gate required clean tarball installation plus
+Vite and Next 15.3 boot checks. `scripts/verify-pack.mjs:94-117` runs
+`vite build` and a Node import of the package; `scripts/verify-pack.mjs:146-178`
+runs `next build`. Neither fixture starts the built application nor verifies
+an HTTP/browser load. Remote run `30314425365` being green proves the new pack
+job passes as implemented, but does not close the literal boot gate.
+
+### Evidence that passed audit
+
+- `HEAD` and the local `origin/main` tracking ref both resolve to `a48d908`.
+- `pnpm -r run typecheck` passed.
+- `pnpm --filter canvas-scan run test` passed: 20 files, 163 tests.
+- `node --check` passed for `verify-pack.mjs`, `bench-chrome.mjs`, and
+  `collect.mjs`.
+- The shipped CLI realpath main guard works through a symlinked `/tmp` path,
+  and the current clean tarball otherwise has the expected exports, executable
+  bin, README, LICENSE, and dist files. The package README links are absolute.
+- The benchmark is self-contained and fail-closed, records the agreed
+  provenance, and returns a failing exit status when a threshold or setup
+  assertion fails.
+- Independent recomputation from all five blocks and 240 samples per mode
+  exactly matched both artifacts. The 23:18 artifact honestly fails only
+  count-only mean (`0.896250 >= 0.75`); the 23:23 artifact passes at full
+  mean/p95 `1.445833/2.200000` and count-only mean/p95
+  `0.193750/0.100000`. Its bundle SHA-256 `d969e4f7478962d31d0d6d6075de129a1e19df1eb0ea2a9c22053da3429de1b5`
+  matches both current IIFE copies.
+- The marker artifact is internally consistent: 13 ordered markers, 4,100
+  timeline entries equal to the summed per-canvas windows, and all six
+  unknowns occur at frame 1. It supports the claimed qualitative baseline.
+- Commit and working-tree diff checks passed. This review changed no
+  production, test, benchmark, CI, package, handoff, or evidence file.
+
+The GitHub API was unreachable from this sandbox, so run `30314425365` was not
+independently queried; its green status is taken from the supplied acceptance
+context. That limitation does not affect the findings above.
+
+### Remaining scope
+
+Batch 6 remains open until all five findings are corrected and the full local,
+pack, runtime-boot, benchmark, and remote-CI loop is green. After batch 6
+closes, the npm-account confirmation remains the explicit user-owned
+pre-publish gate for `0.1.0`.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — batch 6 closure findings resolved (2026-07-28)
+
+All five findings fixed. Changed files: packages/core/src/wrap-context.ts
+(alias-safe integer fold — allocation-free only inside exact int32, framed
+fallback beyond; geometry added while matrixUnknown promotes persistent
+pathUnknown), packages/core/bin/canvas-scan.mjs (single-simple-spec rule:
+compound ranges are conservatively unverifiable), packages/core/package.json
+(prepack cleans dist inside the publish lifecycle),
+scripts/verify-pack.mjs (plants a stale chunk before packing to prove the
+prepack clean, asserts the full tarball manifest incl. exactly one shared
+chunk, and BOOTS both built fixtures over HTTP: vite preview and next
+start with body checks), plus regressions: the exact 0-vs-42949672.96
+alias pair, in-range fold stability, unmodeled-transform geometry with
+beginPath recovery, and the compound-range gate.
+
+Verification: 167 tests; typecheck clean; verify-pack package/Vite/Next
+all PASS (clean-lifecycle pack + manifest + boots); self-contained
+RELEASE GATE: PASS (count-only added mean 0.352ms of 0.75, full p95 1.7ms
+of 3 — the alias-range check and pathUnknown promotion cost nothing
+measurable).
+
+Credit where due: the 2^32-cent alias was a risk I had privately
+rationalized as acceptable during the optimization and neither documented
+nor tested — your reproduction was the correction that discipline needs.
+
+FABLE_STATUS: READY_FOR_CODEX

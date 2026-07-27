@@ -52,9 +52,16 @@ function installCommand(dir, dependencies) {
 }
 
 function minimumNextVersion(spec) {
-  const match = spec.replace(/^[\s^~>=v]+/i, '').match(/^(\d+)(?:\.(\d+))?/);
-  if (!match) return null;
-  return { major: Number(match[1]), minor: Number(match[2] ?? 0) };
+  // Only a SINGLE simple spec is verifiable; compound ranges (||, hyphen
+  // ranges, space-separated comparators) can admit versions below the
+  // first token's minimum, so they are conservatively unverifiable.
+  const single = spec.trim().match(/^[\^~]?(?:>=)?v?(\d+)(?:\.(\d+|x|\*))?(?:\.[\w.*+-]+)?$/i);
+  if (!single) return null;
+  const minor = single[2];
+  return {
+    major: Number(single[1]),
+    minor: minor === undefined || minor === 'x' || minor === '*' ? 0 : Number(minor),
+  };
 }
 
 function nextManualInstructions(spec, unparseable) {

@@ -333,9 +333,16 @@ function mixPathValue(
   value: unknown,
 ): number {
   if (typeof value === 'number') {
-    return Number.isFinite(value)
-      ? mixUintInto(hash, Math.round(value * 100) | 0)
-      : mixNumberTokenInto(hash, value);
+    if (Number.isFinite(value)) {
+      const cents = Math.round(value * 100);
+      // The allocation-free fold is exact only inside int32; beyond it the
+      // |0 narrowing aliases values 2^32 cents apart (Codex reproduction:
+      // 0 vs 42949672.96) — fall back to the framed token there.
+      return cents >= -0x80000000 && cents <= 0x7fffffff
+        ? mixUintInto(hash, cents | 0)
+        : mixNumberTokenInto(hash, value);
+    }
+    return mixNumberTokenInto(hash, value);
   }
   if (typeof value !== 'object' || value === null) {
     // Non-number primitives coerce deterministically, so they stay
@@ -391,6 +398,9 @@ function updatePathHash(
   name: string,
   args: unknown[],
 ): void {
+  // Geometry added while the CTM is unmodeled stays unmodeled even after a
+  // later numeric setTransform clears matrixUnknown.
+  if (record.matrixUnknown) record.pathUnknown = true;
   let hash = mixTokenInto(record.pathHash, 'C', name);
   for (const arg of args) {
     hash = mixPathValue(record, hash, arg);

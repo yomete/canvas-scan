@@ -44,10 +44,12 @@ class FakeContext {
   drawImage(..._args: unknown[]) {}
   roundRect(..._args: unknown[]) {}
   translate(..._args: unknown[]) {}
+  setTransform(..._args: unknown[]) {}
   resetTransform() {}
   beginPath() {}
   closePath() {}
   moveTo(..._args: unknown[]) {}
+  lineTo(..._args: unknown[]) {}
   rect(..._args: unknown[]) {}
   fill(..._args: unknown[]) {}
   stroke(..._args: unknown[]) {}
@@ -751,5 +753,55 @@ describe('post-review patch 3: shadowed getters, inherited indices, safe travers
     expect(reads).toBe(readsBeforeFinish);
     expect(report?.signatureStatus).toBe('unknown');
     expect(record.pathUnknown).toBe(true);
+  });
+});
+
+describe('post-review patch 4: integer aliasing, unmodeled-transform geometry', () => {
+  function carriedRectFill(x: number) {
+    const { context, record } = makeCanvas();
+    setWindowCaptured(false);
+    context.beginPath();
+    context.rect(x, 0, 10, 10);
+    finish(record, 1, 2);
+    setWindowCaptured(true);
+    context.fill();
+    finish(record, 2, 2);
+    return record;
+  }
+
+  it('does not alias path coordinates 2^32 cents apart', () => {
+    const zero = carriedRectFill(0);
+    const aliased = carriedRectFill(42949672.96);
+    expect(zero.pathUnknown).toBe(false);
+    expect(aliased.pathUnknown).toBe(false);
+    expect(zero.prev?.hash).not.toBe(aliased.prev?.hash);
+  });
+
+  it('keeps in-range integer folding stable across identical rebuilds', () => {
+    const first = carriedRectFill(12345.67);
+    const second = carriedRectFill(12345.67);
+    expect(first.prev?.hash).toBe(second.prev?.hash);
+  });
+
+  it('marks geometry built under an unmodeled transform as path-unmodeled', () => {
+    const { context, record } = makeCanvas();
+    (<any>context).setTransform({});
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(10, 10);
+    (<any>context).setTransform(1, 0, 0, 1, 0, 0);
+    context.fill();
+    finish(record, 1);
+    context.fill();
+    expect(finish(record, 2)?.unknownReason).toBe('path-unmodeled');
+
+    context.beginPath();
+    context.rect(0, 0, 5, 5);
+    context.fill();
+    finish(record, 3);
+    context.fill();
+    finish(record, 4);
+    context.fill();
+    expect(finish(record, 5)?.signatureStatus).toBe('same');
   });
 });

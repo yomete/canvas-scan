@@ -154,3 +154,22 @@ describe('canvas-scan init CLI', () => {
     );
   });
 });
+
+describe('next compound-range gate', () => {
+  it('treats compound ranges as unverifiable', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { planInit } = await import('../bin/canvas-scan.mjs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-range-'));
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({
+        dependencies: { next: '^15.3.0 || ^14.2.0', 'canvas-scan': '*' },
+      }),
+    );
+    const plan = planInit(dir);
+    expect(plan.action.kind).toBe('manual');
+    expect(plan.instructions).toContain('could not verify');
+  });
+});

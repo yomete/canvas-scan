@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,13 +26,75 @@ function run(command, args, cwd) {
   }
 }
 
+async function withServer(command, args, cwd, url, check) {
+  const server = spawn(command, args, { cwd, stdio: 'inherit', detached: true });
+  try {
+    const deadline = Date.now() + 120_000;
+    let last;
+    while (Date.now() < deadline) {
+      if (server.exitCode != null) {
+        throw new Error(`server exited early: ${server.exitCode}`);
+      }
+      try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+        if (response.status === 200) {
+          const body = await response.text();
+          check(body);
+          return;
+        }
+        last = `status ${response.status}`;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`server did not answer 200 within 120s (${last})`);
+  } finally {
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      process.kill(-server.pid, 'SIGKILL');
+    } catch {}
+  }
+}
+
+const MANIFEST_ALLOW = [
+  /^package\/package\.json$/,
+  /^package\/README\.md$/,
+  /^package\/LICENSE$/,
+  /^package\/bin\/canvas-scan\.mjs$/,
+  /^package\/dist\/index\.js$/,
+  /^package\/dist\/auto\.js$/,
+  /^package\/dist\/canvas-scan\.iife\.js$/,
+  /^package\/dist\/chunk-[A-Z0-9]+\.js$/,
+  /^package\/dist\/[\w-]+\.d\.ts$/,
+];
+
+function assertManifest(tarball) {
+  const listing = spawnSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
+  if (listing.status !== 0) throw new Error('could not list tarball');
+  const entries = listing.stdout.trim().split('\n');
+  const unexpected = entries.filter(
+    (entry) => !MANIFEST_ALLOW.some((pattern) => pattern.test(entry)),
+  );
+  if (unexpected.length > 0) {
+    throw new Error(`unexpected tarball entries: ${unexpected.join(', ')}`);
+  }
+  const chunks = entries.filter((entry) => /dist\/chunk-/.test(entry));
+  if (chunks.length !== 1) {
+    throw new Error(`expected exactly one shared chunk, found: ${chunks.join(', ') || 'none'}`);
+  }
+}
+
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function verify(name, fn) {
+async function verify(name, fn) {
   try {
-    fn();
+    await fn();
     summaries.push({ name, status: 'PASS' });
     console.log(`\n${name}: PASS`);
     return true;
@@ -54,7 +116,7 @@ function installedBin(fixture) {
   );
 }
 
-function verifyVite(tarball) {
+async function verifyVite(tarball) {
   const fixture = path.join(temporaryRoot, 'vite-fixture');
   fs.mkdirSync(path.join(fixture, 'src'), { recursive: true });
   writeJson(path.join(fixture, 'package.json'), {
@@ -115,9 +177,18 @@ createRoot(document.getElementById('root')).render(
     ],
     fixture,
   );
+  await withServer(
+    'npx',
+    ['vite', 'preview', '--port', '4381', '--strictPort'],
+    fixture,
+    'http://localhost:4381/',
+    (body) => {
+      if (!body.includes('id="root"')) throw new Error('vite preview served unexpected body');
+    },
+  );
 }
 
-function verifyNext(tarball) {
+async function verifyNext(tarball) {
   const fixture = path.join(temporaryRoot, 'next-fixture');
   fs.mkdirSync(path.join(fixture, 'app'), { recursive: true });
   writeJson(path.join(fixture, 'package.json'), {
@@ -176,14 +247,28 @@ function verifyNext(tarball) {
   }
 
   run('npx', ['next', 'build'], fixture);
+  await withServer(
+    'npx',
+    ['next', 'start', '-p', '4382'],
+    fixture,
+    'http://localhost:4382/',
+    (body) => {
+      if (!body.includes('canvas-scan package verification')) {
+        throw new Error('next start served unexpected body');
+      }
+    },
+  );
 }
 
 let tarball = null;
 try {
   const packDirectory = path.join(temporaryRoot, 'pack');
   fs.mkdirSync(packDirectory);
-  const packed = verify('package', () => {
-    fs.rmSync(path.join(packageDir, 'dist'), { recursive: true, force: true });
+  const packed = await verify('package', () => {
+    // Deliberately dirty: prepack must clean stale build output itself so
+    // this exercises the exact lifecycle maintainers use to publish.
+    fs.mkdirSync(path.join(packageDir, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packageDir, 'dist/chunk-STALE00.js'), '// stale\n');
     run(
       'pnpm',
       [
@@ -203,11 +288,12 @@ try {
       throw new Error(`expected one tarball, found ${tarballs.length}`);
     }
     tarball = path.join(packDirectory, tarballs[0]);
+    assertManifest(tarball);
   });
 
   if (packed) {
-    verify('Vite fixture', () => verifyVite(tarball));
-    verify('Next fixture', () => verifyNext(tarball));
+    await verify('Vite fixture', () => verifyVite(tarball));
+    await verify('Next fixture', () => verifyNext(tarball));
   } else {
     summaries.push({
       name: 'Vite fixture',

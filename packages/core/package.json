@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "esbuild src/index.ts src/auto.ts --bundle --splitting --format=esm --outdir=dist --external:bippy && esbuild src/auto.ts --bundle --format=iife --outfile=dist/canvas-scan.iife.js --minify && tsc -p tsconfig.build.json",
-    "prepack": "pnpm run build",
+    "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && pnpm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
