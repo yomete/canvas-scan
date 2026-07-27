@@ -462,13 +462,16 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       if (!record || killed) return original.apply(this, args);
 
       const firstActivity = !record.activeInWindow;
-      const start = performance.now();
+      // Uncaptured windows discard selfTimeMs at reset, so skip the two
+      // performance.now() calls there — they dominate count-only overhead.
+      const timed = windowCaptured;
+      const start = timed ? performance.now() : 0;
       let result: unknown;
       try {
         result = original.apply(this, args);
         return result;
       } finally {
-        record.selfTimeMs += performance.now() - start;
+        if (timed) record.selfTimeMs += performance.now() - start;
         record.activeInWindow = true;
         if (RASTER_OPS.has(name)) record.rasterOps++;
         const headEntries =

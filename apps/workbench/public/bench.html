@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>canvas-scan bench</title>
+<script>
+  const params = new URLSearchParams(location.search);
+  const mode = params.get('mode') ?? 'off';
+  // passthrough must NOT load canvas-scan: it measures the floor cost of an
+  // empty wrapper alone (first bench run conflated the two — Codex catch).
+  if (mode !== 'off' && mode !== 'passthrough') {
+    window.__CANVAS_SCAN_OPTS = {
+      overlay: false,
+      captureEvery: mode === 'countonly' ? 1e9 : 1,
+    };
+    document.write('<script src="/canvas-scan.iife.js"><\/script>');
+  }
+</script>
+<canvas id="bench" width="800" height="600"></canvas>
+<script>
+  const ops = Number(new URLSearchParams(location.search).get('ops') ?? 1000);
+  // Evidence mode: a do-nothing wrapper around every method the bench uses,
+  // no canvas-scan at all — the floor cost ANY prototype-wrapping tool pays.
+  if (new URLSearchParams(location.search).get('mode') === 'passthrough') {
+    const proto = CanvasRenderingContext2D.prototype;
+    for (const m of ['clearRect', 'fillRect', 'strokeRect', 'beginPath', 'arc', 'fill', 'moveTo', 'lineTo', 'closePath', 'stroke']) {
+      const orig = proto[m];
+      proto[m] = function (...a) {
+        return orig.apply(this, a);
+      };
+    }
+  }
+  const FRAMES = 240;
+  const WARMUP = 30;
+  const ctx = document.getElementById('bench').getContext('2d');
+  const frames = [];
+  let n = 0;
+  function frame() {
+    const t0 = performance.now();
+    ctx.clearRect(0, 0, 800, 600);
+    ctx.fillStyle = '#3b82f6';
+    // Mixed realistic ops: a slowdown budget against a stream of 0.1µs
+    // 8x8 fillRects punishes any instrumentation regardless of quality;
+    // real draw streams mix fills, arcs, strokes, and paths.
+    for (let i = 0; i < ops; i++) {
+      const x = (i * 7) % 760;
+      const y = (i * 13) % 560;
+      const kind = i & 3;
+      if (kind === 0) {
+        ctx.fillRect(x, y, 40, 30);
+      } else if (kind === 1) {
+        ctx.beginPath();
+        ctx.arc(x + 20, y + 15, 12, 0, 6.283185);
+        ctx.fill();
+      } else if (kind === 2) {
+        ctx.strokeRect(x, y, 36, 26);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 30, y + 20);
+        ctx.lineTo(x + 5, y + 28);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    frames.push(performance.now() - t0);
+    n++;
+    if (n < FRAMES + WARMUP) requestAnimationFrame(frame);
+    else window.__BENCH = { done: true, frames: frames.slice(WARMUP) };
+  }
+  requestAnimationFrame(frame);
+</script>

@@ -280,6 +280,29 @@ via one script tag.
 
 ## Hardening queue (agreed in the 2026-07-27 cross-review with Codex)
 
+**REOPENED (post-batch-4 Codex review — see CODEX_REVIEW.md "implementation
+progress review" + Fable response): batches 3 and 4 are NOT
+classifier-trust complete.** Process rule adopted: correctness batches
+close only when the review's adversarial cases pass, not on happy-path
+tests + dogfood baseline. Remediation batch 3R/4R (before batch 6):
+
+- P0 same-frame token staleness → dirty-marker tokens (`vN+dirty` while
+  the source window is unfinalized with raster activity).
+- P0 path-hash framing → shared framed-token encoder (same defect as
+  batch 2, reintroduced in the batch 3 plan; helper makes a third
+  occurrence impossible).
+- P0 skipped `setLineDash` / `closePath` → persistent line-dash prop +
+  closePath in the framed path-op set, captureEvery:2 tests.
+- High save/restore props → undo-log per stack frame (not Map copies —
+  konva saves per shape); fakes gain real save/restore.
+- High mid-window gradient mutation → dependent tracking, poison
+  dependents' current window ('gradient-mutated').
+- High token identity (internal serial, never DOM id), ctx.reset() bumps
+  content version, untracked clip → persistent uncertainty.
+- Evidence: collect.mjs marker/timeline mode; per-batch workbench
+  artifacts; bench provenance (git SHA, bundle hash, thresholds) + fully
+  self-contained bench command (build → copy → serve → run → teardown).
+
 Codex's progress review found two P0 classifier-trust defects; the full
 exchange (findings, my verified responses, the sampling-contract decision)
 is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
@@ -356,6 +379,22 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
    not to CI); the Node overhead test stays a generous tripwire. Overlay
    `same` flashes weighted by rasterOperationCount land here (behavioral
    tuning, kept out of batch 1 by agreement).
+   **DONE 2026-07-27, budgets revised by cross-review (see
+   CODEX_REVIEW.md "Budget-revision round").** The original <10% slowdown
+   budget proved structurally impossible (enqueue-only denominator ⇒
+   ~8ns/call). Agreed absolute gates, median across five order-rotated
+   blocks at 1,000 iterations: full added mean <2ms ✓ (~1.54), full added
+   p95 <3ms (STRADDLES the limit run-to-run — met without margin;
+   capture-path allocation optimization is the follow-up before 0.1.0),
+   count-only added mean <0.75ms ✓ (~0.38), count-only added p95 <2ms ✓
+   (~1.0). Run it: `pnpm --filter dogfood run bench:chrome` against the
+   workbench server (serves bench.html); results persist uniquely-stamped
+   with browser/hardware metadata + an isolated empty-wrapper floor
+   (~0.02ms — wrapper indirection is free; capture work is the cost).
+   Count-only windows no longer pay performance.now() (selfTime is
+   discarded there anyway). Overlay flashes now require
+   rasterOperationCount >= 2 (configurable: `minFlashRasterOps`);
+   script-tag config via `window.__CANVAS_SCAN_OPTS`. 129 tests.
 6. Release hardening: prepack build, pack-from-clean CI, tarball install
    into clean Vite + Next 15.3 fixtures, CLI prints the required install
    command, Next path version-gated to >= 15.3.

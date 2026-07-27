@@ -163,4 +163,39 @@ describe('overlay', () => {
     expect(host?.isConnected).toBe(true);
     expect(document.querySelector('[data-canvas-scan]')).toBe(host);
   });
+
+  it('counts a one-op same window without outlining it by default', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    const host = document.querySelector('[data-canvas-scan]');
+
+    emitReport(makeReport({ rasterOperationCount: 1 }), canvas);
+
+    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
+    expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
+      '1 review candidates',
+    );
+  });
+
+  it('outlines a two-op same window by default', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    const host = document.querySelector('[data-canvas-scan]');
+
+    emitReport(makeReport({ rasterOperationCount: 2 }), canvas);
+
+    expect(host?.shadowRoot?.querySelector('.outline')).not.toBeNull();
+  });
+
+  it('uses the configured minimum raster operations for outlines', () => {
+    mountOverlay({ minFlashRasterOps: 5 });
+    const canvas = makeCanvas();
+    const host = document.querySelector('[data-canvas-scan]');
+
+    emitReport(makeReport({ rasterOperationCount: 4 }), canvas);
+    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
+
+    emitReport(makeReport({ rasterOperationCount: 5 }), canvas);
+    expect(host?.shadowRoot?.querySelector('.outline')).not.toBeNull();
+  });
 });

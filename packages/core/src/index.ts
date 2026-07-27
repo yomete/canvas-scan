@@ -17,7 +17,7 @@ export function start(options: CanvasScanOptions = {}): void {
   installPath2DPatch();
   if (options.skipOwners?.length) addSkippedOwners(options.skipOwners);
   startFrameLoop(options);
-  if (options.overlay !== false) mountOverlay();
+  if (options.overlay !== false) mountOverlay(options);
   (window as any).__CANVAS_SCAN__ = {
     version: '0.0.0',
     getReports: () => Object.fromEntries(latestReports),

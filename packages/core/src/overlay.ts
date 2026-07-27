@@ -1,5 +1,5 @@
 import { subscribeToReports } from './frame-loop';
-import type { DrawBatchReport } from './types';
+import type { CanvasScanOptions, DrawBatchReport } from './types';
 
 const stats = new Map<
   string,
@@ -18,6 +18,7 @@ let hud: HTMLDivElement | null = null;
 let hudText: Text | null = null;
 let hudList: HTMLUListElement | null = null;
 let lastHudListUpdate = -Infinity;
+let minFlashRasterOps = 2;
 let survivalInterval: number | null = null;
 let unsubscribe: (() => void) | null = null;
 
@@ -136,14 +137,17 @@ function handleReport(report: DrawBatchReport, canvas: unknown): void {
 
   if (
     report.signatureStatus === 'same' &&
+    // 1-op `same` windows (mount double-draws, wake-up repaints) are noise next to multi-op redraw candidates — Excalidraw dogfood finding 4.
+    report.rasterOperationCount >= minFlashRasterOps &&
     canvas instanceof Element
   ) {
     flashOutline(report, canvas, canvasStats.same);
   }
 }
 
-export function mountOverlay(): void {
+export function mountOverlay(options: CanvasScanOptions = {}): void {
   if (typeof document === 'undefined' || host) return;
+  minFlashRasterOps = options.minFlashRasterOps ?? 2;
 
   // Keep overlay rendering DOM-only so it is never captured by canvas instrumentation.
   host = document.createElement('div');
@@ -189,4 +193,5 @@ export function unmountOverlay(): void {
   outlines.clear();
   stats.clear();
   lastHudListUpdate = -Infinity;
+  minFlashRasterOps = 2;
 }
