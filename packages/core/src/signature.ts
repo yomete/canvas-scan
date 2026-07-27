@@ -19,25 +19,42 @@ const UNKNOWN_SOURCES = new Set([
   'Path2D',
 ]);
 
-function mixRaw(sig: WindowSignature, text: string) {
+export function fnvStep(hash: number, text: string): number {
   for (let index = 0; index < text.length; index++) {
-    sig.hash = Math.imul(sig.hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
+    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
   }
+  return hash;
+}
+
+export function mixTokenInto(
+  hash: number,
+  tag: string,
+  body: string,
+): number {
+  hash = fnvStep(hash, tag);
+  hash = fnvStep(hash, String(body.length));
+  hash = fnvStep(hash, ':');
+  return fnvStep(hash, body);
+}
+
+export function mixNumberTokenInto(hash: number, value: number): number {
+  const quantized = Number.isFinite(value)
+    ? Math.round(value * 100) / 100
+    : value;
+  return mixTokenInto(hash, 'n', String(quantized));
+}
+
+function mixRaw(sig: WindowSignature, text: string) {
+  sig.hash = fnvStep(sig.hash, text);
 }
 
 // Known one-char tags and length-prefixed bodies make the token stream uniquely decodable.
 function mixToken(sig: WindowSignature, tag: string, body: string): void {
-  mixRaw(sig, tag);
-  mixRaw(sig, String(body.length));
-  mixRaw(sig, ':');
-  mixRaw(sig, body);
+  sig.hash = mixTokenInto(sig.hash, tag, body);
 }
 
 function mixNumber(sig: WindowSignature, value: number) {
-  const quantized = Number.isFinite(value)
-    ? Math.round(value * 100) / 100
-    : value;
-  mixToken(sig, 'n', String(quantized));
+  sig.hash = mixNumberTokenInto(sig.hash, value);
 }
 
 function mixValue(sig: WindowSignature, value: unknown) {
@@ -68,12 +85,24 @@ function mixValue(sig: WindowSignature, value: unknown) {
 
   if (Array.isArray(value)) {
     mixToken(sig, 'A', String(value.length));
-    for (const item of value) {
-      if (typeof item !== 'number') {
+    // Descriptor reads only: iterating or indexing the app's array would
+    // invoke accessors/custom iterators — observable behavior the native
+    // call may not perform, and a source of model/native divergence.
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, index);
+      if (!descriptor) {
+        markUnknown(sig, 'array-hole');
+        return;
+      }
+      if (!('value' in descriptor)) {
+        markUnknown(sig, 'array-accessor');
+        return;
+      }
+      if (typeof descriptor.value !== 'number') {
         markUnknown(sig, 'array-element');
         return;
       }
-      mixNumber(sig, item);
+      mixNumber(sig, descriptor.value);
     }
     return;
   }

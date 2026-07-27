@@ -45,6 +45,7 @@ class CanvasPattern {}
 
 class FakeContext {
   private values = new Map<string, unknown>();
+  private stateStack: Array<Map<string, unknown>> = [];
   declare fillStyle: unknown;
   declare filter: unknown;
 
@@ -57,8 +58,13 @@ class FakeContext {
   }
 
   fillRect(..._args: unknown[]) {}
-  save() {}
-  restore() {}
+  save() {
+    this.stateStack.push(new Map(this.values));
+  }
+  restore() {
+    const values = this.stateStack.pop();
+    if (values) this.values = values;
+  }
   translate(..._args: unknown[]) {}
   rotate(..._args: unknown[]) {}
   scale(..._args: unknown[]) {}
@@ -74,6 +80,7 @@ class FakeContext {
 
   reset() {
     this.values.clear();
+    this.stateStack = [];
   }
 
   createLinearGradient(..._args: unknown[]) {
@@ -182,7 +189,22 @@ describe('persistent context state', () => {
     context.fillRect(0, 0, 10, 10);
 
     expect(record.sig.hash).not.toBe(hashBeforeMutation);
-    expect(finish(record, 3)?.signatureStatus).toBe('changed');
+    expect(finish(record, 3)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'gradient-mutated',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'previous-window',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 5)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
   });
 
   it('keeps a persistent CanvasPattern unknown in later windows', () => {

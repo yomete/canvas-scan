@@ -95,10 +95,13 @@ describe('canvas patch hardening', () => {
     record.matrixUnknown = true;
     record.pathHash = 1;
     record.clipHash = 2;
+    record.clipUnknown = true;
     record.stateStack.push({
       matrix: [1, 0, 0, 1, 0, 0],
       matrixUnknown: false,
       clipHash: 0x811c9dc5,
+      clipUnknown: false,
+      undo: [],
     });
     canvas.width = 300;
 
@@ -111,6 +114,7 @@ describe('canvas patch hardening', () => {
     expect(record.matrixUnknown).toBe(false);
     expect(record.pathHash).toBe(0x811c9dc5);
     expect(record.clipHash).toBe(0x811c9dc5);
+    expect(record.clipUnknown).toBe(false);
     expect(record.stateStack).toEqual([]);
   });
 

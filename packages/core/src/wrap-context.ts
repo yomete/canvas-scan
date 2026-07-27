@@ -4,6 +4,8 @@ import {
   captureOp,
   captureSet,
   markUnknown,
+  mixNumberTokenInto,
+  mixTokenInto,
   newWindowSignature,
 } from './signature';
 import type {
@@ -19,9 +21,11 @@ export interface PatchTargets {
 
 export interface CanvasRecord {
   canvas: any;
+  contentDirty: boolean;
   contentSig: WindowSignature;
   contentVersion: number;
   id: string;
+  serial: number;
   sig: WindowSignature;
   rasterOps: number;
   selfTimeMs: number;
@@ -36,11 +40,15 @@ export interface CanvasRecord {
   matrix: [number, number, number, number, number, number];
   matrixUnknown: boolean;
   pathHash: number;
+  pathUnknown: boolean;
   clipHash: number;
+  clipUnknown: boolean;
   stateStack: Array<{
     matrix: CanvasRecord['matrix'];
     matrixUnknown: boolean;
     clipHash: number;
+    clipUnknown: boolean;
+    undo: Array<[name: string, prev: unknown, existed: boolean]>;
   }>;
 }
 
@@ -97,6 +105,7 @@ const RASTER_OPS = new Set([
   'stroke',
 ]);
 const BARE_PATH_OPS = new Set([
+  'closePath',
   'moveTo',
   'lineTo',
   'bezierCurveTo',
@@ -140,11 +149,17 @@ export const records = new Set<CanvasRecord>();
 
 const recordByCanvas = new WeakMap<object, CanvasRecord>();
 const recordByContext = new WeakMap<object, CanvasRecord>();
+const gradientDependents = new WeakMap<object, Set<CanvasRecord>>();
 
 let installed = false;
 let killed = false;
 let nextCanvasId = 1;
+let nextCanvasSerial = 1;
 let windowCaptured = true;
+// Captured at install time: instance-level shadowing of getLineDash must
+// never be invoked by the tracer (a Chrome probe showed a shadowed getter
+// returning [] while native state was [5, 5]).
+let nativeGetLineDash: ((this: any) => unknown) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
@@ -156,18 +171,11 @@ function quantize(value: number): number {
     : value;
 }
 
-function mixIntoHash(hash: number, text: string): number {
-  for (let index = 0; index < text.length; index++) {
-    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0;
-  }
-  return hash;
-}
-
-export function bumpContentVersion(record: CanvasRecord): void {
-  record.contentSig.hash = 0x811c9dc5;
-  record.contentSig.hash = mixIntoHash(
-    record.contentSig.hash,
-    `${record.id}#${record.contentVersion}`,
+export function refreshContentToken(record: CanvasRecord): void {
+  record.contentSig.hash = mixTokenInto(
+    mixTokenInto(0x811c9dc5, 'K', String(record.serial)),
+    'v',
+    `${record.contentVersion}${record.contentDirty ? '+dirty' : ''}`,
   );
 }
 
@@ -184,7 +192,12 @@ function headState(record: CanvasRecord) {
   entries.push(['__matrix', record.matrix.map(quantize)]);
   entries.push(['__path', record.pathHash]);
   entries.push(['__clip', record.clipHash]);
-  return { entries, matrixUnknown: record.matrixUnknown };
+  return {
+    entries,
+    matrixUnknown: record.matrixUnknown,
+    clipUnknown: record.clipUnknown,
+    pathUnknown: record.pathUnknown,
+  };
 }
 
 function clearPersistentState(record: CanvasRecord): void {
@@ -192,8 +205,23 @@ function clearPersistentState(record: CanvasRecord): void {
   record.matrix = [1, 0, 0, 1, 0, 0];
   record.matrixUnknown = false;
   record.pathHash = 0x811c9dc5;
+  record.pathUnknown = false;
   record.clipHash = 0x811c9dc5;
+  record.clipUnknown = false;
   record.stateStack.length = 0;
+}
+
+function setProp(
+  record: CanvasRecord,
+  name: string,
+  value: unknown,
+): void {
+  const frame = record.stateStack.at(-1);
+  if (frame) {
+    // Konva saves/restores per shape, so undo logs stay O(mutations) instead of O(props).
+    frame.undo.push([name, record.props.get(name), record.props.has(name)]);
+  }
+  record.props.set(name, value);
 }
 
 function finiteArgs(args: unknown[], count: number): number[] | null {
@@ -276,21 +304,73 @@ function updateMatrix(
   return true;
 }
 
+function mixPathValue(
+  record: CanvasRecord,
+  hash: number,
+  value: unknown,
+): number {
+  if (typeof value === 'number') return mixNumberTokenInto(hash, value);
+  if (typeof value !== 'object' || value === null) {
+    // Non-number primitives coerce deterministically, so they stay
+    // classifiable — type-tagged, never pathUnknown.
+    return mixTokenInto(hash, 'p', `${typeof value}:${String(value)}`);
+  }
+  // Objects are only modeled from own DATA properties read via descriptors:
+  // accessor-backed inputs can answer native conversion and the tracer
+  // differently, and property reads here would be observable app behavior.
+  if (Array.isArray(value)) {
+    hash = mixTokenInto(hash, 'A', String(value.length));
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, index);
+      if (!descriptor) {
+        // A hole: Web IDL conversion reads INHERITED indices (Chrome probe:
+        // a prototype getter supplied radius 40) — the model cannot.
+        record.pathUnknown = true;
+        return mixTokenInto(hash, '?', 'hole');
+      }
+      if (!('value' in descriptor)) {
+        record.pathUnknown = true;
+        return mixTokenInto(hash, '?', 'accessor');
+      }
+      hash = mixPathValue(record, hash, descriptor.value);
+    }
+    return hash;
+  }
+  const point: Partial<Record<'x' | 'y' | 'z' | 'w', unknown>> = {};
+  for (const key of ['x', 'y', 'z', 'w'] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) {
+      record.pathUnknown = true;
+      return mixTokenInto(hash, '?', 'accessor');
+    }
+    point[key] = descriptor.value;
+  }
+  if (typeof point.x === 'number' && typeof point.y === 'number') {
+    hash = mixTokenInto(hash, 'P', '');
+    hash = mixNumberTokenInto(hash, point.x);
+    hash = mixNumberTokenInto(hash, point.y);
+    hash = mixNumberTokenInto(hash, typeof point.z === 'number' ? point.z : 0);
+    hash = mixNumberTokenInto(hash, typeof point.w === 'number' ? point.w : 1);
+    return hash;
+  }
+  // Unmodelable path input: persist uncertainty instead of hashing a type tag.
+  record.pathUnknown = true;
+  return mixTokenInto(hash, '?', typeof value);
+}
+
 function updatePathHash(
   record: CanvasRecord,
   name: string,
   args: unknown[],
 ): void {
-  let hash = mixIntoHash(record.pathHash, name);
+  let hash = mixTokenInto(record.pathHash, 'C', name);
   for (const arg of args) {
-    hash = mixIntoHash(
-      hash,
-      typeof arg === 'number' ? String(quantize(arg)) : '?',
-    );
+    hash = mixPathValue(record, hash, arg);
   }
   // Canvas path points are transformed when they are added, not when they are drawn.
   for (const value of record.matrix) {
-    hash = mixIntoHash(hash, String(quantize(value)));
+    hash = mixNumberTokenInto(hash, value);
   }
   record.pathHash = hash;
 }
@@ -298,20 +378,31 @@ function updatePathHash(
 function updateClipHash(record: CanvasRecord, args: unknown[]): void {
   const pathArg = hasPath2DArgument(args) ? <object>args[0] : null;
   const build = pathArg ? getBuildSignature(pathArg) : undefined;
-  const pathHash = pathArg
-    ? String(build?.hash ?? 'untracked')
-    : String(record.pathHash);
+  if (pathArg && (!build || build.unknown)) record.clipUnknown = true;
+  if (!pathArg && record.pathUnknown) record.clipUnknown = true;
+  const pathHash = pathArg && build ? build.hash : record.pathHash;
   const fillRule = String(args[pathArg ? 1 : 0] ?? 'nonzero');
-  record.clipHash = mixIntoHash(
-    mixIntoHash(record.clipHash, pathHash),
+  let hash = mixTokenInto(
+    mixTokenInto(record.clipHash, 'Q', String(pathHash)),
+    's',
     fillRule,
   );
+  if (pathArg) {
+    // Path2D clip geometry depends on the CTM at clip time; bare paths bake
+    // the CTM at build time instead.
+    if (record.matrixUnknown) record.clipUnknown = true;
+    for (const value of record.matrix) {
+      hash = mixNumberTokenInto(hash, value);
+    }
+  }
+  record.clipHash = hash;
 }
 
 function updateMethodState(
   record: CanvasRecord,
   name: string,
   args: unknown[],
+  context?: any,
 ): void {
   if (updateMatrix(record, name, args)) {
     return;
@@ -321,6 +412,8 @@ function updateMethodState(
       matrix: <CanvasRecord['matrix']>[...record.matrix],
       matrixUnknown: record.matrixUnknown,
       clipHash: record.clipHash,
+      clipUnknown: record.clipUnknown,
+      undo: [],
     });
   } else if (name === 'restore') {
     const state = record.stateStack.pop();
@@ -328,15 +421,38 @@ function updateMethodState(
       record.matrix = state.matrix;
       record.matrixUnknown = state.matrixUnknown;
       record.clipHash = state.clipHash;
+      record.clipUnknown = state.clipUnknown;
+      for (let index = state.undo.length - 1; index >= 0; index--) {
+        const [prop, prev, existed] = state.undo[index];
+        if (existed) record.props.set(prop, prev);
+        else record.props.delete(prop);
+      }
     }
   } else if (name === 'clip') {
     updateClipHash(record, args);
   } else if (name === 'beginPath') {
     record.pathHash = 0x811c9dc5;
+    record.pathUnknown = false;
   } else if (BARE_PATH_OPS.has(name)) {
     updatePathHash(record, name, args);
+  } else if (name === 'setLineDash') {
+    // The native call consumes one-shot iterables, so re-reading the
+    // argument is wrong (a generator re-reads as []); the ORIGINAL
+    // prototype getLineDash is the authoritative post-call snapshot.
+    const native =
+      nativeGetLineDash && context
+        ? nativeGetLineDash.call(context)
+        : null;
+    setProp(
+      record,
+      '__lineDash',
+      Array.isArray(native) ? native : { unmodeledDash: true },
+    );
   } else if (name === 'reset') {
     clearPersistentState(record);
+    record.contentVersion++;
+    record.contentDirty = false;
+    refreshContentToken(record);
   }
 }
 
@@ -370,6 +486,13 @@ function trackGradient(gradient: any, creator: string, args: unknown[]) {
       const result = originalAdd.apply(this, stopArgs);
       try {
         captureOp(sig, 'addColorStop', stopArgs);
+        if (windowCaptured) {
+          for (const record of gradientDependents.get(this) ?? []) {
+            // Dependents stay registered after reassignment; a false unknown is conservative-safe.
+            markUnknown(record.sig, 'gradient-mutated');
+            record.activeInWindow = true;
+          }
+        }
       } catch (error) {
         kill(error);
       }
@@ -395,6 +518,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   const contextProto =
     targets?.contextProto ?? CanvasRenderingContext2D.prototype;
   const originalGetContext = canvasProto.getContext;
+  nativeGetLineDash =
+    typeof contextProto.getLineDash === 'function'
+      ? contextProto.getLineDash
+      : null;
 
   canvasProto.getContext = function (this: any, ...args: unknown[]) {
     const context = originalGetContext.apply(this, args);
@@ -406,9 +533,11 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const elementId = this.getAttribute('id');
       const record: CanvasRecord = {
         canvas: this,
+        contentDirty: false,
         contentSig: newWindowSignature(),
         contentVersion: 0,
         id: elementId || `canvas:${nextCanvasId++}`,
+        serial: nextCanvasSerial++,
         sig: newWindowSignature(),
         rasterOps: 0,
         selfTimeMs: 0,
@@ -420,10 +549,12 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         matrix: [1, 0, 0, 1, 0, 0],
         matrixUnknown: false,
         pathHash: 0x811c9dc5,
+        pathUnknown: false,
         clipHash: 0x811c9dc5,
+        clipUnknown: false,
         stateStack: [],
       };
-      bumpContentVersion(record);
+      refreshContentToken(record);
       trackBuild(this, record.contentSig);
       records.add(record);
       recordByCanvas.set(this, record);
@@ -444,7 +575,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         const record = recordByCanvas.get(this);
         if (!record || killed) return;
         record.contentVersion++;
-        bumpContentVersion(record);
+        record.contentDirty = false;
+        refreshContentToken(record);
         // resize resets context state the signature can't model
         markUnknown(record.sig, 'canvas-resize');
         clearPersistentState(record);
@@ -466,40 +598,55 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       // performance.now() calls there — they dominate count-only overhead.
       const timed = windowCaptured;
       const start = timed ? performance.now() : 0;
-      let result: unknown;
-      try {
-        result = original.apply(this, args);
-        return result;
-      } finally {
-        if (timed) record.selfTimeMs += performance.now() - start;
-        record.activeInWindow = true;
-        if (RASTER_OPS.has(name)) record.rasterOps++;
-        const headEntries =
-          windowCaptured && firstActivity
-            ? headState(record)
-            : null;
-        updateMethodState(record, name, args);
-        try {
-          if (headEntries) {
-            captureHeadState(record.sig, headEntries.entries);
-            if (headEntries.matrixUnknown) {
-              markUnknown(record.sig, 'transform-unmodeled');
-            }
-          }
-          if (windowCaptured) {
-            captureOp(record.sig, name, args);
-          }
-          if (
-            GRADIENT_CREATORS.has(name) &&
-            result &&
-            typeof result === 'object'
-          ) {
-            trackGradient(result, name, args);
-          }
-        } catch (error) {
-          kill(error);
+      // A throwing native call must leave the model untouched: every state
+      // mutation happens after the call returns. Canvas calls are
+      // synchronous, so a later same-window consumer still sees the dirty
+      // token before it can read this source.
+      const result = original.apply(this, args);
+      if (timed) record.selfTimeMs += performance.now() - start;
+      record.activeInWindow = true;
+      if (RASTER_OPS.has(name)) {
+        record.rasterOps++;
+        if (!record.contentDirty) {
+          record.contentDirty = true;
+          refreshContentToken(record);
         }
       }
+      const headEntries =
+        windowCaptured && firstActivity
+          ? headState(record)
+          : null;
+      try {
+        updateMethodState(record, name, args, this);
+        if (headEntries) {
+          captureHeadState(record.sig, headEntries.entries);
+          if (headEntries.matrixUnknown) {
+            markUnknown(record.sig, 'transform-unmodeled');
+          }
+          if (headEntries.clipUnknown) {
+            markUnknown(record.sig, 'clip-unmodeled');
+          }
+          if (headEntries.pathUnknown) {
+            markUnknown(record.sig, 'path-unmodeled');
+          }
+        }
+        if (windowCaptured) {
+          if (name === 'clip' && record.clipUnknown) {
+            markUnknown(record.sig, 'clip-unmodeled');
+          }
+          captureOp(record.sig, name, args);
+        }
+        if (
+          GRADIENT_CREATORS.has(name) &&
+          result &&
+          typeof result === 'object'
+        ) {
+          trackGradient(result, name, args);
+        }
+      } catch (error) {
+        kill(error);
+      }
+      return result;
     };
   }
 
@@ -520,12 +667,29 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           windowCaptured && firstActivity
             ? headState(record)
             : null;
-        record.props.set(name, value);
+        setProp(record, name, value);
+        if (typeof value === 'object' && value !== null) {
+          const build = getBuildSignature(value);
+          if (build) {
+            let dependents = gradientDependents.get(value);
+            if (!dependents) {
+              dependents = new Set();
+              gradientDependents.set(value, dependents);
+            }
+            dependents.add(record);
+          }
+        }
         try {
           if (headEntries) {
             captureHeadState(record.sig, headEntries.entries);
             if (headEntries.matrixUnknown) {
               markUnknown(record.sig, 'transform-unmodeled');
+            }
+            if (headEntries.clipUnknown) {
+              markUnknown(record.sig, 'clip-unmodeled');
+            }
+            if (headEntries.pathUnknown) {
+              markUnknown(record.sig, 'path-unmodeled');
             }
           }
           if (windowCaptured) captureSet(record.sig, name, value);

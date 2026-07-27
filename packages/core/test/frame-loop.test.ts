@@ -11,6 +11,7 @@ import type { CanvasRecord } from '../src/wrap-context';
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
     canvas: {},
+    contentDirty: false,
     contentSig: {
       hash: 0x811c9dc5,
       unknown: false,
@@ -19,6 +20,7 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     },
     contentVersion: 0,
     id: 'test-canvas',
+    serial: 1,
     sig: {
       hash: 0x1234,
       unknown: false,
@@ -38,7 +40,9 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     matrix: [1, 0, 0, 1, 0, 0],
     matrixUnknown: false,
     pathHash: 0x811c9dc5,
+    pathUnknown: false,
     clipHash: 0x811c9dc5,
+    clipUnknown: false,
     stateStack: [],
     ...overrides,
   };

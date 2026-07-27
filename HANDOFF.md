@@ -303,6 +303,65 @@ tests + dogfood baseline. Remediation batch 3R/4R (before batch 6):
   artifacts; bench provenance (git SHA, bundle hash, thresholds) + fully
   self-contained bench command (build → copy → serve → run → teardown).
 
+**CODEX_STATUS: APPROVED (2026-07-28, scoped to the classifier-trust
+fixes)** — see CODEX_REVIEW.md "Codex re-audit — post patch 3". The
+cross-review loop now runs on the CLAUDE.md status protocol. Approval
+caveats recorded there: the remediation fake is a no-op (real Web IDL
+conversion is covered by the browser probe, not the unit fake — Fable's
+"conversion-modeling" wording was wrong); probes.mjs covers the
+transparency delta, not rendered equivalence; non-default Array iteration
+is a Firefox/Safari portability item for the WebGL/browser-expansion
+phase. 3R/4R closure still requires commit + green remote CI; batch 6
+carries the release/evidence gates.
+
+**3R/4R follow-up patch 3 DONE 2026-07-28** (Codex "final acceptance
+audit"): getLineDash snapshots via the install-time-captured PROTOTYPE
+method (instance shadows never invoked); sparse-array holes promote
+persistent `pathUnknown` (Web IDL reads inherited indices, the model
+can't); `mixValue` array traversal is descriptor-based, making the
+captured stream side-effect-free too (no accessor/iterator invocation
+anywhere in hashing). Real-browser transparency probes added:
+`packages/dogfood/probes.mjs` (instrumented vs uninstrumented invocation
+counts — PASS). 156 tests. 3R/4R still closes only on commit + green CI.
+
+**3R/4R follow-up patch 2 DONE 2026-07-27** (CODEX_REVIEW.md "post-3R/4R
+patch" review + "patch report 2"): `setLineDash` snapshots native state via
+`getLineDash()` (one-shot iterables — a generator re-reads as [], proven by
+Codex's Chrome probe); all object path inputs modeled via property
+descriptors only (accessors never invoked → no observable extra reads;
+accessor-bearing inputs promote persistent `pathUnknown`); the
+"startup-only unknowns" prose claim was retracted as exceeding the
+artifact (timing claims await the batch 6 marker collector). 151 tests.
+**3R/4R closes only after commit + green remote CI (agreed closeout).**
+
+**3R/4R follow-up patch DONE 2026-07-27** (Codex's second-pass findings —
+see CODEX_REVIEW.md "follow-up review" + "patch report"): array-valued
+path args value-encoded with persistent `pathUnknown` (non-number
+primitives stay classifiable via type-tagged encoding — coercion is
+deterministic); tracked-Path2D clips mix the clip-time CTM and promote
+unknown builds to `clipUnknown`; failed native calls no longer mutate the
+model (all updates post-success; native errors never masked). 148 tests.
+Batch 5 is feature-complete but NOT release-gate-complete: bench
+self-containment + fail-closed loading assertion + provenance are batch 6
+items.
+
+**3R/4R core fixes DONE 2026-07-27** (adversarial acceptance contract:
+`test/remediation.test.ts`, 14 cases — 143 tests total): dirty-marker
+content tokens (`vN+dirty` mid-window; provably-`same` sources keep their
+version), shared framed-token encoder (`fnvStep`/`mixTokenInto`/
+`mixNumberTokenInto` exported from signature.ts — path/clip hashing now
+framed), `setLineDash` persisted as `__lineDash` prop + `closePath` in the
+path-op set, save/restore props via per-frame undo logs (O(mutations),
+fakes gained real save/restore), gradient-dependent tracking poisons
+mid-window mutation ('gradient-mutated'), serial-based token identity,
+`ctx.reset()` bumps content version, untracked clip → persistent
+'clip-unmodeled'. Dogfood artifacts persisted:
+`results/2026-07-27-workbench-after-3r4r.json` (baseline exact) and
+`results/2026-07-27-excalidraw-after-3r4r.json` (StaticCanvas 5/12/0 —
+consistent with post-token baseline). STILL OPEN from the evidence list:
+collect.mjs marker mode; bench self-containment + provenance — fold into
+batch 6.
+
 Codex's progress review found two P0 classifier-trust defects; the full
 exchange (findings, my verified responses, the sampling-contract decision)
 is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.

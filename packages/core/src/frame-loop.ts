@@ -3,7 +3,7 @@ import { computeStatus, newWindowSignature } from './signature';
 import type { CanvasScanOptions, DrawBatchReport } from './types';
 import type { CanvasRecord } from './wrap-context';
 import {
-  bumpContentVersion,
+  refreshContentToken,
   records,
   setWindowCaptured,
 } from './wrap-context';
@@ -101,8 +101,9 @@ export function processRecord(
       processed !== null && processed.report.signatureStatus === 'same';
     if (!provablySame) {
       record.contentVersion++;
-      bumpContentVersion(record);
     }
+    record.contentDirty = false;
+    refreshContentToken(record);
   }
 
   record.sig = newWindowSignature();

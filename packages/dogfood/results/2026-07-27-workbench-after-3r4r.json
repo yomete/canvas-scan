@@ -1,0 +1,130 @@
+{
+  "url": "http://localhost:5174",
+  "scenario": "workbench",
+  "reactScanPresent": true,
+  "warnings": [],
+  "pageErrors": [],
+  "pollFrames": 1682,
+  "byCanvas": {
+    "canvas:1": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 0.4,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:2": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 67.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    },
+    "canvas:3": {
+      "owner": "KonvaSection",
+      "kind": "container-only",
+      "windows": 12,
+      "same": 1,
+      "changed": 10,
+      "unknown": 1,
+      "rasterOps": 132,
+      "selfTimeMs": 0.6,
+      "maxGap": 1420,
+      "unknownReasons": {
+        "previous-window": 1
+      }
+    },
+    "canvas:4": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 12,
+      "same": 9,
+      "changed": 2,
+      "unknown": 1,
+      "rasterOps": 32,
+      "selfTimeMs": 0.30000000000000004,
+      "maxGap": 1420,
+      "unknownReasons": {
+        "previous-window": 1
+      }
+    },
+    "canvas:5": {
+      "owner": "KonvaSection",
+      "kind": "container-only",
+      "windows": 1682,
+      "same": 0,
+      "changed": 1682,
+      "unknown": 0,
+      "rasterOps": 3364,
+      "selfTimeMs": 39.000000000000256,
+      "maxGap": 1,
+      "unknownReasons": {}
+    },
+    "canvas:6": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1682,
+      "same": 0,
+      "changed": 1682,
+      "unknown": 0,
+      "rasterOps": 3364,
+      "selfTimeMs": 8.799999999999988,
+      "maxGap": 1,
+      "unknownReasons": {}
+    },
+    "canvas:7": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 1,
+      "selfTimeMs": 0,
+      "maxGap": 2,
+      "unknownReasons": {
+        "previous-window": 1
+      }
+    },
+    "canvas:8": {
+      "owner": "ChartComponent",
+      "kind": "jsx-owner",
+      "windows": 329,
+      "same": 23,
+      "changed": 306,
+      "unknown": 0,
+      "rasterOps": 20614,
+      "selfTimeMs": 46.4000000000001,
+      "maxGap": 216,
+      "unknownReasons": {}
+    },
+    "canvas:9": {
+      "owner": null,
+      "kind": "unattributed",
+      "windows": 1,
+      "same": 0,
+      "changed": 0,
+      "unknown": 1,
+      "rasterOps": 0,
+      "selfTimeMs": 0.1,
+      "maxGap": 0,
+      "unknownReasons": {
+        "canvas-resize": 1
+      }
+    }
+  }
+}
