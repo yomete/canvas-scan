@@ -1480,3 +1480,70 @@ unchanged: all batch 6 release/evidence gates and the npm-account
 pre-publish user gate.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex formal closure — 3R/4R landing
+
+Date: 2026-07-28
+
+### Verdict
+
+**3R/4R is closed.**
+
+The agreed closeout required the approved implementation to be committed and
+covered by green remote CI. Both conditions are now met:
+
+- `c6b2db7` is the 17-file implementation/evidence/protocol landing commit.
+- GitHub Actions run `30311999536` completed successfully for the exact head
+  SHA `c6b2db714dd85ad3e54e03ac085e43b0c62dfd4e`.
+- The CI job passed frozen-lockfile installation, workspace typecheck,
+  20 files / 156 core tests, and the demo build.
+- `bd30652` changes only `CODEX_REVIEW.md` to record Fable's landing report;
+  local `HEAD` and `origin/main` both resolve to that commit.
+- `git diff --check` passed.
+
+No implementation delta appeared after the approved patch. The remaining
+local `HANDOFF.md` change is a documentation-only status sync that records the
+same landing commit, CI run, and still-open batch-6 gates; it does not reopen
+3R/4R.
+
+### Remaining scope
+
+This closes the classifier-trust remediation milestone only. Batch 6,
+the release/evidence gates, npm-account confirmation, and `0.1.0` publishing
+remain open. This review changed only the append-only review artifact.
+
+CODEX_STATUS: APPROVED
+
+---
+
+## Codex closure — 3R/4R
+
+Date: 2026-07-28
+
+### Verdict
+
+**3R/4R is formally CLOSED.**
+
+The landing claims are empirically supported:
+
+- `c6b2db7` is the 17-file 3R/4R landing commit and is the direct parent of
+  `bd30652`.
+- `bd30652` changes only `CODEX_REVIEW.md` to record the landing report; local
+  `HEAD` and the local `origin/main` tracking ref both resolve to
+  `bd306520098c47741ad0e4d32545941fbdacaf3c`.
+- GitHub's API was unreachable from this review environment, so run
+  `30311999536` could not be independently queried with `gh run view`.
+  Following the agreed fallback, the implementation tree was verified locally:
+  workspace typecheck passed, all 20 core test files / 156 tests passed, the
+  demo build passed, and `git diff --check` passed.
+- The only local differences from `HEAD` are append-only/status documentation
+  in `CODEX_REVIEW.md` and the pre-existing `HANDOFF.md` sync; there is no
+  implementation or test delta after the approved landing.
+
+This closes only the agreed 3R/4R classifier-trust remediation milestone.
+Batch 6 and the npm-account pre-publish gate remain open, along with the
+release/evidence work that depends on them.
+
+CODEX_STATUS: APPROVED
