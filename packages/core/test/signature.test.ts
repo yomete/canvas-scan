@@ -80,7 +80,7 @@ describe('computeStatus', () => {
     expect(
       computeStatus(
         { hash: 1, unknown: true },
-        { hash: 1, unknown: false, opCount: 1 },
+        { hash: 1, unknown: false, opCount: 1, unknownReason: null },
       ),
     ).toBe('unknown');
   });
@@ -89,7 +89,7 @@ describe('computeStatus', () => {
     expect(
       computeStatus(
         { hash: 1, unknown: false },
-        { hash: 1, unknown: true, opCount: 1 },
+        { hash: 1, unknown: true, opCount: 1, unknownReason: 'test' },
       ),
     ).toBe('unknown');
   });
@@ -98,7 +98,7 @@ describe('computeStatus', () => {
     expect(
       computeStatus(
         { hash: 1, unknown: false },
-        { hash: 1, unknown: false, opCount: 1 },
+        { hash: 1, unknown: false, opCount: 1, unknownReason: null },
       ),
     ).toBe('same');
   });
@@ -107,7 +107,7 @@ describe('computeStatus', () => {
     expect(
       computeStatus(
         { hash: 1, unknown: false },
-        { hash: 2, unknown: false, opCount: 1 },
+        { hash: 2, unknown: false, opCount: 1, unknownReason: null },
       ),
     ).toBe('changed');
   });

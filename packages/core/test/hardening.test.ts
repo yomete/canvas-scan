@@ -93,6 +93,7 @@ describe('canvas patch hardening', () => {
 
     expect(canvas.width).toBe(300);
     expect(getRecord(canvas)?.sig.unknown).toBe(true);
+    expect(getRecord(canvas)?.sig.unknownReason).toBe('canvas-resize');
     expect(getRecord(canvas)?.activeInWindow).toBe(true);
   });
 

@@ -55,6 +55,17 @@ No kill-switch warnings, no page errors, `reactScanPresent: true`.
 6. **StrictMode: no false-`same` storm.** Double-invoked mounts show up as a
    couple of extra early windows; steady-state classification is unaffected.
 
+## Addendum — re-run after M2 slice 1 (Path2D/gradient capture, same day)
+
+Raw data: `results/2026-07-26-workbench-after-path2d.json`. The chart.js
+canvas went from 311 windows / 100% `unknown` to **367 windows / 0 `unknown`
+(33 `same`, 334 `changed`)** — the 33 `same` windows are the
+rerender-same-data clicks being caught, which is the product's headline
+scenario working on real chart.js. Konva results unchanged; coexistence still
+clean; no kill-switch trips. Finding 1 is resolved; finding 3
+(`unknownReason`) shipped in the same slice. Findings 4 (wrapper-name
+attribution) remains open.
+
 ## Verdict
 
 The signal survives contact with reality **for direct-canvas and konva-style

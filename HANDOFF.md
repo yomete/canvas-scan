@@ -210,8 +210,9 @@ build) and the contract was verified live in Chrome, including
 > prop change), one early import running at `captureEvery: 1` logs per-canvas
 > draw batches as
 > `{canvasId, nearestReactOwner, attributionKind, sourceLocation | null,
-> rasterOperationCount, canvasApiSelfTimeMs, signatureStatus, sampled,
-> comparisonGap}`, and a forced identical redraw reports
+> rasterOperationCount, canvasApiSelfTimeMs, signatureStatus, unknownReason,
+> sampled, comparisonGap}` (unknownReason joined the contract in M2 slice 1),
+> and a forced identical redraw reports
 > `signatureStatus: "same"`. Named API smoke checks pass: repeated
 > `getContext("2d")` returns the identical object, `.canvas` resolves, one
 > property setter round-trips, a basic draw produces output, and no
@@ -240,12 +241,16 @@ via one script tag.
 - Hypothesis PARTIALLY validated: konva-style apps report honest
   `same`/`changed` (zero false `same` at 60fps), and the tool surfaced a real
   candidate — konva redraws hit canvases command-identically during drags.
-- **chart.js is 100% `unknown`: it draws through `Path2D` objects, which our
-  rules poison. Path2D construction-capture (wrap constructor + path methods,
-  hash the build stream, treat the object as identity + build-hash token) is
-  the gating M2 work** — before overlay/alpha polish. Likely same treatment
-  for CanvasGradient.
-- Reports need `unknownReason` (the capture layer knows which arg poisoned).
+- **chart.js was 100% `unknown`: it draws through `Path2D` objects, which our
+  rules poisoned. RESOLVED in M2 slice 1 (same day): Path2D + CanvasGradient
+  construction capture shipped** (`build-registry.ts` + `wrap-path2d.ts`:
+  wrap constructor + path methods, hash the build stream, treat the object as
+  an identity + build-hash token; untracked/mutated objects still poison).
+  Re-run: chart.js went from 311/311 unknown to 367 windows / 0 unknown, with
+  33 `same` windows surfacing exactly the rerender-same-data redundancy
+  scenario. CanvasPattern deliberately stays poison.
+- Reports now carry `unknownReason` (e.g. 'HTMLVideoElement', 'Path2D:dirty',
+  'canvas-resize', 'first-window') — shipped with the same slice.
 - Attribution walk should skip library-internal wrappers (react-konva's
   `StageWrap` reported instead of the user's component) — add a filter list
   like react-scan/react-grab ship.

@@ -43,6 +43,15 @@ export function processRecord(
       rasterOperationCount: record.rasterOps,
       canvasApiSelfTimeMs: Number(record.selfTimeMs.toFixed(3)),
       signatureStatus,
+      unknownReason:
+        signatureStatus === 'unknown'
+          ? record.sig.unknownReason ??
+            (record.prev === null
+              ? 'first-window'
+              : record.prev.unknown
+                ? 'previous-window'
+                : null)
+          : null,
       sampled: captureEvery > 1,
       comparisonGap,
     };

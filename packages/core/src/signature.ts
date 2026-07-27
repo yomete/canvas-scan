@@ -1,9 +1,11 @@
 import type { SignatureStatus } from './types';
+import { getBuildSignature } from './build-registry';
 
 export interface WindowSignature {
   hash: number;
   unknown: boolean;
   opCount: number;
+  unknownReason: string | null;
 }
 
 const UNKNOWN_SOURCES = new Set([
@@ -59,7 +61,7 @@ function mixValue(sig: WindowSignature, value: unknown) {
   if (Array.isArray(value)) {
     for (const item of value) {
       if (typeof item !== 'number') {
-        sig.unknown = true;
+        markUnknown(sig, 'array-element');
         return;
       }
       mixNumber(sig, item);
@@ -68,13 +70,24 @@ function mixValue(sig: WindowSignature, value: unknown) {
   }
 
   if (typeof value !== 'object') {
-    sig.unknown = true;
+    markUnknown(sig, `value:${typeof value}`);
+    return;
+  }
+
+  const build = getBuildSignature(value);
+  if (build) {
+    if (build.unknown) {
+      markUnknown(sig, `${value.constructor?.name ?? 'object'}:dirty`);
+    } else {
+      mixString(sig, `${value.constructor?.name ?? 'object'}#`);
+      mixNumber(sig, build.hash);
+    }
     return;
   }
 
   const constructorName = value.constructor?.name;
   if (constructorName && UNKNOWN_SOURCES.has(constructorName)) {
-    sig.unknown = true;
+    markUnknown(sig, constructorName);
     return;
   }
 
@@ -92,11 +105,21 @@ function mixValue(sig: WindowSignature, value: unknown) {
     return;
   }
 
-  sig.unknown = true;
+  markUnknown(sig, `object:${constructorName ?? 'anonymous'}`);
 }
 
 export function newWindowSignature(): WindowSignature {
-  return { hash: 0x811c9dc5, unknown: false, opCount: 0 };
+  return {
+    hash: 0x811c9dc5,
+    unknown: false,
+    opCount: 0,
+    unknownReason: null,
+  };
+}
+
+export function markUnknown(sig: WindowSignature, reason: string): void {
+  sig.unknown = true;
+  sig.unknownReason ??= reason;
 }
 
 export function captureOp(

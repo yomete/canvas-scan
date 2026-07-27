@@ -7,7 +7,12 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
     canvas: {},
     id: 'test-canvas',
-    sig: { hash: 0x1234, unknown: false, opCount: 3 },
+    sig: {
+      hash: 0x1234,
+      unknown: false,
+      opCount: 3,
+      unknownReason: null,
+    },
     rasterOps: 2,
     selfTimeMs: 0.5,
     activeInWindow: true,
@@ -42,6 +47,7 @@ describe('processRecord', () => {
     expect(processed).toMatchObject({
       report: {
         signatureStatus: 'unknown',
+        unknownReason: 'first-window',
         comparisonGap: null,
         sampled: false,
       },
@@ -56,6 +62,7 @@ describe('processRecord', () => {
       hash: 0x811c9dc5,
       unknown: false,
       opCount: 0,
+      unknownReason: null,
     });
     expect(record.rasterOps).toBe(0);
     expect(record.selfTimeMs).toBe(0);
@@ -65,13 +72,19 @@ describe('processRecord', () => {
 
   it("reports identical windows as 'same'", () => {
     const record = makeRecord({
-      sig: { hash: 0x1234, unknown: false, opCount: 3 },
+      sig: {
+        hash: 0x1234,
+        unknown: false,
+        opCount: 3,
+        unknownReason: null,
+      },
       prev: { hash: 0x1234, unknown: false, windowIndex: 5 },
     });
 
     const processed = processRecord(record, 6, 1);
 
     expect(processed?.report.signatureStatus).toBe('same');
+    expect(processed?.report.unknownReason).toBeNull();
     expect(processed?.report.comparisonGap).toBe(1);
     expect(record.prev).toEqual({
       hash: 0x1234,
@@ -88,6 +101,7 @@ describe('processRecord', () => {
     const processed = processRecord(record, 6, 1);
 
     expect(processed?.report.signatureStatus).toBe('changed');
+    expect(processed?.report.unknownReason).toBeNull();
     expect(record.lastStatus).toBe('changed');
   });
 
@@ -109,17 +123,24 @@ describe('processRecord', () => {
     const processed = processRecord(record, 6, 1);
 
     expect(processed?.report.signatureStatus).toBe('unknown');
+    expect(processed?.report.unknownReason).toBe('previous-window');
   });
 
   it("reports and stores 'unknown' for an unknown current signature", () => {
     const record = makeRecord({
-      sig: { hash: 0x1234, unknown: true, opCount: 3 },
+      sig: {
+        hash: 0x1234,
+        unknown: true,
+        opCount: 3,
+        unknownReason: 'test-reason',
+      },
       prev: { hash: 0x1234, unknown: false, windowIndex: 5 },
     });
 
     const processed = processRecord(record, 6, 1);
 
     expect(processed?.report.signatureStatus).toBe('unknown');
+    expect(processed?.report.unknownReason).toBe('test-reason');
     expect(record.prev).toEqual({
       hash: 0x1234,
       unknown: true,
@@ -134,11 +155,21 @@ describe('processRecord', () => {
 
     expect(processRecord(record, 6, 1)?.shouldLog).toBe(true);
 
-    record.sig = { hash: 0x1234, unknown: false, opCount: 3 };
+    record.sig = {
+      hash: 0x1234,
+      unknown: false,
+      opCount: 3,
+      unknownReason: null,
+    };
     record.activeInWindow = true;
     expect(processRecord(record, 7, 1)?.shouldLog).toBe(false);
 
-    record.sig = { hash: 0x5678, unknown: false, opCount: 3 };
+    record.sig = {
+      hash: 0x5678,
+      unknown: false,
+      opCount: 3,
+      unknownReason: null,
+    };
     record.activeInWindow = true;
     expect(processRecord(record, 8, 1)?.shouldLog).toBe(true);
   });
@@ -155,6 +186,7 @@ describe('processRecord', () => {
       hash: 0x811c9dc5,
       unknown: false,
       opCount: 0,
+      unknownReason: null,
     });
     expect(record.rasterOps).toBe(0);
     expect(record.selfTimeMs).toBe(0);
@@ -197,7 +229,12 @@ describe('processRecord', () => {
 
     expect(firstReport?.report.attributionKind).toBe('unattributed');
 
-    unattributed.sig = { hash: 0x5678, unknown: false, opCount: 1 };
+    unattributed.sig = {
+      hash: 0x5678,
+      unknown: false,
+      opCount: 1,
+      unknownReason: null,
+    };
     unattributed.activeInWindow = true;
     const secondReport = processRecord(unattributed, 2, 1);
 
@@ -219,6 +256,7 @@ describe('processRecord', () => {
         'rasterOperationCount',
         'canvasApiSelfTimeMs',
         'signatureStatus',
+        'unknownReason',
         'sampled',
         'comparisonGap',
       ].sort(),

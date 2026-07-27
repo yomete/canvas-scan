@@ -19,6 +19,7 @@ export interface DrawBatchReport {
   rasterOperationCount: number;
   canvasApiSelfTimeMs: number;
   signatureStatus: SignatureStatus;
+  unknownReason: string | null;
   sampled: boolean;
   comparisonGap: number | null;
 }

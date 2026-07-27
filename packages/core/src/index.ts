@@ -2,6 +2,7 @@ import { safelyInstallRDTHook } from 'bippy';
 import { latestReports, startFrameLoop } from './frame-loop';
 import type { CanvasScanOptions } from './types';
 import { installCanvasPatch } from './wrap-context';
+import { installPath2DPatch } from './wrap-path2d';
 
 let started = false;
 
@@ -11,6 +12,7 @@ export function start(options: CanvasScanOptions = {}): void {
 
   safelyInstallRDTHook();
   installCanvasPatch();
+  installPath2DPatch();
   startFrameLoop(options);
   (window as any).__CANVAS_SCAN__ = {
     version: '0.0.0',

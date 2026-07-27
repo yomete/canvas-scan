@@ -1,4 +1,10 @@
-import { captureOp, captureSet, newWindowSignature } from './signature';
+import { trackBuild } from './build-registry';
+import {
+  captureOp,
+  captureSet,
+  markUnknown,
+  newWindowSignature,
+} from './signature';
 import type {
   AttributionKind,
   SignatureStatus,
@@ -57,7 +63,15 @@ const CAPTURED_METHODS = [
   'clip',
   'setLineDash',
   'reset',
+  'createLinearGradient',
+  'createRadialGradient',
+  'createConicGradient',
 ];
+const GRADIENT_CREATORS = new Set([
+  'createLinearGradient',
+  'createRadialGradient',
+  'createConicGradient',
+]);
 const RASTER_OPS = new Set([
   'clearRect',
   'fillRect',
@@ -101,6 +115,29 @@ function kill(error: unknown) {
   if (killed) return;
   killed = true;
   console.warn('[canvas-scan] instrumentation disabled', error);
+}
+
+function trackGradient(gradient: any, creator: string, args: unknown[]) {
+  const sig = newWindowSignature();
+  captureOp(sig, creator, args);
+  trackBuild(gradient, sig);
+  const originalAdd = gradient.addColorStop;
+  if (typeof originalAdd !== 'function') return;
+  // per-instance shadow: CanvasGradient.prototype isn't injectable in tests,
+  // and every gradient is born here anyway
+  Object.defineProperty(gradient, 'addColorStop', {
+    configurable: true,
+    writable: true,
+    value(this: any, ...stopArgs: unknown[]) {
+      const result = originalAdd.apply(this, stopArgs);
+      try {
+        captureOp(sig, 'addColorStop', stopArgs);
+      } catch (error) {
+        kill(error);
+      }
+      return result;
+    },
+  });
 }
 
 export function getRecord(canvas: unknown): CanvasRecord | undefined {
@@ -159,7 +196,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         const record = recordByCanvas.get(this);
         if (!record || killed) return;
         // resize resets context state the signature can't model
-        record.sig.unknown = true;
+        markUnknown(record.sig, 'canvas-resize');
         record.activeInWindow = true;
       },
     });
@@ -174,14 +211,23 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       if (!record || killed) return original.apply(this, args);
 
       const start = performance.now();
+      let result: unknown;
       try {
-        return original.apply(this, args);
+        result = original.apply(this, args);
+        return result;
       } finally {
         record.selfTimeMs += performance.now() - start;
         record.activeInWindow = true;
         if (RASTER_OPS.has(name)) record.rasterOps++;
         try {
           captureOp(record.sig, name, args);
+          if (
+            GRADIENT_CREATORS.has(name) &&
+            result &&
+            typeof result === 'object'
+          ) {
+            trackGradient(result, name, args);
+          }
         } catch (error) {
           kill(error);
         }
