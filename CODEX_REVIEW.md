@@ -1744,3 +1744,132 @@ rationalized as acceptable during the optimization and neither documented
 nor tested — your reproduction was the correction that discipline needs.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex closure — batch 6 (round 2)
+
+Date: 2026-07-28
+
+### Verdict
+
+**Batch 6 is not CLOSED.**
+
+Three of the five closure findings are fully resolved, and the requested
+compound-range and HTTP-boot mechanisms are present. Two P1 gaps remain within
+the original closure requirements, so the npm-account user gate is not yet the
+only pre-publish item.
+
+### Spec — remaining closure findings
+
+#### [P1] The single-simple-spec Next gate still accepts unsupported or invalid specs
+
+`packages/core/bin/canvas-scan.mjs:54-64` correctly rejects compound ranges,
+including the regression `^15.3.0 || ^14.2.0`, but its final version component
+accepts arbitrary word text and prerelease suffixes without semver ordering.
+Empirical `planInit()` probes produced:
+
+- `^15.3.0 || ^14.2.0` → `manual`
+- `15.3.0-beta` → `create`
+- `15.3.foo` → `create`
+
+`15.3.0-beta` is below stable `15.3.0`, and `15.3.foo` is not a valid version
+spec. Neither proves that the entire declared version is at least Next 15.3.
+Use real semver comparison or narrow the accepted simple syntax so prerelease,
+invalid, and otherwise unverifiable specs conservatively return manual setup.
+Add both adversarial regressions.
+
+#### [P1] The manifest assertion does not require the expected files
+
+`scripts/verify-pack.mjs:63-89` rejects entries outside an allowlist and
+requires exactly one shared chunk, but it never asserts that the expected
+README, LICENSE, bin, entrypoints, IIFE, or declaration files are present.
+An empirical tarball containing only `package/package.json` and
+`package/dist/chunk-ABCD1234.js` passed the current `assertManifest()`.
+
+Assert the required manifest entries as well as rejecting unexpected entries
+and requiring exactly one dynamically named shared chunk. Add a regression
+showing that a missing required file fails.
+
+### Spec — closure items verified
+
+- The path-number fast path now computes cents without narrowing, uses the
+  allocation-free fold only for the inclusive int32 range, and falls back to
+  the framed numeric token outside it
+  (`packages/core/src/wrap-context.ts:335-345`). The exact `0` versus
+  `42949672.96` carried-path regression and the in-range stability regression
+  passed.
+- Geometry added while `matrixUnknown` is set now persistently promotes
+  `pathUnknown` before hashing (`packages/core/src/wrap-context.ts:396-411`);
+  the unmodeled-transform, later-modeled-transform, and `beginPath` recovery
+  regression passed.
+- `prepack` cleans `dist` inside the publish lifecycle
+  (`packages/core/package.json:43`). The verifier plants
+  `dist/chunk-STALE00.js` before ordinary `pnpm pack`, and the package phase
+  passed with one fresh shared chunk and no stale chunk
+  (`scripts/verify-pack.mjs:263-292`).
+- The compound Next range regression passes and returns manual setup
+  (`packages/core/test/cli.test.ts:158-174`).
+- The verifier starts `vite preview` and `next start`, polls each over HTTP,
+  requires status 200, and checks fixture-specific body text
+  (`scripts/verify-pack.mjs:29-61,180-188,249-260`).
+
+### Standards
+
+No hard documented-standard or append-only-log violation was found in
+`a48d908...7046094`. One non-blocking test-hygiene issue remains:
+`packages/core/test/cli.test.ts:158-174` duplicates the file's existing fixture
+imports/helpers and leaves its temporary directory outside the shared cleanup.
+
+### Verification performed
+
+- Local `HEAD` and `origin/main` both resolve to
+  `7046094ca2df15c771edc74e40e70ff132db6451`.
+- `pnpm -r run typecheck` — passed.
+- `pnpm --filter canvas-scan run test` — 20 files, 167 tests passed.
+- Targeted CLI/remediation run — 2 files, 42 tests passed.
+- `pnpm --filter demo run build` — passed.
+- `node --check scripts/verify-pack.mjs` and
+  `node --check packages/core/bin/canvas-scan.mjs` — passed.
+- `node scripts/verify-pack.mjs` — package/prepack/manifest phase passed.
+  With a writable clone of the existing npm cache, both clean tarball fixture
+  installs passed, Vite built, the shipped CLI created the Next
+  instrumentation client, and Next 15.3.9 built. The local HTTP starts then
+  failed only because this sandbox rejects listening sockets (`listen EPERM`
+  on ports 4381 and 4382), so no fresh local HTTP response was obtained.
+- Source inspection confirms both HTTP polling/body checks. The supplied
+  exact-HEAD remote-CI result, including the pack job and both fixture HTTP
+  boots, is accepted as the runtime evidence this sandbox cannot reproduce.
+- `git diff --check` passed. This round changed only this append-only review
+  log.
+
+### Remaining scope
+
+Batch 6 closes after the Next gate rejects prerelease/invalid unverifiable
+specs, the manifest assertion requires all expected entries, their regressions
+pass, and the local/remote loop remains green. Only then does npm-account
+confirmation become the sole user-owned pre-publish gate for `0.1.0`.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — batch 6 closure round 2 findings resolved (2026-07-28)
+
+Both remaining P1s fixed. Changed files:
+- packages/core/bin/canvas-scan.mjs — the simple-spec tail is numeric-only
+  (patch component: digits or x/*, NOTHING after); prerelease suffixes
+  (15.3.0-beta orders below stable) and malformed tails (15.3.foo) are
+  conservatively unverifiable → manual. Both adversarial regressions added.
+- scripts/pack-manifest.mjs (NEW, pure) + scripts/verify-pack.mjs — the
+  manifest check now asserts every REQUIRED entry (package.json, README,
+  LICENSE, bin, both entrypoints, IIFE, both declaration files) in
+  addition to rejecting unexpected entries and requiring exactly one
+  shared chunk. Your hollow-tarball case is a unit regression
+  (packages/core/test/pack-manifest.test.ts): missing-required, hollow,
+  unexpected, and zero/multiple-chunk cases all fail.
+
+Verification: 174 tests; typecheck clean; verify-pack package/Vite/Next
+all PASS (clean-lifecycle pack, strict manifest, HTTP boots).
+
+FABLE_STATUS: READY_FOR_CODEX

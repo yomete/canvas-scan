@@ -173,3 +173,29 @@ describe('next compound-range gate', () => {
     expect(plan.instructions).toContain('could not verify');
   });
 });
+
+describe('next gate: prerelease and malformed specs', () => {
+  async function planFor(spec: string) {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { planInit } = await import('../bin/canvas-scan.mjs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-prerel-'));
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { next: spec, 'canvas-scan': '*' } }),
+    );
+    return planInit(dir);
+  }
+
+  it('treats a prerelease spec as unverifiable (orders below stable)', async () => {
+    const plan = await planFor('15.3.0-beta');
+    expect(plan.action.kind).toBe('manual');
+    expect(plan.instructions).toContain('could not verify');
+  });
+
+  it('treats a malformed spec as unverifiable', async () => {
+    const plan = await planFor('15.3.foo');
+    expect(plan.action.kind).toBe('manual');
+  });
+});

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertManifestEntries } from './pack-manifest.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = path.join(repoRoot, 'packages/core');
@@ -60,33 +61,6 @@ async function withServer(command, args, cwd, url, check) {
   }
 }
 
-const MANIFEST_ALLOW = [
-  /^package\/package\.json$/,
-  /^package\/README\.md$/,
-  /^package\/LICENSE$/,
-  /^package\/bin\/canvas-scan\.mjs$/,
-  /^package\/dist\/index\.js$/,
-  /^package\/dist\/auto\.js$/,
-  /^package\/dist\/canvas-scan\.iife\.js$/,
-  /^package\/dist\/chunk-[A-Z0-9]+\.js$/,
-  /^package\/dist\/[\w-]+\.d\.ts$/,
-];
-
-function assertManifest(tarball) {
-  const listing = spawnSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
-  if (listing.status !== 0) throw new Error('could not list tarball');
-  const entries = listing.stdout.trim().split('\n');
-  const unexpected = entries.filter(
-    (entry) => !MANIFEST_ALLOW.some((pattern) => pattern.test(entry)),
-  );
-  if (unexpected.length > 0) {
-    throw new Error(`unexpected tarball entries: ${unexpected.join(', ')}`);
-  }
-  const chunks = entries.filter((entry) => /dist\/chunk-/.test(entry));
-  if (chunks.length !== 1) {
-    throw new Error(`expected exactly one shared chunk, found: ${chunks.join(', ') || 'none'}`);
-  }
-}
 
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -288,7 +262,9 @@ try {
       throw new Error(`expected one tarball, found ${tarballs.length}`);
     }
     tarball = path.join(packDirectory, tarballs[0]);
-    assertManifest(tarball);
+    const listing = spawnSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
+    if (listing.status !== 0) throw new Error('could not list tarball');
+    assertManifestEntries(listing.stdout.trim().split('\n'));
   });
 
   if (packed) {
