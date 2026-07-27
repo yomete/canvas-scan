@@ -15,21 +15,10 @@ const viteEntries = [
 ];
 
 export function detectFramework(dir) {
-  try {
-    const packageJson = JSON.parse(
-      fs.readFileSync(path.join(dir, 'package.json'), 'utf8'),
-    );
-    const dependencies = {
-      ...packageJson.dependencies,
-      ...packageJson.devDependencies,
-    };
+  const dependencies = readDependencies(dir);
 
-    if ('next' in dependencies) return 'next';
-    if ('vite' in dependencies) return 'vite';
-  } catch {
-    return 'unknown';
-  }
-
+  if ('next' in dependencies) return 'next';
+  if ('vite' in dependencies) return 'vite';
   return 'unknown';
 }
 
@@ -37,9 +26,49 @@ function hasImport(file) {
   return fs.readFileSync(file, 'utf8').includes('canvas-scan/auto');
 }
 
+function readDependencies(dir) {
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(dir, 'package.json'), 'utf8'),
+    );
+    return {
+      ...packageJson.dependencies,
+      ...packageJson.devDependencies,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function installCommand(dir, dependencies) {
+  if ('canvas-scan' in dependencies) return null;
+  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
+    return 'pnpm add -D canvas-scan';
+  }
+  if (fs.existsSync(path.join(dir, 'yarn.lock'))) {
+    return 'yarn add -D canvas-scan';
+  }
+  return 'npm install -D canvas-scan';
+}
+
+function minimumNextVersion(spec) {
+  const match = spec.replace(/^[\s^~>=v]+/i, '').match(/^(\d+)(?:\.(\d+))?/);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2] ?? 0) };
+}
+
+function nextManualInstructions(spec, unparseable) {
+  const detection = unparseable
+    ? `detected next version spec '${spec}' — could not verify >= 15.3. `
+    : '';
+  return `${detection}instrumentation-client.ts requires Next 15.3+. Add import 'canvas-scan/auto' as the FIRST import of your custom App/entry, or add a <Script strategy="beforeInteractive"> tag.`;
+}
+
 export function planInit(dir) {
   const projectDir = path.resolve(dir);
   const framework = detectFramework(projectDir);
+  const dependencies = readDependencies(projectDir);
+  const install = installCommand(projectDir, dependencies);
 
   if (framework === 'vite') {
     const entry = viteEntries.find((file) =>
@@ -49,6 +78,7 @@ export function planInit(dir) {
     if (!entry) {
       return {
         framework,
+        install,
         action: { kind: 'none', reason: 'No Vite entry file found.' },
         instructions:
           "Add import 'canvas-scan/auto'; as the first line of your Vite entry.",
@@ -59,6 +89,7 @@ export function planInit(dir) {
     if (hasImport(file)) {
       return {
         framework,
+        install,
         action: { kind: 'none', reason: 'canvas-scan is already installed.' },
         instructions: `${entry} already imports canvas-scan/auto.`,
       };
@@ -66,17 +97,34 @@ export function planInit(dir) {
 
     return {
       framework,
+      install,
       action: { kind: 'prepend', file, line: importLine },
       instructions: `Prepend ${JSON.stringify(importLine.trim())} to ${entry}.`,
     };
   }
 
   if (framework === 'next') {
+    const spec = dependencies.next;
+    const version = minimumNextVersion(spec);
+    if (
+      version === null ||
+      version.major < 15 ||
+      (version.major === 15 && version.minor < 3)
+    ) {
+      return {
+        framework,
+        install,
+        action: { kind: 'manual' },
+        instructions: nextManualInstructions(spec, version === null),
+      };
+    }
+
     const file = path.join(projectDir, 'instrumentation-client.ts');
 
     if (!fs.existsSync(file)) {
       return {
         framework,
+        install,
         action: { kind: 'create', file, content: importLine },
         instructions:
           'Create instrumentation-client.ts with the canvas-scan/auto import.',
@@ -86,6 +134,7 @@ export function planInit(dir) {
     if (hasImport(file)) {
       return {
         framework,
+        install,
         action: { kind: 'none', reason: 'canvas-scan is already installed.' },
         instructions:
           'instrumentation-client.ts already imports canvas-scan/auto.',
@@ -94,6 +143,7 @@ export function planInit(dir) {
 
     return {
       framework,
+      install,
       action: { kind: 'prepend', file, line: importLine },
       instructions:
         'Prepend the canvas-scan/auto import to instrumentation-client.ts.',
@@ -102,6 +152,7 @@ export function planInit(dir) {
 
   return {
     framework,
+    install,
     action: { kind: 'manual' },
     instructions:
       'Add the canvas-scan IIFE bundle as the first script tag on the page.',
@@ -170,6 +221,9 @@ export function run(args) {
   const plan = planInit(dir);
 
   console.log(`Framework: ${plan.framework}`);
+  if (plan.install) {
+    console.log(`Required: ${plan.install}`);
+  }
   if (plan.action.kind === 'prepend') {
     console.log(`Edit: prepend ${JSON.stringify(plan.action.line.trim())} to ${plan.action.file}`);
   } else if (plan.action.kind === 'create') {
@@ -188,9 +242,19 @@ export function run(args) {
   return 0;
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  // node resolves the module URL through symlinks (macOS tmpdir is
+  // /var -> /private/var), so argv[1] must be realpathed before comparing.
+  let entry = process.argv[1];
+  try {
+    entry = fs.realpathSync(entry);
+  } catch {
+    return false;
+  }
+  return import.meta.url === pathToFileURL(entry).href;
+}
+
+if (isMainModule()) {
   process.exitCode = run(process.argv.slice(2));
 }

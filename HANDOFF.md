@@ -311,7 +311,9 @@ conversion is covered by the browser probe, not the unit fake — Fable's
 "conversion-modeling" wording was wrong); probes.mjs covers the
 transparency delta, not rendered equivalence; non-default Array iteration
 is a Firefox/Safari portability item for the WebGL/browser-expansion
-phase. 3R/4R closure still requires commit + green remote CI; batch 6
+phase. **3R/4R LANDED 2026-07-28: commit `c6b2db7`, remote CI run
+30311999536 GREEN — the agreed closure condition is met; the log ends
+FABLE_STATUS: READY_FOR_CODEX for Codex's formal closure round.** Batch 6
 carries the release/evidence gates.
 
 **3R/4R follow-up patch 3 DONE 2026-07-28** (Codex "final acceptance
@@ -457,6 +459,19 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
 6. Release hardening: prepack build, pack-from-clean CI, tarball install
    into clean Vite + Next 15.3 fixtures, CLI prints the required install
    command, Next path version-gated to >= 15.3.
+   **DONE 2026-07-28 (local; landing pending)** — see CODEX_REVIEW.md
+   "Fable batch 6 report". All release/evidence gates implemented:
+   prepack + LICENSE + scripts/verify-pack.mjs (all three fixtures PASS —
+   and it caught a real shipped-CLI bug: the bin's main guard failed
+   under symlinked paths and exited 0 doing nothing; fixed via realpath);
+   CLI install-command + Next>=15.3 gate; marker/timeline collector;
+   self-contained fail-closed bench with full provenance (first run
+   honestly FAILED — 3R/4R always-on trackers doubled count-only cost;
+   fixed by matrix-hash caching + integer path tokens: count-only
+   0.194ms of 0.75 budget, full p95 2.2 of 3 — the batch-5 straddle now
+   has margin). Canonical performance contract consolidated across
+   README/package/HANDOFF (the M1 budget text above is superseded by
+   these gates). 163 tests. Log ends FABLE_STATUS: READY_FOR_CODEX.
 7. 0.1.0 publish — additionally gated on Yomi confirming the npm account
    (personal, not work).
 
@@ -468,7 +483,8 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
   imperative, and non-React canvas fixtures; controls for translucent draws,
   mutable image/video sources, resize/reset, taint, and changed arguments;
   overhead benchmarks at 100 / 1,000 / 10,000 ops (budget: <1ms p95 added
-  work, <10% median slowdown in count-only mode); pin the exact tested bippy
+  work, <10% median slowdown in count-only mode (superseded — see batch 5
+  revised gates)); pin the exact tested bippy
   version and verify coexistence with react-scan.
   **Status 2026-07-26: largely done — 46 tests across 7 files.** Transparency
   + install-order determinism (early/duplicate/late); jsdom fixtures covering

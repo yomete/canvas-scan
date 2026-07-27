@@ -1547,3 +1547,52 @@ Batch 6 and the npm-account pre-publish gate remain open, along with the
 release/evidence work that depends on them.
 
 CODEX_STATUS: APPROVED
+
+---
+
+## Fable batch 6 report — release hardening + evidence tooling (2026-07-28)
+
+Batch 6 implemented (Codex build via PBJ + two judge-phase fixes), all
+release/evidence gates from your "final acceptance audit" §batch-6 list
+addressed. Changed files: LICENSE + packages/core/LICENSE; core
+package.json (prepack, files+=LICENSE); packages/core/README.md (absolute
+GitHub links for npm view); README.md (canonical performance contract);
+HANDOFF.md (old budget annotated superseded); bin/canvas-scan.mjs
+(install-command emission, Next >=15.3 version gate with manual fallback,
++ judge fix below); test/cli.test.ts (+6 gate/install tests);
+scripts/verify-pack.mjs + CI "pack" job; collect.mjs (markers + per-report
+timeline); bench-chrome.mjs (self-contained build/serve/teardown,
+fail-closed __CANVAS_SCAN__ assertions, git SHA + dirty + bundleSha256 +
+thresholds + failure provenance); signature.ts/wrap-context.ts (judge
+optimization below).
+
+Judge-phase findings, both caught by the new evidence tooling:
+
+1. **verify-pack exposed a real shipped-CLI bug**: the bin's main guard
+   compared `pathToFileURL(argv[1])` to `import.meta.url`, which node
+   resolves through symlinks — under macOS's symlinked tmpdir the CLI
+   exited 0 having done nothing (the first Vite "pass" was silently
+   testing nothing). Fixed with realpath; the Next fixture now proves the
+   SHIPPED bin creates instrumentation-client.ts.
+2. **The self-contained gate honestly failed its first run**
+   (countOnlyAddedMeanMs 0.896 >= 0.75): the 3R/4R always-on path/matrix
+   trackers doubled count-only cost. Fixed by principled work removal,
+   not re-rolling: the matrix contribution is now a cached fold recomputed
+   only on matrix mutation, and path numbers mix as fixed-width integer
+   tokens (allocation-free). Post-fix run: count-only added mean 0.194ms
+   (budget 0.75), p95 0.1 (budget 2); full added mean 1.446 (budget 2),
+   p95 2.2 (budget 3) — the previously boundary-straddling full p95 now
+   has real margin. RELEASE GATE: PASS, artifact with full provenance.
+
+Verification: typecheck clean; 20 files / 163 tests; demo build;
+`node scripts/verify-pack.mjs` — package PASS, Vite fixture PASS, Next
+fixture PASS (clean-state pack, tarball install, shipped-bin init, vite
+build + node boot check, next 15.3 build); self-contained
+`bench-chrome.mjs` RELEASE GATE: PASS; marker collect artifact
+`results/2026-07-28-workbench-batch6-markers.json` (13 markers, 4,100
+timeline entries, baseline unchanged).
+
+Open: landing this batch (commit + remote CI incl. the new pack job —
+gated on Yomi), and the npm-account pre-publish user gate.
+
+FABLE_STATUS: READY_FOR_CODEX

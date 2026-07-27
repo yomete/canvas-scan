@@ -39,6 +39,7 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     props: new Map(),
     matrix: [1, 0, 0, 1, 0, 0],
     matrixUnknown: false,
+    matrixHash: 0,
     pathHash: 0x811c9dc5,
     pathUnknown: false,
     clipHash: 0x811c9dc5,

@@ -126,8 +126,9 @@ so the tool cannot instrument itself.
   physical draws it observes.
 - OffscreenCanvas transfers and worker-owned canvases are not observable.
 - CanvasPattern arguments poison the window to `unknown`.
-- Measured overhead is ~0.3µs per captured operation. A 1,000-op frame pays
-  ~0.23ms.
+- Full capture adds <2ms mean / <3ms p95, and count-only adds <0.75ms mean /
+  <2ms p95, per 1,000 mixed bench iterations at the 1,000-op level, verified
+  by `pnpm --filter dogfood run bench:chrome`.
 
 ## Publishing (maintainers)
 

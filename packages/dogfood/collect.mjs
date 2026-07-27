@@ -25,7 +25,15 @@ await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction(() => window.__CANVAS_SCAN__ != null, null, { timeout: 15000 });
 
 await page.evaluate(() => {
-  const agg = (window.__DOGFOOD__ = { pollFrames: 0, byCanvas: {} });
+  const agg = (window.__DOGFOOD__ = {
+    pollFrames: 0,
+    byCanvas: {},
+    timeline: [],
+    markers: [],
+  });
+  window.__DOGFOOD_MARK = (label) => {
+    agg.markers.push({ label, frame: agg.pollFrames, t: performance.now() });
+  };
   const last = new Map();
   const loop = () => {
     agg.pollFrames++;
@@ -55,6 +63,13 @@ await page.evaluate(() => {
       c.rasterOps += r.rasterOperationCount;
       c.selfTimeMs += r.canvasApiSelfTimeMs;
       if (r.comparisonGap && r.comparisonGap > c.maxGap) c.maxGap = r.comparisonGap;
+      agg.timeline.push({
+        frame: agg.pollFrames,
+        canvasId: id,
+        status: r.signatureStatus,
+        reason: r.unknownReason,
+        rasterOps: r.rasterOperationCount,
+      });
     }
     requestAnimationFrame(loop);
   };
@@ -62,19 +77,25 @@ await page.evaluate(() => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mark = (label) => page.evaluate((l) => window.__DOGFOOD_MARK?.(l), label);
 
 if (scenario === 'workbench') {
+  await mark('settle-start');
   await sleep(3000); // mount + initial chart animation settle
+  await mark('settle-end');
   for (let i = 0; i < 5; i++) {
+    await mark(`rerender-same-${i + 1}`);
     await page.click('#rerender-same');
     await sleep(1400);
   }
   for (let i = 0; i < 2; i++) {
+    await mark(`randomize-${i + 1}`);
     await page.click('#randomize');
     await sleep(1400);
   }
   const stage = await page.locator('#konva-stage canvas').first().boundingBox();
   if (stage) {
+    await mark('drag-start');
     await page.mouse.move(stage.x + 40, stage.y + 40);
     await page.mouse.down();
     for (let i = 1; i <= 10; i++) {
@@ -82,10 +103,15 @@ if (scenario === 'workbench') {
       await sleep(30);
     }
     await page.mouse.up();
+    await mark('drag-end');
   }
+  await mark('idle-start');
   await sleep(2000);
+  await mark('idle-end');
 } else if (scenario === 'excalidraw') {
+  await mark('settle-start');
   await sleep(3000); // mount + welcome screen settle; watch for idle redraws
+  await mark('settle-end');
   const drag = async (x1, y1, x2, y2) => {
     await page.mouse.move(x1, y1);
     await page.mouse.down();
@@ -98,18 +124,28 @@ if (scenario === 'workbench') {
   };
   // Two rectangles: 'r' selects the rectangle tool (Excalidraw reverts to
   // selection after each shape, so press it again for the second).
+  await mark('rect1-start');
   await page.keyboard.press('r');
   await drag(400, 300, 550, 400);
+  await mark('rect1-end');
   await sleep(500);
+  await mark('rect2-start');
   await page.keyboard.press('r');
   await drag(600, 350, 750, 480);
+  await mark('rect2-end');
   await sleep(500);
   // Pan with the hand tool.
+  await mark('pan-start');
   await page.keyboard.press('h');
   await drag(500, 400, 320, 280);
+  await mark('pan-end');
+  await mark('idle-start');
   await sleep(5000); // trailing idle: false-`same` watch
+  await mark('idle-end');
 } else {
+  await mark('idle-start');
   await sleep(idleMs);
+  await mark('idle-end');
 }
 
 const data = await page.evaluate(() => window.__DOGFOOD__);

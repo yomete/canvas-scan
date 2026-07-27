@@ -37,6 +37,17 @@ export function mixTokenInto(
   return fnvStep(hash, body);
 }
 
+// Allocation-free fixed-width token: one tag byte + four value bytes is
+// uniquely decodable without length framing. Used on always-on hot paths
+// (per-op path/matrix tracking) where String() allocation dominates.
+export function mixUintInto(hash: number, value: number): number {
+  hash = Math.imul(hash ^ 0x75, 0x01000193) >>> 0; // 'u' tag byte
+  hash = Math.imul(hash ^ (value & 0xff), 0x01000193) >>> 0;
+  hash = Math.imul(hash ^ ((value >>> 8) & 0xff), 0x01000193) >>> 0;
+  hash = Math.imul(hash ^ ((value >>> 16) & 0xff), 0x01000193) >>> 0;
+  return Math.imul(hash ^ ((value >>> 24) & 0xff), 0x01000193) >>> 0;
+}
+
 export function mixNumberTokenInto(hash: number, value: number): number {
   const quantized = Number.isFinite(value)
     ? Math.round(value * 100) / 100

@@ -1,3 +1,4 @@
+<!-- Package README uses absolute repository links for the npm view; root README keeps relative links. -->
 # canvas-scan
 
 Surface repeated canvas command signatures — likely redundant redraws — in
@@ -10,13 +11,13 @@ canvas API self-time, and a frame-over-frame command-signature comparison.
 When a canvas repeats the previous window's command signature, the overlay
 flashes a red outline with the owner's name.
 
-![The overlay flags a repeated command signature on the demo chart](docs/demo.gif)
+![The overlay flags a repeated command signature on the demo chart](https://raw.githubusercontent.com/yomete/canvas-scan/main/docs/demo.gif)
 
 ## Status
 
 Pre-release. The package is not on npm yet. The core is tested against
 react-konva and chart.js on real library internals — see
-[packages/dogfood/FINDINGS.md](packages/dogfood/FINDINGS.md).
+[packages/dogfood/FINDINGS.md](https://github.com/yomete/canvas-scan/blob/main/packages/dogfood/FINDINGS.md).
 
 ## What the tool measures
 
@@ -126,8 +127,9 @@ so the tool cannot instrument itself.
   physical draws it observes.
 - OffscreenCanvas transfers and worker-owned canvases are not observable.
 - CanvasPattern arguments poison the window to `unknown`.
-- Measured overhead is ~0.3µs per captured operation. A 1,000-op frame pays
-  ~0.23ms.
+- Full capture adds <2ms mean / <3ms p95, and count-only adds <0.75ms mean /
+  <2ms p95, per 1,000 mixed bench iterations at the 1,000-op level, verified
+  by `pnpm --filter dogfood run bench:chrome`.
 
 ## Publishing (maintainers)
 

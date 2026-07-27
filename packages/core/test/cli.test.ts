@@ -54,7 +54,7 @@ describe('canvas-scan init CLI', () => {
 
   it('creates a Next.js instrumentation client once', () => {
     const dir = fixture();
-    writePackageJson(dir, { dependencies: { next: '^15.0.0' } });
+    writePackageJson(dir, { dependencies: { next: '^15.3.0' } });
 
     expect(detectFramework(dir)).toBe('next');
     const plan = planInit(dir);
@@ -68,7 +68,7 @@ describe('canvas-scan init CLI', () => {
 
   it('prepends the import to an existing Next.js instrumentation client', () => {
     const dir = fixture();
-    writePackageJson(dir, { dependencies: { next: '^15.0.0' } });
+    writePackageJson(dir, { dependencies: { next: '^15.3.0' } });
     const instrumentation = path.join(dir, 'instrumentation-client.ts');
     fs.writeFileSync(instrumentation, 'export const value = true;\n');
 
@@ -91,5 +91,66 @@ describe('canvas-scan init CLI', () => {
 
   it('reads the package version', () => {
     expect(readVersion()).toBe('0.1.0');
+  });
+
+  it('plans the npm install command when canvas-scan is missing', () => {
+    const dir = fixture();
+    writePackageJson(dir, {});
+
+    expect(planInit(dir).install).toBe('npm install -D canvas-scan');
+  });
+
+  it('plans the pnpm install command when a pnpm lockfile exists', () => {
+    const dir = fixture();
+    writePackageJson(dir, {});
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+
+    expect(planInit(dir).install).toBe('pnpm add -D canvas-scan');
+  });
+
+  it('plans the yarn install command when a yarn lockfile exists', () => {
+    const dir = fixture();
+    writePackageJson(dir, {});
+    fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
+
+    expect(planInit(dir).install).toBe('yarn add -D canvas-scan');
+  });
+
+  it('does not plan an install when canvas-scan is present', () => {
+    const dir = fixture();
+    writePackageJson(dir, {
+      devDependencies: { 'canvas-scan': '^0.1.0' },
+    });
+
+    expect(planInit(dir).install).toBeNull();
+  });
+
+  it('creates the instrumentation client for Next 15.3', () => {
+    const dir = fixture();
+    writePackageJson(dir, { dependencies: { next: '^15.3.0' } });
+
+    expect(planInit(dir).action.kind).toBe('create');
+  });
+
+  it('provides manual instructions for Next versions before 15.3', () => {
+    const dir = fixture();
+    writePackageJson(dir, { dependencies: { next: '^14.2.0' } });
+
+    const plan = planInit(dir);
+    expect(plan.action.kind).toBe('manual');
+    expect(plan.instructions).toContain(
+      'instrumentation-client.ts requires Next 15.3+',
+    );
+  });
+
+  it('provides manual instructions for unverified Next versions', () => {
+    const dir = fixture();
+    writePackageJson(dir, { dependencies: { next: 'latest' } });
+
+    const plan = planInit(dir);
+    expect(plan.action.kind).toBe('manual');
+    expect(plan.instructions).toContain(
+      "detected next version spec 'latest' — could not verify >= 15.3",
+    );
   });
 });

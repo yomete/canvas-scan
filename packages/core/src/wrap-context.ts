@@ -6,6 +6,7 @@ import {
   markUnknown,
   mixNumberTokenInto,
   mixTokenInto,
+  mixUintInto,
   newWindowSignature,
 } from './signature';
 import type {
@@ -39,6 +40,7 @@ export interface CanvasRecord {
   props: Map<string, unknown>;
   matrix: [number, number, number, number, number, number];
   matrixUnknown: boolean;
+  matrixHash: number;
   pathHash: number;
   pathUnknown: boolean;
   clipHash: number;
@@ -203,6 +205,7 @@ function headState(record: CanvasRecord) {
 function clearPersistentState(record: CanvasRecord): void {
   record.props.clear();
   record.matrix = [1, 0, 0, 1, 0, 0];
+  computeMatrixHash(record);
   record.matrixUnknown = false;
   record.pathHash = 0x811c9dc5;
   record.pathUnknown = false;
@@ -236,7 +239,27 @@ function finiteArgs(args: unknown[], count: number): number[] | null {
   return <number[]>args.slice(0, count);
 }
 
+// Recomputed only on matrix MUTATION; path ops mix the cached fold instead
+// of re-tokenizing six numbers per op (the always-on tracker hot path).
+function computeMatrixHash(record: CanvasRecord): void {
+  let hash = 0x811c9dc5;
+  for (const value of record.matrix) {
+    hash = mixNumberTokenInto(hash, value);
+  }
+  record.matrixHash = hash;
+}
+
 function updateMatrix(
+  record: CanvasRecord,
+  name: string,
+  args: unknown[],
+): boolean {
+  const changed = applyMatrixOp(record, name, args);
+  if (changed) computeMatrixHash(record);
+  return changed;
+}
+
+function applyMatrixOp(
   record: CanvasRecord,
   name: string,
   args: unknown[],
@@ -309,7 +332,11 @@ function mixPathValue(
   hash: number,
   value: unknown,
 ): number {
-  if (typeof value === 'number') return mixNumberTokenInto(hash, value);
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? mixUintInto(hash, Math.round(value * 100) | 0)
+      : mixNumberTokenInto(hash, value);
+  }
   if (typeof value !== 'object' || value === null) {
     // Non-number primitives coerce deterministically, so they stay
     // classifiable — type-tagged, never pathUnknown.
@@ -368,10 +395,9 @@ function updatePathHash(
   for (const arg of args) {
     hash = mixPathValue(record, hash, arg);
   }
-  // Canvas path points are transformed when they are added, not when they are drawn.
-  for (const value of record.matrix) {
-    hash = mixNumberTokenInto(hash, value);
-  }
+  // Canvas path points are transformed when they are added, not when they
+  // are drawn; the matrix contribution is the cached mutation-time fold.
+  hash = mixUintInto(hash, record.matrixHash);
   record.pathHash = hash;
 }
 
@@ -391,9 +417,7 @@ function updateClipHash(record: CanvasRecord, args: unknown[]): void {
     // Path2D clip geometry depends on the CTM at clip time; bare paths bake
     // the CTM at build time instead.
     if (record.matrixUnknown) record.clipUnknown = true;
-    for (const value of record.matrix) {
-      hash = mixNumberTokenInto(hash, value);
-    }
+    hash = mixUintInto(hash, record.matrixHash);
   }
   record.clipHash = hash;
 }
@@ -419,6 +443,7 @@ function updateMethodState(
     const state = record.stateStack.pop();
     if (state) {
       record.matrix = state.matrix;
+      computeMatrixHash(record);
       record.matrixUnknown = state.matrixUnknown;
       record.clipHash = state.clipHash;
       record.clipUnknown = state.clipUnknown;
@@ -548,12 +573,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         props: new Map(),
         matrix: [1, 0, 0, 1, 0, 0],
         matrixUnknown: false,
+        matrixHash: 0,
         pathHash: 0x811c9dc5,
         pathUnknown: false,
         clipHash: 0x811c9dc5,
         clipUnknown: false,
         stateStack: [],
       };
+      computeMatrixHash(record);
       refreshContentToken(record);
       trackBuild(this, record.contentSig);
       records.add(record);
