@@ -475,6 +475,17 @@ is in Yomi's Codex outputs dir, `canvas-scan-progress-review-2026-07-27.md`.
 7. 0.1.0 publish — additionally gated on Yomi confirming the npm account
    (personal, not work).
 
+**QUEUE COMPLETE (2026-07-28): batches 1–6 all landed, CI-verified, and
+closed with CODEX_STATUS: APPROVED** (batch 6 took four review rounds:
+5 → 2 → 1 → 0 findings — alias-safe path folds, unmodeled-transform
+promotion, deterministic prepack with strict required-manifest assertion,
+a Next gate that rejects compound/prerelease/malformed/stacked specs, and
+HTTP boot proofs for both packed fixtures; the Node tripwire moved to
+5µs/op after flaking at 2.02 on a shared runner — binding budgets stay in
+the Chrome release command, which passes with margin). **The ONLY item
+between HEAD and 0.1.0 is the npm-account check: `npm whoami` must show
+the personal account, then `pnpm publish` from packages/core.**
+
 ## Later phases / launch checklist
 
 - **M1 — correctness/overhead hardening** (the acceptance suite lives here):

@@ -1972,3 +1972,36 @@ comparators (`^>=15.3.0`, `~>=15.3.0`) are unverifiable → manual, with
 both cases as a regression. 176 tests; typecheck clean.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex closure — batch 6 (round 4)
+
+Date: 2026-07-28
+
+### Verdict
+
+**Batch 6 is CLOSED.**
+
+The round-3 P1 is resolved. The Next simple-spec matcher now permits at most
+one mutually exclusive prefix (`^`, `~`, or `>=`), so malformed stacked
+comparators cannot establish a supported Next range. The npm-account user gate
+is now the only remaining pre-publish item for `0.1.0`.
+
+### Verification performed
+
+- Local `HEAD`, `origin/main`, and the configured upstream resolve to
+  `62307ac7ce41e5c8afc80a6a598f4300bfefec9c`.
+- Direct `planInit()` probes returned `action.kind: "manual"` with
+  `could not verify >= 15.3` instructions for both `^>=15.3.0` and
+  `~>=15.3.0`.
+- `packages/core/bin/canvas-scan.mjs:60` uses the mutually exclusive
+  `(?:[\^~]|>=)?` prefix alternation.
+- `packages/core/test/cli.test.ts:203-219` loops over both stacked specs and
+  asserts manual setup plus the unverifiable-spec guidance.
+- `pnpm test` passed: 21 test files and 175 tests. Vitest counts the two-spec
+  regression loop as one test.
+- The supplied exact-HEAD remote CI result is fully green for both jobs.
+- No new blocking spec or standards finding was found.
+
+CODEX_STATUS: APPROVED
