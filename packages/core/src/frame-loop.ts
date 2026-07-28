@@ -10,11 +10,17 @@ import {
 
 export const latestReports = new Map<string, DrawBatchReport>();
 
+const histories = new Map<string, DrawBatchReport[]>();
+
 export type ReportListener = (report: DrawBatchReport, canvas: unknown) => void;
 
 const reportListeners = new Set<ReportListener>();
 
 let windowIndex = 0;
+
+export function getHistory(canvasId: string): DrawBatchReport[] {
+  return [...(histories.get(canvasId) ?? [])];
+}
 
 export function subscribeToReports(listener: ReportListener): () => void {
   reportListeners.add(listener);
@@ -125,6 +131,10 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       const processed = processRecord(record, windowIndex, captureEvery);
       if (!processed) continue;
       latestReports.set(processed.report.canvasId, processed.report);
+      const history = histories.get(processed.report.canvasId) ?? [];
+      history.push(processed.report);
+      if (history.length > 120) history.shift();
+      histories.set(processed.report.canvasId, history);
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
       emitReport(processed.report, record.canvas);
     }

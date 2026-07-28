@@ -9,7 +9,10 @@ import instruments every observable main-thread Canvas2D canvas on the page.
 For each canvas, the tool reports the nearest React owner, draw-batch counts,
 canvas API self-time, and a frame-over-frame command-signature comparison.
 When a canvas repeats the previous window's command signature, the overlay
-flashes a red outline with the owner's name.
+flashes a red outline with the owner's name. A minimal toolbar collects the
+review candidates; its inspect mode lets you click any canvas to pin a
+popover with per-canvas stats and the owning component's source location,
+resolved on demand through your dev sourcemaps.
 
 ![The overlay flags a repeated command signature on the demo chart](https://raw.githubusercontent.com/yomete/canvas-scan/main/docs/demo.gif)
 

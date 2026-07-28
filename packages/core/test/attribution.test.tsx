@@ -2,6 +2,7 @@
 
 import { expect, it } from 'vitest';
 import { addSkippedOwners, resolveAttribution } from '../src/attribution';
+import { resolveSourceLocation } from '../src/symbolicate';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import React, { useLayoutEffect, useRef } from 'react';
@@ -59,6 +60,33 @@ it('leaves a canvas outside a React tree unattributed', () => {
     nearestReactOwner: null,
     attributionKind: 'unattributed',
   });
+});
+
+it('resolves no source for a canvas outside a React tree', async () => {
+  const canvas = document.createElement('canvas');
+
+  await expect(resolveSourceLocation(canvas)).resolves.toBeNull();
+});
+
+it('resolves a React canvas to a source location when one is available', async () => {
+  function SourceChart() {
+    return <canvas data-testid="source-c" />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<SourceChart />));
+
+  const canvas = container.querySelector('[data-testid="source-c"]')!;
+  const location = await resolveSourceLocation(canvas);
+  expect(
+    location === null ||
+      (typeof location.file === 'string' &&
+        location.file.length > 0 &&
+        typeof location.line === 'number'),
+  ).toBe(true);
+
+  root.unmount();
 });
 
 it('skips known library wrapper names to reach the user component', () => {

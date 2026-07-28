@@ -16,25 +16,27 @@ export function addSkippedOwners(names: readonly string[]): void {
   for (const name of names) skippedOwners.add(name);
 }
 
-function findOwner(fiber: FiberNode): {
-  name: string | null;
-  hasComposite: boolean;
-} {
-  let fallback: string | null = null;
-  let hasComposite = false;
+function findOwner(fiber: FiberNode): FiberNode | null {
+  let compositeFallback: FiberNode | null = null;
+  let namedFallback: FiberNode | null = null;
   for (let current: FiberNode | null = fiber; current; current = current.return) {
     if (!isCompositeFiber(current)) continue;
-    hasComposite = true;
+    compositeFallback ??= current;
     const name = getDisplayName(current.type);
     if (!name) continue;
-    fallback ??= name;
+    namedFallback ??= current;
     // 1-2 char names are minified library internals (library dist code is
     // bundled; user components in dev builds keep their real names)
     if (!skippedOwners.has(name) && name.length > 2) {
-      return { name, hasComposite: true };
+      return current;
     }
   }
-  return { name: fallback, hasComposite };
+  return namedFallback ?? compositeFallback;
+}
+
+export function findOwnerFiber(canvas: any): FiberNode | null {
+  const fiber = getFiberFromHostInstance(canvas);
+  return fiber ? findOwner(fiber) : null;
 }
 
 export function resolveAttribution(canvas: any): {
@@ -44,14 +46,15 @@ export function resolveAttribution(canvas: any): {
   try {
     const fiber = getFiberFromHostInstance(canvas);
     if (fiber) {
-      const owner = findOwner(fiber);
+      const owner = findOwnerFiber(canvas);
+      const name = owner ? getDisplayName(owner.type) : null;
       if (fiber.stateNode === canvas) {
-        return owner.hasComposite
-          ? { nearestReactOwner: owner.name, attributionKind: 'jsx-owner' }
+        return owner
+          ? { nearestReactOwner: name, attributionKind: 'jsx-owner' }
           : { nearestReactOwner: 'canvas', attributionKind: 'direct-host' };
       }
       return {
-        nearestReactOwner: owner.name,
+        nearestReactOwner: name,
         attributionKind: 'container-only',
       };
     }
@@ -61,9 +64,9 @@ export function resolveAttribution(canvas: any): {
     for (let el = canvas.parentElement; el; el = el.parentElement) {
       const hostFiber = getFiberFromHostInstance(el);
       if (!hostFiber) continue;
-      const owner = findOwner(hostFiber);
+      const owner = findOwnerFiber(el);
       return {
-        nearestReactOwner: owner.name,
+        nearestReactOwner: owner ? getDisplayName(owner.type) : null,
         attributionKind: 'container-only',
       };
     }

@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   emitReport,
+  getHistory,
   processRecord,
+  startFrameLoop,
   subscribeToReports,
 } from '../src/frame-loop';
 import type { DrawBatchReport } from '../src/types';
-import type { CanvasRecord } from '../src/wrap-context';
+import { records, type CanvasRecord } from '../src/wrap-context';
 
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
@@ -347,5 +349,64 @@ describe('report subscribers', () => {
     unsubscribeThrowing();
     unsubscribe();
     warn.mockRestore();
+  });
+});
+
+describe('report history', () => {
+  it('caps each canvas history at 120 reports', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'history-cap' });
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+
+      for (let index = 0; index < 121; index++) {
+        record.activeInWindow = true;
+        record.rasterOps = index;
+        callbacks.shift()!(index);
+      }
+
+      const history = getHistory(record.id);
+      expect(history).toHaveLength(120);
+      expect(history[0].rasterOperationCount).toBe(1);
+      expect(history[119].rasterOperationCount).toBe(120);
+    } finally {
+      records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns a copy of a canvas history', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'history-copy' });
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+
+      const history = getHistory(record.id);
+      history.length = 0;
+
+      expect(getHistory(record.id)).toHaveLength(1);
+    } finally {
+      records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

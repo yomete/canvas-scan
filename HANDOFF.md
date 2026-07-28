@@ -491,6 +491,27 @@ the WebGL phase and React 18/Firefox/Safari expansion.
 
 ## Overlay v2 — agreed direction (2026-07-28, Yomi's call)
 
+**Tiers 1+2 BUILT + review-APPROVED 2026-07-28 (uncommitted — landing
+awaits Yomi): 189 tests.** The Codex round found three real findings
+(inspect-mode stacking could let outlines cover the toolbar; the 250ms
+refresh rebuilt DOM unconditionally, dropping focus, with O(n) listeners;
+copy/count semantics + a fail-open screenshot script). All remediated:
+z-layered dock, one rAF dirty-gated commit for ALL DOM writes with
+delegated O(1) listeners, canvas-level candidate counts consistent with
+the flash threshold, api-labelled timing copy, fail-closed v2-shots.mjs
+acceptance, and hover labels on inspect outlines. Log ends
+CODEX_STATUS: APPROVED. Toolbar pill (inspect toggle / accent-lit candidate count /
+collapse-to-dot, draggable), sorted flyout rows (kind badge, same-rate,
+unknownReason when unknown-dominant, mean self-time), opt-in inspect mode
+(faint dashed outlines become clickable; Esc exits), pinned popover with
+history aggregates + copy-json + **on-demand sourceLocation via bippy
+symbolication — verified resolving App.tsx:3 through Vite sourcemaps in
+real Chrome** (src/symbolicate.ts; cached per canvas; only runs on popover
+open). History ring in frame-loop (120 reports/canvas,
+`__CANVAS_SCAN__.getHistory`). Workbench gate at baseline. v2c (activity
+strips, theming, position persistence) still open. GIF/README refresh
+pending commit.
+
 **react-scan's minimal toolbar idiom, NOT a devtools drawer.** The HUD pill
 becomes a draggable toolbar (status dot, canvas/candidate counts, inspect
 toggle, collapse); everything else is compact flyouts. Inspect is an

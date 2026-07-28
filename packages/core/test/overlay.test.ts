@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { resolveSourceLocation } = vi.hoisted(() => ({
+  resolveSourceLocation: vi.fn(),
+}));
+
+vi.mock('../src/symbolicate', () => ({ resolveSourceLocation }));
 
 import { emitReport } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
@@ -24,7 +30,7 @@ function makeReport(
   };
 }
 
-function makeCanvas(): HTMLCanvasElement {
+function makeCanvas(connected = true): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.getBoundingClientRect = vi.fn(
     () =>
@@ -33,169 +39,559 @@ function makeCanvas(): HTMLCanvasElement {
         left: 20,
         width: 100,
         height: 50,
-      }) as any,
+      }) as DOMRect,
   );
-  document.body.append(canvas);
+  if (connected) document.body.append(canvas);
   return canvas;
 }
+
+function setCanvasRect(
+  canvas: HTMLCanvasElement,
+  overrides: Partial<DOMRect>,
+): void {
+  const rect = {
+    top: 10,
+    left: 20,
+    width: 100,
+    height: 50,
+    ...overrides,
+  } as DOMRect;
+  vi.mocked(canvas.getBoundingClientRect).mockReturnValue(rect);
+}
+
+function getShadowRoot(): ShadowRoot {
+  return document.querySelector('[data-canvas-scan]')!.shadowRoot!;
+}
+
+function refreshOverlay(): void {
+  vi.advanceTimersByTime(250);
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  resolveSourceLocation.mockReset();
+  resolveSourceLocation.mockResolvedValue(null);
+});
 
 afterEach(() => {
   unmountOverlay();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
-describe('overlay', () => {
-  it('mounts idempotently with an open shadow root and HUD', () => {
+describe('overlay toolbar', () => {
+  it('keeps the dock above the delegated outlines layer', () => {
     mountOverlay();
-    mountOverlay();
+    refreshOverlay();
+    const root = getShadowRoot();
+    const style = root.querySelector('style')?.textContent;
 
-    const hosts = document.querySelectorAll('[data-canvas-scan]');
-    expect(hosts).toHaveLength(1);
-    expect(hosts[0]?.shadowRoot?.querySelector('.hud')).not.toBeNull();
+    expect(style).toMatch(/\.dock\s*\{[^}]*z-index:\s*2/s);
+    expect(style).toMatch(/\.outlines\s*\{[^}]*z-index:\s*1/s);
   });
 
-  it('reuses and updates an outline for repeated same-signature windows', () => {
+  it('renders one toolbar with inspect, counts, and collapse controls', () => {
+    mountOverlay();
+    mountOverlay();
+    refreshOverlay();
+    const root = getShadowRoot();
+
+    expect(document.querySelectorAll('[data-canvas-scan]')).toHaveLength(1);
+    expect(root.querySelectorAll('.toolbar')).toHaveLength(1);
+    expect(root.querySelector('.inspect')).not.toBeNull();
+    expect(root.querySelector('.counts')?.textContent).toBe(
+      '0 canvases · 0 review candidates',
+    );
+    expect(root.querySelector('.collapse')).not.toBeNull();
+  });
+
+  it('updates counts and accents review candidates only when positive', () => {
+    mountOverlay();
+    refreshOverlay();
+    const root = getShadowRoot();
+    const candidate = root.querySelector('.candidate-count')!;
+
+    expect(candidate.classList.contains('accent')).toBe(false);
+    emitReport(
+      makeReport({ signatureStatus: 'changed' }),
+      makeCanvas(false),
+    );
+    refreshOverlay();
+    expect(root.querySelector('.counts')?.textContent).toBe(
+      '1 canvas · 0 review candidates',
+    );
+    expect(candidate.classList.contains('accent')).toBe(false);
+
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    expect(root.querySelector('.counts')?.textContent).toBe(
+      '1 canvas · 1 review candidate',
+    );
+    expect(candidate.classList.contains('accent')).toBe(true);
+    expect(root.querySelector('.collapsed-dot')?.classList).toContain('accent');
+
+    emitReport(makeReport(), makeCanvas(false));
+    emitReport(
+      makeReport({
+        canvasId: 'below-threshold',
+        rasterOperationCount: 1,
+      }),
+      makeCanvas(false),
+    );
+    refreshOverlay();
+    expect(root.querySelector('.counts')?.textContent).toBe(
+      '2 canvases · 1 review candidate',
+    );
+  });
+
+  it('collapses out of inspect mode and does not re-enter when expanded', () => {
     mountOverlay();
     const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    const toolbar = root.querySelector('.toolbar')!;
+
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    expect(root.querySelector('.toolbar .inspect')?.classList).toContain(
+      'active',
+    );
+
+    root.querySelector<HTMLButtonElement>('.collapse')!.click();
+    refreshOverlay();
+    expect(toolbar.classList.contains('collapsed')).toBe(true);
+    expect(root.querySelector('.toolbar .inspect')?.classList).not.toContain(
+      'active',
+    );
+    const collapsedOutline = root.querySelector<HTMLElement>('.outline');
+    expect(
+      collapsedOutline === null ||
+        collapsedOutline.style.pointerEvents === 'none',
+    ).toBe(true);
+
+    root.querySelector<HTMLButtonElement>('.collapsed-dot')!.click();
+    refreshOverlay();
+    expect(toolbar.classList.contains('collapsed')).toBe(false);
+    expect(root.querySelector('.toolbar .inspect')?.classList).not.toContain(
+      'active',
+    );
+    const expandedOutline = root.querySelector<HTMLElement>('.outline');
+    expect(
+      expandedOutline === null ||
+        expandedOutline.style.pointerEvents === 'none',
+    ).toBe(true);
+  });
+
+  it('drags only from the toolbar background and resets on unmount', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    const toolbar = root.querySelector<HTMLElement>('.toolbar')!;
+    const dock = root.querySelector<HTMLElement>('.dock')!;
+
+    toolbar.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 20 }),
+    );
+    document.dispatchEvent(
+      new MouseEvent('pointermove', { clientX: 35, clientY: 50 }),
+    );
+    document.dispatchEvent(new MouseEvent('pointerup'));
+    refreshOverlay();
+
+    expect(dock.style.transform).toBe('translate(25px, 30px)');
+
+    unmountOverlay();
+    mountOverlay();
+    refreshOverlay();
+    expect(getShadowRoot().querySelector<HTMLElement>('.dock')?.style.transform)
+      .toBe('');
+  });
+});
+
+describe('overlay flyout', () => {
+  it('sorts rows, caps them at eight, expands the rest, and labels kinds', () => {
+    mountOverlay();
+    for (let index = 0; index < 10; index++) {
+      emitReport(
+        makeReport({
+          canvasId: `canvas-${index}`,
+          nearestReactOwner: `Owner${index}`,
+          attributionKind: index === 9 ? 'container-only' : 'jsx-owner',
+          signatureStatus: index >= 8 ? 'same' : 'changed',
+          canvasApiSelfTimeMs: index,
+        }),
+        makeCanvas(false),
+      );
+    }
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+
+    const firstRow = root.querySelector<HTMLButtonElement>('.row')!;
+    expect(firstRow.dataset.canvasId).toBe('canvas-9');
+    expect(firstRow.querySelector('.badge')?.textContent).toBe('co');
+    expect(firstRow.querySelector('.badge')?.getAttribute('title')).toBe(
+      'container-only',
+    );
+    expect(root.querySelectorAll('.row')).toHaveLength(8);
+    expect(root.querySelector('.more')?.textContent).toBe('+2 more');
+
+    root.querySelector<HTMLButtonElement>('.more')!.click();
+    refreshOverlay();
+    expect(root.querySelectorAll('.row')).toHaveLength(10);
+    expect(root.querySelector('.more')).toBeNull();
+  });
+
+  it('shows the dominant unknown reason and mean self-time', () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    emitReport(
+      makeReport({
+        signatureStatus: 'unknown',
+        unknownReason: 'tainted-source',
+        canvasApiSelfTimeMs: 0.2,
+      }),
+      canvas,
+    );
+    emitReport(
+      makeReport({
+        signatureStatus: 'unknown',
+        unknownReason: 'tainted-source',
+        canvasApiSelfTimeMs: 0.4,
+      }),
+      canvas,
+    );
+    emitReport(
+      makeReport({
+        signatureStatus: 'same',
+        canvasApiSelfTimeMs: 0.3,
+      }),
+      canvas,
+    );
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+
+    expect(root.querySelector('.row')?.textContent).toContain(
+      'unknown: tainted-source',
+    );
+    expect(root.querySelector('.row')?.textContent).toContain('0.3 ms api');
+  });
+
+  it('locates a connected canvas on row hover and ignores a detached one', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'connected' }), makeCanvas());
+    emitReport(makeReport({ canvasId: 'detached' }), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+
+    root
+      .querySelector<HTMLElement>('[data-canvas-id="connected"].row')!
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(
+      root.querySelector('[data-canvas-id="connected"].outline')?.classList,
+    ).toContain('locate');
+
+    expect(() =>
+      root
+        .querySelector<HTMLElement>('[data-canvas-id="detached"].row')!
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+    ).not.toThrow();
+    refreshOverlay();
+    expect(
+      root.querySelector('[data-canvas-id="detached"].outline'),
+    ).toBeNull();
+  });
+
+  it('keeps flyout children stable across unchanged paint ticks', () => {
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const row = root.querySelector('.row');
+
+    refreshOverlay();
+    refreshOverlay();
+    refreshOverlay();
+
+    expect(root.querySelector('.row')).toBe(row);
+  });
+
+  it('registers no row listeners while rebuilding ten rows', () => {
+    mountOverlay();
+    refreshOverlay();
+    const addEventListener = vi.spyOn(EventTarget.prototype, 'addEventListener');
+
+    for (let index = 0; index < 10; index++) {
+      emitReport(
+        makeReport({ canvasId: `listener-${index}` }),
+        makeCanvas(false),
+      );
+    }
+    refreshOverlay();
+    getShadowRoot().querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+
+    expect(addEventListener).not.toHaveBeenCalled();
+  });
+});
+
+describe('overlay inspect mode and popover', () => {
+  it('makes connected outlines interactive and exits on Escape', () => {
+    mountOverlay();
+    emitReport(
+      makeReport({ signatureStatus: 'changed' }),
+      makeCanvas(),
+    );
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+    expect(outline.classList.contains('inspect')).toBe(true);
+    expect(outline.style.pointerEvents).toBe('auto');
+
+    outline.click();
+    refreshOverlay();
+    expect(root.querySelector('.popover-owner')?.textContent).toBe(
+      'EffectCanvas',
+    );
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    refreshOverlay();
+    expect(root.querySelector('.inspect')?.classList.contains('active')).toBe(
+      false,
+    );
+    expect(outline.style.pointerEvents).toBe('none');
+    expect(root.querySelector<HTMLElement>('.popover')?.hidden).toBe(true);
+  });
+
+  it('resolves source on demand and copies the latest report with aggregates', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    resolveSourceLocation.mockResolvedValue({
+      file: '/src/EffectCanvas.tsx',
+      line: 42,
+      column: 7,
+    });
+    mountOverlay();
+    emitReport(
+      makeReport({
+        signatureStatus: 'unknown',
+        unknownReason: 'first-window',
+        sampled: true,
+      }),
+      makeCanvas(false),
+    );
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+
+    expect(root.querySelector('.popover-body')?.textContent).toContain(
+      'status 0/0/1 of 1 windows',
+    );
+    expect(root.querySelector('.popover-body')?.textContent).toContain(
+      'sampled yes',
+    );
+    expect(root.querySelector('.popover-body')?.textContent).toContain(
+      'unknown first-window ×1',
+    );
+    expect(root.querySelector('.source')?.textContent).toBe(
+      'source: resolving…',
+    );
+    expect(resolveSourceLocation).toHaveBeenCalledOnce();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    refreshOverlay();
+
+    const source = root.querySelector<HTMLElement>('.source')!;
+    expect(source.textContent).toBe('source: EffectCanvas.tsx:42');
+    expect(source.title).toBe('/src/EffectCanvas.tsx:42:7');
+
+    root.querySelector<HTMLButtonElement>('.copy')!.click();
+    expect(writeText).toHaveBeenCalledOnce();
+    const copied = JSON.parse(writeText.mock.calls[0][0]);
+    expect(copied.latest.canvasId).toBe('canvas-1');
+    expect(copied.latest.sourceLocation).toEqual({
+      file: '/src/EffectCanvas.tsx',
+      line: 42,
+      column: 7,
+    });
+    expect(copied.aggregates.unknown).toBe(1);
+  });
+
+  it('opens detached canvases from rows and caches source resolution', async () => {
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('.close')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+
+    expect(root.querySelector('.popover-owner')?.textContent).toBe(
+      'EffectCanvas',
+    );
+    expect(resolveSourceLocation).toHaveBeenCalledOnce();
+  });
+
+  it('deactivates failed placements and restores them when visible again', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+
+    setCanvasRect(canvas, { width: 0, height: 0 });
+    refreshOverlay();
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+
+    setCanvasRect(canvas, { width: 100, height: 50 });
+    refreshOverlay();
+    expect(outline.hidden).toBe(false);
+    expect(outline.style.pointerEvents).toBe('auto');
+  });
+
+  it('deactivates a detached canvas on the next inspect commit', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+
+    canvas.remove();
+    refreshOverlay();
+
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+  });
+
+  it('keeps focus on the stable copy button after an unchanged report', () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    emitReport(makeReport(), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+    const copy = root.querySelector<HTMLButtonElement>('.copy')!;
+    copy.focus();
 
     emitReport(makeReport(), canvas);
+    refreshOverlay();
 
-    const outline = host?.shadowRoot?.querySelector<HTMLElement>('.outline');
+    expect(root.activeElement).toBe(copy);
+  });
+});
+
+describe('overlay outline compatibility and cleanup', () => {
+  it('uses the default two-raster-operation flash threshold', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    const root = getShadowRoot();
+
+    emitReport(makeReport({ rasterOperationCount: 1 }), canvas);
+    refreshOverlay();
+    expect(root.querySelector('.outline')).toBeNull();
+
+    emitReport(makeReport({ rasterOperationCount: 2 }), canvas);
+    refreshOverlay();
+    expect(root.querySelector('.outline')).not.toBeNull();
+  });
+
+  it('preserves same-signature flashes and minFlashRasterOps weighting', () => {
+    mountOverlay({ minFlashRasterOps: 5 });
+    const canvas = makeCanvas();
+    const root = getShadowRoot();
+
+    emitReport(makeReport({ rasterOperationCount: 4 }), canvas);
+    refreshOverlay();
+    expect(root.querySelector('.outline')).toBeNull();
+
+    emitReport(makeReport({ rasterOperationCount: 5 }), canvas);
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline');
     expect(outline?.style.top).toBe('8px');
     expect(outline?.style.left).toBe('18px');
     expect(outline?.style.width).toBe('104px');
     expect(outline?.style.height).toBe('54px');
     expect(outline?.querySelector('.label')?.textContent).toContain(
-      'EffectCanvas',
+      'same signature ×2',
     );
-    expect(outline?.querySelector('.label')?.textContent).toContain('×1');
-
-    emitReport(makeReport(), canvas);
-
-    expect(host?.shadowRoot?.querySelector('.outline')).toBe(outline);
-    expect(outline?.querySelector('.label')?.textContent).toContain('×2');
-  });
-
-  it('counts changed and unknown reports without outlining them', () => {
-    mountOverlay();
-    const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
-    emitReport(
-      makeReport({
-        signatureStatus: 'unknown',
-        unknownReason: 'first-window',
-      }),
-      canvas,
-    );
-
-    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
-    expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '1 canvases',
-    );
-    expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '0 review candidates',
-    );
-  });
-
-  it('counts a detached canvas without outlining it', () => {
-    mountOverlay();
-    const canvas = document.createElement('canvas');
-    const host = document.querySelector('[data-canvas-scan]');
-
-    expect(() => emitReport(makeReport(), canvas)).not.toThrow();
-
-    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
-    expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '1 canvases · 1 review candidates',
-    );
-  });
-
-  it('toggles the HUD list with one item per canvas', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    mountOverlay();
-    const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
-    const hud = host?.shadowRoot?.querySelector<HTMLElement>('.hud');
-
-    emitReport(makeReport(), canvas);
-    vi.setSystemTime(500);
-    emitReport(
-      makeReport({
-        canvasId: 'canvas-2',
-        nearestReactOwner: 'ChartCanvas',
-      }),
-      canvas,
-    );
-    hud?.click();
-
-    expect(hud?.classList.contains('open')).toBe(true);
-    expect(hud?.querySelectorAll('.hud-list li')).toHaveLength(2);
-
-    hud?.click();
-    expect(hud?.classList.contains('open')).toBe(false);
-  });
-
-  it('unmounts and stops the survival interval', () => {
-    vi.useFakeTimers();
-    mountOverlay();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    unmountOverlay();
-    vi.advanceTimersByTime(2000);
-
-    expect(host?.isConnected).toBe(false);
-    expect(document.querySelector('[data-canvas-scan]')).toBeNull();
-  });
-
-  it('re-appends the host after it is removed', () => {
-    vi.useFakeTimers();
-    mountOverlay();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    host?.remove();
-    vi.advanceTimersByTime(1000);
-
-    expect(host?.isConnected).toBe(true);
-    expect(document.querySelector('[data-canvas-scan]')).toBe(host);
-  });
-
-  it('counts a one-op same window without outlining it by default', () => {
-    mountOverlay();
-    const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    emitReport(makeReport({ rasterOperationCount: 1 }), canvas);
-
-    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
-    expect(host?.shadowRoot?.querySelector('.hud')?.textContent).toContain(
-      '1 review candidates',
-    );
-  });
-
-  it('outlines a two-op same window by default', () => {
-    mountOverlay();
-    const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    emitReport(makeReport({ rasterOperationCount: 2 }), canvas);
-
-    expect(host?.shadowRoot?.querySelector('.outline')).not.toBeNull();
-  });
-
-  it('uses the configured minimum raster operations for outlines', () => {
-    mountOverlay({ minFlashRasterOps: 5 });
-    const canvas = makeCanvas();
-    const host = document.querySelector('[data-canvas-scan]');
-
-    emitReport(makeReport({ rasterOperationCount: 4 }), canvas);
-    expect(host?.shadowRoot?.querySelector('.outline')).toBeNull();
 
     emitReport(makeReport({ rasterOperationCount: 5 }), canvas);
-    expect(host?.shadowRoot?.querySelector('.outline')).not.toBeNull();
+    refreshOverlay();
+    expect(root.querySelector('.outline')).toBe(outline);
+    expect(outline?.querySelector('.label')?.textContent).toContain(
+      'same signature ×3',
+    );
+  });
+
+  it('re-appends its host after removal', () => {
+    mountOverlay();
+    const host = document.querySelector('[data-canvas-scan]')!;
+    host.remove();
+
+    vi.advanceTimersByTime(1000);
+
+    expect(host.isConnected).toBe(true);
+  });
+
+  it('removes all UI and document listeners on unmount', () => {
+    const removeEventListener = vi.spyOn(document, 'removeEventListener');
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas());
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+
+    unmountOverlay();
+    vi.advanceTimersByTime(1000);
+
+    expect(document.querySelector('[data-canvas-scan]')).toBeNull();
+    expect(root.querySelector('.toolbar')).toBeNull();
+    expect(root.querySelector('.flyout')).toBeNull();
+    expect(root.querySelector('.popover')).toBeNull();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'keydown',
+      expect.any(Function),
+    );
   });
 });
