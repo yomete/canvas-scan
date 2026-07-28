@@ -90,7 +90,7 @@ describe('canvas-scan init CLI', () => {
   });
 
   it('reads the package version', () => {
-    expect(readVersion()).toBe('0.1.0');
+    expect(readVersion()).toBe('0.2.0');
   });
 
   it('plans the npm install command when canvas-scan is missing', () => {

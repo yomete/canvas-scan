@@ -1,6 +1,6 @@
 {
   "name": "canvas-scan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drop-in Canvas2D observability for React apps: owner attribution, draw-batch stats, and command-signature comparison that flags likely-redundant redraws for review.",
   "type": "module",
   "license": "MIT",

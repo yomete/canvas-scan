@@ -18,7 +18,7 @@ resolved on demand through your dev sourcemaps.
 
 ## Status
 
-`canvas-scan@0.1.0` is on npm. The core is tested against
+`canvas-scan@0.2.0` is on npm. The core is tested against
 react-konva and chart.js on real library internals — see
 [packages/dogfood/FINDINGS.md](https://github.com/yomete/canvas-scan/blob/main/packages/dogfood/FINDINGS.md).
 
