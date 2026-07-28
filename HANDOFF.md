@@ -489,6 +489,28 @@ passes the strict manifest rules). Tagged `v0.1.0`. Next frontier, per
 conversation — Yomi's to have), overlay v2 (Yomi has ideas queued), then
 the WebGL phase and React 18/Firefox/Safari expansion.
 
+## Overlay v2 — agreed direction (2026-07-28, Yomi's call)
+
+**react-scan's minimal toolbar idiom, NOT a devtools drawer.** The HUD pill
+becomes a draggable toolbar (status dot, canvas/candidate counts, inspect
+toggle, collapse); everything else is compact flyouts. Inspect is an
+opt-in MODE: outlines stay pointer-events:none normally, become hoverable
+only while toggled (never steals app input otherwise); clicking a hovered
+canvas pins a small popover with the full report, and that click is the
+off-hot-path moment where `sourceLocation` finally resolves (bippy
+getOwnerStack + symbolicateStack on demand — the reserved field wakes up).
+HUD rows stay clickable as the inspect path for detached canvases (konva
+hit canvases, Excalidraw caches — not in the DOM, never hoverable).
+Milestone shape: history ring in core (~120 reports/canvas, also
+`__CANVAS_SCAN__.getHistory`) → toolbar chrome → enriched rows
+(unknownReason, status distribution, self-time-weighted labels,
+hover-to-locate, interestingness sort with quiet canvases collapsed) →
+inspect mode + symbolication. Deferred to v2c: CSS-gradient activity
+strips (no <canvas> in the overlay — self-instrumentation rule), Alt-hover
+outside inspect mode, theming. Standing rules: headless screenshots are
+overlay acceptance (the M3 flash-CSS lesson); all copy passes the
+claim-discipline test; DOM writes batch on a throttled paint pass.
+
 ## Later phases / launch checklist
 
 - **M1 — correctness/overhead hardening** (the acceptance suite lives here):
