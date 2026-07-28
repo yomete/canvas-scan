@@ -482,9 +482,12 @@ promotion, deterministic prepack with strict required-manifest assertion,
 a Next gate that rejects compound/prerelease/malformed/stacked specs, and
 HTTP boot proofs for both packed fixtures; the Node tripwire moved to
 5µs/op after flaking at 2.02 on a shared runner — binding budgets stay in
-the Chrome release command, which passes with margin). **The ONLY item
-between HEAD and 0.1.0 is the npm-account check: `npm whoami` must show
-the personal account, then `pnpm publish` from packages/core.**
+the Chrome release command, which passes with margin). **0.1.0 SHIPPED 2026-07-28**: published to npm as `canvas-scan@0.1.0`
+from the personal account `yomi` (whoami verified; the published tarball
+passes the strict manifest rules). Tagged `v0.1.0`. Next frontier, per
+"Later phases": launch polish (demo site, the Polar Signals case-study
+conversation — Yomi's to have), overlay v2 (Yomi has ideas queued), then
+the WebGL phase and React 18/Firefox/Safari expansion.
 
 ## Later phases / launch checklist
 

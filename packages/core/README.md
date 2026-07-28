@@ -15,7 +15,7 @@ flashes a red outline with the owner's name.
 
 ## Status
 
-Pre-release. The package is not on npm yet. The core is tested against
+`canvas-scan@0.1.0` is on npm. The core is tested against
 react-konva and chart.js on real library internals — see
 [packages/dogfood/FINDINGS.md](https://github.com/yomete/canvas-scan/blob/main/packages/dogfood/FINDINGS.md).
 
@@ -44,9 +44,24 @@ Path2D and CanvasGradient objects do not poison the signature. The tool
 hashes their construction commands and treats each object as a stable token.
 A mutated or untracked object still reports `unknown`.
 
-## Install (from source)
+## Install
 
-The package is not published yet. Use one of these paths:
+```bash
+npx canvas-scan init --write
+```
+
+The command detects your framework, prints the required install command,
+and applies the early import. Or install and wire it manually:
+
+```bash
+npm install -D canvas-scan
+```
+
+```ts
+import 'canvas-scan/auto'; // must be the FIRST import of your entry module
+```
+
+Alternative paths:
 
 **Script tag.** Build the IIFE bundle, then load it before any other script:
 
