@@ -57,7 +57,7 @@ function minimumNextVersion(spec) {
   // first token's minimum, so they are conservatively unverifiable.
   // Numeric-only tail: prerelease suffixes (15.3.0-beta orders BELOW
   // 15.3.0) and malformed specs (15.3.foo) are conservatively unverifiable.
-  const single = spec.trim().match(/^[\^~]?(?:>=)?v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?$/i);
+  const single = spec.trim().match(/^(?:[\^~]|>=)?v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?$/i);
   if (!single) return null;
   const minor = single[2];
   return {

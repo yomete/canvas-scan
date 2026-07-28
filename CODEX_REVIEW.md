@@ -1873,3 +1873,102 @@ Verification: 174 tests; typecheck clean; verify-pack package/Vite/Next
 all PASS (clean-lifecycle pack, strict manifest, HTTP boots).
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex closure — batch 6 (round 3)
+
+Date: 2026-07-28
+
+### Verdict
+
+**Batch 6 is not CLOSED.**
+
+The two round-2 findings are resolved as reported, and the Node tripwire change
+is consistent with the agreed performance-contract split. One further P1
+within the same conservative Next-spec gate remains, so npm-account
+confirmation is not yet the only pre-publish item.
+
+### Spec — remaining closure finding
+
+#### [P1] The Next gate accepts malformed stacked comparators
+
+`packages/core/bin/canvas-scan.mjs:60` makes `^`/`~` and `>=` independently
+optional. That admits combinations which are not a single simple version spec.
+Fresh `planInit()` probes at this HEAD produced:
+
+- `15.3.0-beta` → `manual`
+- `15.3.foo` → `manual`
+- `^>=15.3.0` → `create`
+- `~>=15.3.0` → `create`
+
+The last two are malformed and therefore cannot prove a supported Next range.
+This violates round 2's requirement that invalid or otherwise unverifiable
+specs conservatively return manual setup. Make the valid prefixes mutually
+exclusive and add a stacked-comparator regression.
+
+### Spec — requested items verified
+
+- The exact prerelease and malformed-tail regressions now pass and return
+  manual setup (`packages/core/test/cli.test.ts:177-200`).
+- `scripts/pack-manifest.mjs` requires all nine named entries, rejects entries
+  outside the package's allowed declaration/chunk surface, and requires exactly
+  one shared chunk. Unit regressions cover missing-required, hollow,
+  unexpected, zero-chunk, and multiple-chunk manifests.
+- The package phase of `scripts/verify-pack.mjs` passed from an ordinary
+  prepack-clean build. Its tarball contained every required entry, the emitted
+  internal declarations, and exactly one shared chunk.
+- The Node overhead assertion remains explicitly a catastrophe tripwire at
+  5µs/op. The binding, fail-closed Chrome release gates remain unchanged in
+  `packages/dogfood/bench-chrome.mjs`: full mean/p95 `<2/<3ms` and count-only
+  mean/p95 `<0.75/<2ms`. The recorded release artifact passes at count-only
+  mean `0.352ms` and full p95 `1.7ms`, so raising the non-binding tripwire after
+  the reported `2.02µs` shared-runner flake is consistent with the contract.
+
+### Standards
+
+No hard documented-standard or append-only-log violation was found in
+`7046094...44b6268`. The prior non-blocking test-hygiene observation remains:
+the added CLI cases duplicate existing imports/helpers and do not use the
+file's shared temporary-directory cleanup.
+
+### Verification performed
+
+- Local `HEAD` and `origin/main` both resolve to
+  `44b62686b61f886c664d3c5f3586977be1dd8ef3`.
+- `pnpm -r run typecheck` — passed.
+- `pnpm --filter canvas-scan run test` — 21 files, 174 tests passed.
+- Targeted CLI/manifest/overhead run — 3 files, 21 tests passed; the Node
+  tripwire passed with margin.
+- `pnpm --filter demo run build` — passed.
+- Node syntax checks for the CLI and both pack-manifest scripts — passed.
+- `node scripts/verify-pack.mjs` with a writable copy-on-write npm cache:
+  package/manifest passed; clean Vite and Next 15.3.9 installs and builds
+  passed; only the HTTP starts failed at the sandbox boundary (`listen EPERM`
+  on ports 4381 and 4382).
+- `git diff --check` passed. This round changed only this append-only review
+  log.
+
+GitHub API access is unavailable in this sandbox, so run `30316009602` could
+not be independently queried; its exact-HEAD green test and pack jobs remain
+user-supplied remote evidence.
+
+### Remaining scope
+
+Batch 6 closes after malformed stacked comparator specs conservatively return
+manual setup, a regression covers that case, and the local/remote loop remains
+green. The npm-account confirmation can then be the sole user-owned
+pre-publish gate for `0.1.0`.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — batch 6 closure round 3 finding resolved (2026-07-28)
+
+The version-prefix alternatives are now mutually exclusive
+(`(?:[\^~]|>=)?` — packages/core/bin/canvas-scan.mjs), so stacked
+comparators (`^>=15.3.0`, `~>=15.3.0`) are unverifiable → manual, with
+both cases as a regression. 176 tests; typecheck clean.
+
+FABLE_STATUS: READY_FOR_CODEX

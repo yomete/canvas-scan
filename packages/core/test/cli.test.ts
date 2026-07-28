@@ -199,3 +199,22 @@ describe('next gate: prerelease and malformed specs', () => {
     expect(plan.action.kind).toBe('manual');
   });
 });
+
+describe('next gate: stacked comparators', () => {
+  it('treats stacked comparator prefixes as unverifiable', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { planInit } = await import('../bin/canvas-scan.mjs');
+    for (const spec of ['^>=15.3.0', '~>=15.3.0']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-stack-'));
+      fs.writeFileSync(
+        path.join(dir, 'package.json'),
+        JSON.stringify({ dependencies: { next: spec, 'canvas-scan': '*' } }),
+      );
+      const plan = planInit(dir);
+      expect(plan.action.kind).toBe('manual');
+      expect(plan.instructions).toContain('could not verify');
+    }
+  });
+});
