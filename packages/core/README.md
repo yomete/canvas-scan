@@ -1,20 +1,20 @@
 <!-- Package README uses absolute repository links for the npm view; root README keeps relative links. -->
 # canvas-scan
 
-Surface repeated canvas command signatures — likely redundant redraws — in
-React apps.
+canvas-scan watches what your app asks each canvas to draw. When a canvas gets
+the same instructions twice, that redraw may be avoidable.
 
 canvas-scan is a drop-in dev tool for canvas-heavy React apps. One early
 import instruments every observable main-thread Canvas2D canvas on the page.
-For each canvas, the tool reports the nearest React owner, draw-batch counts,
-canvas API self-time, and a frame-over-frame command-signature comparison.
-When a canvas repeats the previous window's command signature, the overlay
-flashes a red outline with the owner's name. A minimal toolbar collects the
-review candidates; its inspect mode lets you click any canvas to pin a
-popover with per-canvas stats and the owning component's source location,
-resolved on demand through your dev sourcemaps.
+For each canvas, the tool reports the nearest React owner, the number of draw
+calls, the time spent inside canvas calls, and how each frame's draw commands
+compare with the frame before. When a canvas receives the same draw commands
+again, the overlay flashes a red outline with the owner's name. A minimal
+toolbar counts the review candidates. Its inspect mode lets you click any
+canvas to pin a popover with per-canvas details and the owning component's
+source location, resolved on demand through your dev sourcemaps.
 
-![The overlay flags a repeated command signature on the demo chart](https://raw.githubusercontent.com/yomete/canvas-scan/main/docs/demo.gif)
+![The overlay flags a canvas that received the same draw commands again](https://raw.githubusercontent.com/yomete/canvas-scan/main/docs/demo.gif)
 
 ## Status
 
@@ -47,6 +47,12 @@ Path2D and CanvasGradient objects do not poison the signature. The tool
 hashes their construction commands and treats each object as a stable token.
 A mutated or untracked object still reports `unknown`.
 
+The field names above are the programmatic vocabulary. The overlay shows the
+same measurements in plain words. A window is one animation frame, an
+`unknown` window is an unclear frame, and each `unknownReason` code becomes a
+sentence. The overlay keeps the raw code in the tooltip, so a bug report can
+still quote it.
+
 ## Install
 
 ```bash
@@ -66,10 +72,11 @@ import 'canvas-scan/auto'; // must be the FIRST import of your entry module
 
 Alternative paths:
 
-**Script tag.** Build the IIFE bundle, then load it before any other script:
+**Script tag.** The published package ships a prebuilt IIFE bundle. Copy it
+to your static directory, then load it before any other script:
 
 ```bash
-pnpm --filter canvas-scan exec esbuild src/auto.ts --bundle --format=iife --outfile=dist/canvas-scan.iife.js --minify
+cp node_modules/canvas-scan/dist/canvas-scan.iife.js public/
 ```
 
 ```html

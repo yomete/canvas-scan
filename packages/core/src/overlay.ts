@@ -95,6 +95,8 @@ button { font: inherit; }
   position: fixed;
   inset: 0;
   z-index: 1;
+  color: #fff;
+  font: 11px/16px ui-monospace, monospace;
   pointer-events: none;
 }
 .toolbar {
@@ -230,7 +232,14 @@ button { font: inherit; }
   color: rgba(255, 255, 255, 0.7);
 }
 .popover-line { min-height: 17px; }
-.unknown-reasons { white-space: pre-line; }
+.popover-line[hidden] { display: none; }
+.status { white-space: pre-line; }
+.note {
+  padding: 3px 5px 7px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+}
 .copy {
   margin-top: 5px;
   padding: 2px 6px;
@@ -280,6 +289,57 @@ button { font: inherit; }
 .outline.inspect:hover .label { display: block; }
 .outline.inspect.selected .label { display: block; }
 `;
+
+// User-facing copy. A beginner reads this while their app is slow, so the
+// visible strings avoid the internal vocabulary (window, signature, raster op)
+// and the diagnostic reason codes. The precise terms stay in tooltips, and the
+// raw codes stay one hover away so a bug report can still quote them.
+const EXPLAINER =
+  'canvas-scan watches what your app asks each canvas to draw. When a canvas ' +
+  'gets the same instructions twice, that redraw may be avoidable.';
+
+const UNKNOWN_PHRASES = new Map([
+  ['first-window', 'first frame seen — nothing to compare yet'],
+  ['previous-window', 'the frame before was unclear'],
+  ['canvas-resize', 'the canvas was resized'],
+  ['gradient-mutated', 'a gradient changed while drawing'],
+  ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
+  ['clip-unmodeled', 'a clipping shape canvas-scan cannot follow'],
+  ['path-unmodeled', 'a path canvas-scan cannot follow'],
+  ['array-hole', 'a list argument had missing entries'],
+  ['array-accessor', 'a list argument computed its values'],
+  ['array-element', 'a list argument held values that are not numbers'],
+  ['Path2D', 'a shape object canvas-scan did not see built'],
+  ['CanvasGradient', 'a gradient canvas-scan did not see built'],
+  ['CanvasPattern', 'a pattern — its pixels can change at any time'],
+  ['HTMLVideoElement', 'a video — its pixels change every frame'],
+  ['HTMLCanvasElement', 'another canvas that is not being tracked'],
+  ['OffscreenCanvas', 'an offscreen canvas — not visible to canvas-scan'],
+  ['ImageBitmap', 'an image bitmap — its pixels cannot be checked'],
+  ['ImageData', 'raw pixel data — its pixels cannot be checked'],
+]);
+
+const OBJECT_NOUNS = new Map([
+  ['Path2D', 'a shape object'],
+  ['CanvasGradient', 'a gradient'],
+]);
+
+function describeUnknownReason(reason: string): string {
+  const phrase = UNKNOWN_PHRASES.get(reason);
+  if (phrase) return phrase;
+  const separator = reason.indexOf(':');
+  if (separator === -1) return `something canvas-scan cannot read (${reason})`;
+  const head = reason.slice(0, separator);
+  const tail = reason.slice(separator + 1);
+  if (tail === 'dirty') {
+    return `${OBJECT_NOUNS.get(head) ?? 'an object'} changed after it was built`;
+  }
+  return `an argument canvas-scan cannot read (${tail})`;
+}
+
+function frames(count: number): string {
+  return `${count} ${count === 1 ? 'frame' : 'frames'}`;
+}
 
 function badgeText(kind: AttributionKind): string {
   if (kind === 'jsx-owner') return 'jsx';
@@ -407,7 +467,9 @@ function flashOutline(report: DrawBatchReport, canvas: Element, same: number): v
   if (!outline) return;
   const label = outline.querySelector('.label');
   if (label) {
-    label.textContent = `${report.nearestReactOwner ?? report.canvasId} · same signature ×${same}`;
+    label.textContent =
+      `${report.nearestReactOwner ?? report.canvasId} · ` +
+      `sent the same draw commands again ×${same}`;
   }
 
   outline.classList.remove('flash', 'fading');
@@ -535,35 +597,47 @@ function renderPopover(): void {
   const status = popover.querySelector<HTMLElement>('.status');
   if (status) {
     status.textContent =
-      `status ${aggregate.same}/${aggregate.changed}/${aggregate.unknown} ` +
-      `of ${aggregate.windows} windows`;
+      `${frames(aggregate.windows)} seen\n` +
+      `same ${aggregate.same} · changed ${aggregate.changed} · ` +
+      `unclear ${aggregate.unknown}`;
+    status.title = 'how the draw commands compared with the frame before';
   }
   const rasterOps = popover.querySelector<HTMLElement>('.raster-ops');
   if (rasterOps) {
     rasterOps.textContent =
-      `raster ops (last) ${canvasStats.latest.rasterOperationCount}`;
+      `${canvasStats.latest.rasterOperationCount} draw calls in the last frame`;
+    rasterOps.title = 'operations that can change pixels';
   }
   const selfTime = popover.querySelector<HTMLElement>('.self-time');
   if (selfTime) {
     selfTime.textContent =
-      `canvas api self-time (mean) ${aggregate.meanSelfTimeMs.toFixed(1)} ms`;
+      `${aggregate.meanSelfTimeMs.toFixed(1)} ms in canvas calls per frame`;
+    selfTime.title =
+      'average JavaScript time spent calling canvas functions — not GPU time';
   }
-  const comparisonGap = popover.querySelector<HTMLElement>('.comparison-gap');
-  if (comparisonGap) {
-    comparisonGap.textContent =
-      `comparison gap (last) ${canvasStats.latest.comparisonGap ?? '—'}`;
-  }
-  const sampled = popover.querySelector<HTMLElement>('.sampled');
-  if (sampled) {
-    sampled.textContent = `sampled ${canvasStats.latest.sampled ? 'yes' : 'no'}`;
+  const sampling = popover.querySelector<HTMLElement>('.sampling');
+  if (sampling) {
+    // Sampling mechanics only earn a line when sampling is actually on.
+    sampling.hidden = !canvasStats.latest.sampled;
+    const gap = canvasStats.latest.comparisonGap;
+    sampling.textContent =
+      'checked every few frames' +
+      (gap === null ? '' : ` (last check ${frames(gap)} apart)`);
+    sampling.title = 'canvas-scan is sampling, so some frames are not compared';
   }
   const unknownReasons = popover.querySelector<HTMLElement>('.unknown-reasons');
   if (unknownReasons) {
-    const text = aggregate.unknownReasons
-      .slice(0, 3)
-      .map(([reason, count]) => `unknown ${reason} ×${count}`)
-      .join('\n');
-    unknownReasons.textContent = text;
+    unknownReasons.hidden = aggregate.unknownReasons.length === 0;
+    unknownReasons.replaceChildren(
+      ...aggregate.unknownReasons.slice(0, 3).map(([reason, count]) => {
+        const line = document.createElement('div');
+        // The raw code stays reachable for bug reports.
+        line.title = reason;
+        line.textContent =
+          `${frames(count)} unclear: ${describeUnknownReason(reason)}`;
+        return line;
+      }),
+    );
   }
 
   const source = popover.querySelector<HTMLElement>('.source');
@@ -612,7 +686,10 @@ function renderFlyout(): void {
   );
 
   const visibleRows = showAllRows ? rows : rows.slice(0, 8);
-  const children: HTMLElement[] = [];
+  const note = document.createElement('div');
+  note.className = 'note';
+  note.textContent = EXPLAINER;
+  const children: HTMLElement[] = [note];
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     const row = document.createElement('button');
     row.className = 'row';
@@ -621,15 +698,28 @@ function renderFlyout(): void {
     row.append(makeBadge(canvasStats.kind));
     const text = document.createElement('span');
     text.className = 'row-text';
-    let content = `${canvasStats.owner ?? canvasId} · ${aggregate.same}/${aggregate.windows} same`;
+    const owner = canvasStats.owner ?? canvasId;
+    let content =
+      `${owner} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
+    // The row ellipsizes, so the title carries the whole sentence.
+    let title =
+      `${owner} sent the same draw commands in ${aggregate.same} of the ` +
+      `last ${frames(aggregate.windows)}.`;
     if (aggregate.unknown > aggregate.windows / 2) {
       const reason = aggregate.unknownReasons[0]?.[0];
-      if (reason) content += ` · unknown: ${reason}`;
+      if (reason) {
+        content += ` · unclear: ${describeUnknownReason(reason)}`;
+        title += ` Most frames were unclear: ${describeUnknownReason(reason)}.`;
+      }
     }
     if (aggregate.meanSelfTimeMs >= 0.1) {
-      content += ` · ${aggregate.meanSelfTimeMs.toFixed(1)} ms api`;
+      content += ` · ${aggregate.meanSelfTimeMs.toFixed(1)} ms per frame`;
+      title +=
+        ` It spent ${aggregate.meanSelfTimeMs.toFixed(1)} ms per frame in ` +
+        'canvas calls.';
     }
     text.textContent = content;
+    row.title = title;
     row.append(text);
     children.push(row);
   }
@@ -872,6 +962,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   inspectButton.className = 'control inspect';
   inspectButton.type = 'button';
   inspectButton.setAttribute('aria-label', 'Inspect canvases');
+  inspectButton.title = 'Click a canvas on the page to see what it drew';
   inspectButton.setAttribute('aria-pressed', 'false');
   inspectButton.textContent = '◎';
   inspectButton.addEventListener('click', toggleInspectMode);
@@ -879,6 +970,9 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   countsButton = document.createElement('button');
   countsButton.className = 'control counts';
   countsButton.type = 'button';
+  countsButton.title =
+    `${EXPLAINER} Review candidates are canvases that received the same ` +
+    'draw commands again — often a sign of avoidable redrawing.';
   countsButton.setAttribute('aria-expanded', 'false');
   canvasCount = document.createElement('span');
   canvasCount.className = 'canvas-count';
@@ -950,8 +1044,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     'status',
     'raster-ops',
     'self-time',
-    'comparison-gap',
-    'sampled',
+    'sampling',
     'unknown-reasons',
     'source',
   ]) {

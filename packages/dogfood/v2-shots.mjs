@@ -13,9 +13,9 @@ function record(state, stateFailures) {
 await page.goto('http://localhost:5173', { waitUntil: 'load' });
 await page.waitForFunction(() => window.__CANVAS_SCAN__ != null, null, { timeout: 15000 });
 await page.waitForTimeout(1200);
-await page.click('text=force same-signature redraw');
+await page.click('text=redraw the same thing');
 await page.waitForTimeout(120);
-await page.click('text=force same-signature redraw');
+await page.click('text=redraw the same thing');
 await page.waitForTimeout(350);
 await page.screenshot({ path: `${out}/v2-toolbar.png` });
 

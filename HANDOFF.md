@@ -491,8 +491,8 @@ the WebGL phase and React 18/Firefox/Safari expansion.
 
 ## Overlay v2 — agreed direction (2026-07-28, Yomi's call)
 
-**Tiers 1+2 BUILT + review-APPROVED 2026-07-28 (uncommitted — landing
-awaits Yomi): 189 tests.** The Codex round found three real findings
+**Tiers 1+2 BUILT and SHIPPED in 0.2.0. Review status is NOT approved —
+see the correction below.** The Codex round found three real findings
 (inspect-mode stacking could let outlines cover the toolbar; the 250ms
 refresh rebuilt DOM unconditionally, dropping focus, with O(n) listeners;
 copy/count semantics + a fail-open screenshot script). All remediated:
@@ -531,6 +531,90 @@ strips (no <canvas> in the overlay — self-instrumentation rule), Alt-hover
 outside inspect mode, theming. Standing rules: headless screenshots are
 overlay acceptance (the M3 flash-CSS lesson); all copy passes the
 claim-discipline test; DOM writes batch on a throttled paint pass.
+
+### Review-status correction (2026-07-28) — READ THIS BEFORE TRUSTING THE ABOVE
+
+The `CODEX_STATUS: APPROVED` cited above was **superseded within the same
+day** by a full-scope Codex re-audit ("prior overlay approval superseded"),
+which is the bottommost section of `CODEX_REVIEW.md` and therefore the
+authoritative status: **`CODEX_STATUS: CHANGES_REQUESTED`**. That re-audit
+was missed because the copy of the review synced to the external Codex
+outputs folder ends at the earlier approval, while the in-repo copy carries
+210 further lines. **0.1.0 and 0.2.0 were both released after it.** The repo
+copy is canonical; check `grep -n "^CODEX_STATUS" CODEX_REVIEW.md | tail -1`
+before claiming any review state.
+
+Status of its findings, re-verified against the shipped tree on 2026-07-28
+(details and evidence in the Fable response appended to `CODEX_REVIEW.md`):
+
+- **OPEN — public `sourceLocation` never reaches the public API.** Confirmed
+  in real Chrome: the popover shows `source: App.tsx:3` while
+  `getReports()['raf-chart'].sourceLocation` is `null`, and 1 of 120 history
+  entries carries it. `frame-loop.ts` builds every report with
+  `sourceLocation: null`; `overlay.ts` mutates only the one object that
+  happens to be latest at resolution time. Needs a canonical per-canvas store.
+- **OPEN — a focused flyout row is destroyed by the next report.** Confirmed
+  in real Chrome: focus a row, wait 700 ms, and the node is replaced and
+  disconnected (`sameNode:false, stillFocused:false`). `handleReport` bumps
+  `flyoutRevision` for any canvas and `renderFlyout` calls `replaceChildren`
+  with fresh buttons. Needs keyed rows or focus restoration.
+- **OPEN — `visibility:hidden` canvases stay pointer-active in inspect mode.**
+  `placeOutline` checks only `isConnected` and a nonzero rect.
+- **OPEN — source lookup drops container-only owners** (it re-runs
+  `findOwnerFiber` on the unstamped canvas instead of the attributed
+  ancestor), collapses "unavailable" and "threw" into `null`, and permanently
+  caches transient failures. The second `symbolicateStack()` pass is
+  redundant — bippy 0.6.1's `getOwnerStack` already symbolicates.
+- **OPEN — history is mutable and unbounded.** `getHistory` copies the array
+  but shares report objects, nothing prunes canvas IDs, and identity keys on
+  the DOM id, so a reused id merges separate canvas lifetimes.
+- **OPEN — `v2-shots.mjs` bypasses hit-testing** (synthetic `dispatchEvent`
+  inside the shadow root, and it asserts the last outline rather than a named
+  canvas), so it cannot catch an occlusion or `pointer-events` regression.
+- **FIXED** — `symbolicate.ts` and `v2-shots.mjs` are properly tracked with
+  real content (commit `15b8485`), not empty intent-to-add placeholders.
+- **PARTLY FIXED** — the release track: version is `0.2.0` in the manifest,
+  in `index.ts`, and in both built bundles. Still open: no test asserts the
+  version baked into the ESM/IIFE build or the packed README, and
+  `init --write` still says "already installed" from the presence of the
+  import line alone, without checking the dependency. The README script-tag
+  path and the stale "npm name unclaimed" note are fixed as of this pass.
+
+## Plain-language copy pass (2026-07-28, Yomi's call)
+
+**Done, verified, uncommitted.** Yomi's question — "is everything here
+written in a way that users actually understand?" — audited against a
+beginner reading the overlay while their app is slow. It failed: the
+claim-discipline work had pushed the copy from intuitive-but-dishonest
+("wasted") to precise-but-opaque ("status 0/120/0 of 120 windows",
+"raster ops", "comparison gap", raw `unknownReason` codes). Precision
+nobody understands is not honesty.
+
+The rule now: **plain words in the primary copy, precision in tooltips,
+hedged phrasing so nothing overclaims.** A mapping table in `overlay.ts`
+(`UNKNOWN_PHRASES`, `OBJECT_NOUNS`, `describeUnknownReason`) turns every
+reason code the engine can emit into a sentence — "a video — its pixels
+change every frame" — and keeps the raw code in the element's `title` so
+bug reports can still quote it. `same signature ×N` → `sent the same draw
+commands again ×N`; windows → frames; `unknown` → `unclear`; raster ops →
+draw calls; canvas api self-time → time in canvas calls; sampling
+mechanics hide unless sampling is on; empty lines hide instead of leaving
+gaps. The flyout carries a one-line explainer ("canvas-scan watches what
+your app asks each canvas to draw. When a canvas gets the same
+instructions twice, that redraw may be avoidable.") that also lives in the
+counts tooltip and both README openings. The demo button "force
+same-signature redraw" → "redraw the same thing". Outline labels now
+inherit the toolbar's monospace instead of the host page's font.
+
+Guardrail added: `overlay.test.ts` renders the real overlay and asserts
+the visible text carries NO internal vocabulary (`/window/`, `/signature/`,
+`/raster/`, `/comparison gap/`, `/self-time/`, `/sampled/`, raw reason
+codes), plus a table-independent expectation for all 19 reason phrases.
+192 tests, typecheck, `verify-pack.mjs` (Vite + Next fixtures), and
+`v2-shots.mjs` all pass; `docs/demo.gif` and `docs/overlay.png` re-recorded
+against the new copy. Vocabulary bridge documented in both READMEs: a
+window is one animation frame; the field names stay the programmatic
+vocabulary.
 
 ## Later phases / launch checklist
 
@@ -583,10 +667,8 @@ claim-discipline test; DOM writes batch on a throttled paint pass.
   `publishConfig.exports`, so publish with `pnpm publish` ONLY. Zero-dep
   `canvas-scan init` CLI (vite/next detection, idempotent `--write`).
   README + demo GIF + CI shipped. Repo: github.com/yomete/canvas-scan
-  (private). npm name `canvas-scan` verified unclaimed; claiming is
-  DEFERRED — Yomi must first check which npm account their CLI uses
-  (`npm whoami`; work vs personal — this project publishes from the
-  personal account only). Remaining M4:
+  (private). (Rev 3: stale — `canvas-scan` is claimed and published from the
+  personal account `yomi`; 0.1.0 and 0.2.0 are live.) Remaining M4:
   React 18 fixtures, Next fixture validation, demo site, real 0.1.0
   publish.
 - WebGL phase. Then maybe commit-correlation (Tier 2) improvements.

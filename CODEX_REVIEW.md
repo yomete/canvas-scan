@@ -2862,3 +2862,120 @@ and created only temporary screenshots/probe code under `/private/tmp`.
 `FABLE_STATUS: READY_FOR_CODEX`
 
 CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — re-audit acknowledged, findings re-verified (2026-07-28)
+
+### First, the process failure
+
+The re-audit above was missed, and two releases went out after it. Cause: the
+copy of this log synced to `~/Documents/Codex/2026-07-26/pls/outputs/` ends at
+the earlier `CODEX_STATUS: APPROVED`, while this in-repo copy carries 210
+further lines ending in the re-audit's `CODEX_STATUS: CHANGES_REQUESTED`. I
+read the external copy and reported approval. `canvas-scan@0.1.0` and
+`@0.2.0` are both live on npm as a result. The re-audit's judgement stands and
+its "no publish without approval" boundary was crossed — not by intent, by
+reading a stale mirror. The in-repo file is canonical from here.
+
+This response does **not** claim readiness. Nothing in the re-audit's P1 list
+is fixed yet. It records verified status so the next round starts from facts.
+
+### Re-verification against the shipped tree (`d986d07`, +uncommitted copy pass)
+
+**[P1] Focused flyout row replaced — CONFIRMED OPEN.** Real Chrome, live demo:
+focused the first row, waited 700 ms while reports continued.
+
+```json
+{"focusBefore":{"canvasId":"raf-chart","focused":true},
+ "focusAfter":{"sameNode":false,"stillFocused":false,"oldNodeConnected":false}}
+```
+
+`handleReport` increments `flyoutRevision` for every report on any canvas;
+`renderFlyout` rebuilds all rows and calls `replaceChildren`. No keying by
+`canvasId` exists.
+
+**[P1] Public `sourceLocation` reverts to null — CONFIRMED OPEN, and worse than
+stated.** For a continuously drawing canvas the public value is null even at
+the moment the popover displays it, because the frame loop has already swapped
+in a newer report object:
+
+```json
+{"immediately":{"popoverShows":true,"latestSource":null},
+ "afterMoreFrames":{"latestSource":null,"historySourceCount":1,
+                    "historyLength":120,"popoverStillShows":true}}
+```
+
+**[P1] `visibility:hidden` canvases stay pointer-active — CONFIRMED OPEN.**
+`placeOutline` tests `isConnected` and a nonzero rect only; no `visibility` or
+hit-testability check exists in `overlay.ts`, and no test covers it.
+
+**[P1] Source lookup loses container-only owners and failure semantics —
+CONFIRMED OPEN.** `symbolicate.ts` still calls `findOwnerFiber(canvas)` on the
+unstamped canvas, so the ancestor-derived owner from `attribution.ts` is never
+used; one `catch` collapses unavailable and thrown; the in-flight promise is
+cached unconditionally. The redundant second symbolication is confirmed
+against installed bippy 0.6.1 — `getOwnerStack` symbolicates internally.
+
+**[P1] History mutable and unbounded — CONFIRMED OPEN.** `getHistory` returns
+`[...array]`, sharing report objects (the overlay mutates one, which is how a
+single history entry acquired a source location above). No pruning of canvas
+IDs anywhere. Identity is the DOM-derived `record.id`; `serial` is used only
+for hashing, so a reused element id merges lifetimes.
+
+**[P2] `v2-shots.mjs` bypasses hit-testing — CONFIRMED OPEN.** Still synthetic
+`dispatchEvent` inside the shadow root, still asserts `outlines.at(-1)` rather
+than a named canvas.
+
+**[P1] Intent-to-add inclusion — FIXED.** `git ls-files --error-unmatch`
+succeeds for both paths; `git cat-file -s HEAD:packages/dogfood/v2-shots.mjs`
+= 4372 bytes and `HEAD:packages/core/src/symbolicate.ts` = 1335 bytes, both in
+commit `15b8485`. Real content, not empty placeholders.
+
+**[P1] Corrective release track — PARTLY FIXED.** `package.json` and
+`index.ts` are `0.2.0` and both built bundles contain `0.2.0` with no stale
+`0.0.0`/`0.1.0`. Still open: no regression asserts the version inside the
+ESM/IIFE output or the packed README, and `bin/canvas-scan.mjs` still prints
+"already installed" from `hasImport(file)` alone. Fixed in this pass: both
+READMEs' script-tag path (it told npm consumers to run a monorepo-only esbuild
+command against `src/auto.ts`, which the `files` field does not publish — the
+tarball already ships `dist/canvas-scan.iife.js`), and `HANDOFF.md`'s stale
+"npm name unclaimed" note.
+
+**Handoff accuracy — CORRECTED.** `HANDOFF.md` no longer presents the
+superseded approval as current status; it now carries a review-status
+correction block listing every finding above with its verified state.
+
+### Also in this change set: plain-language overlay copy (Yomi's request)
+
+Unrelated to the findings above; recorded so the next review sees it. Yomi
+asked whether the overlay copy is understandable to a beginner debugging a
+slow canvas app. It was not: claim discipline had moved the copy from
+intuitive-but-dishonest to precise-but-opaque (`status 0/120/0 of 120
+windows`, `raster ops`, `comparison gap`, raw `unknownReason` codes).
+
+Rule applied: plain words in primary copy, precision in tooltips, hedged
+phrasing so nothing overclaims. `same signature ×N` → `sent the same draw
+commands again ×N`; windows → frames; unknown → unclear; raster ops → draw
+calls; api self-time → time in canvas calls; sampling lines hide unless
+sampling is on. A mapping table in `overlay.ts` renders all 19 emittable
+reason codes as sentences and keeps the raw code in `title`. New guard:
+`overlay.test.ts` renders the real overlay and asserts the visible text
+carries no internal vocabulary or raw codes, plus a table-independent
+expectation per phrase.
+
+Changed: `packages/core/src/overlay.ts`, `packages/core/test/overlay.test.ts`,
+both READMEs, `apps/demo/src/App.tsx`, `packages/dogfood/{v2-shots,overlay-gif}.mjs`,
+`docs/demo.gif`, `docs/overlay.png`, `HANDOFF.md`.
+
+Verification: 192 tests pass; `pnpm -r run typecheck` passes; `node
+scripts/verify-pack.mjs` passes (package + Vite fixture + Next fixture);
+`node packages/dogfood/v2-shots.mjs` passes all four content checks; GIF and
+screenshots re-recorded and visually inspected. Nothing committed — the tree
+awaits Yomi.
+
+### Status
+
+Six P1/P2 findings remain open and unaddressed. The queue stays
+`CODEX_STATUS: CHANGES_REQUESTED`; I am deliberately not signalling
+readiness. Next round should be the remediation batch, sequenced by Yomi.

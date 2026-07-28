@@ -16,9 +16,9 @@ const page = await context.newPage();
 await page.goto('http://localhost:5173', { waitUntil: 'load' });
 await page.waitForFunction(() => window.__CANVAS_SCAN__ != null, null, { timeout: 15000 });
 await page.waitForTimeout(1200);
-await page.click('text=force same-signature redraw');
+await page.click('text=redraw the same thing');
 await page.waitForTimeout(1400);
-await page.click('text=force same-signature redraw');
+await page.click('text=redraw the same thing');
 await page.waitForTimeout(1200);
 
 // v2 tour: flyout -> inspect mode -> pinned popover with resolved source

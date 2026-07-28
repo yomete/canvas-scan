@@ -277,9 +277,11 @@ describe('overlay flyout', () => {
     refreshOverlay();
 
     expect(root.querySelector('.row')?.textContent).toContain(
-      'unknown: tainted-source',
+      'unclear: something canvas-scan cannot read (tainted-source)',
     );
-    expect(root.querySelector('.row')?.textContent).toContain('0.3 ms api');
+    expect(root.querySelector('.row')?.textContent).toContain(
+      '0.3 ms per frame',
+    );
   });
 
   it('locates a connected canvas on row hover and ignores a detached one', () => {
@@ -403,15 +405,19 @@ describe('overlay inspect mode and popover', () => {
     root.querySelector<HTMLButtonElement>('.row')!.click();
     refreshOverlay();
 
-    expect(root.querySelector('.popover-body')?.textContent).toContain(
-      'status 0/0/1 of 1 windows',
+    expect(root.querySelector('.status')?.textContent).toBe(
+      '1 frame seen\nsame 0 · changed 0 · unclear 1',
     );
-    expect(root.querySelector('.popover-body')?.textContent).toContain(
-      'sampled yes',
+    expect(root.querySelector<HTMLElement>('.sampling')?.hidden).toBe(false);
+    expect(root.querySelector('.sampling')?.textContent).toBe(
+      'checked every few frames (last check 1 frame apart)',
     );
-    expect(root.querySelector('.popover-body')?.textContent).toContain(
-      'unknown first-window ×1',
+    expect(root.querySelector('.unknown-reasons')?.textContent).toBe(
+      '1 frame unclear: first frame seen — nothing to compare yet',
     );
+    expect(
+      root.querySelector('.unknown-reasons div')?.getAttribute('title'),
+    ).toBe('first-window');
     expect(root.querySelector('.source')?.textContent).toBe(
       'source: resolving…',
     );
@@ -518,6 +524,163 @@ describe('overlay inspect mode and popover', () => {
   });
 });
 
+describe('overlay copy', () => {
+  // Internal vocabulary and raw reason codes are for bug reports, not for the
+  // person reading the overlay while their app is slow. They may live in
+  // tooltips; they may not reach the visible text.
+  const JARGON = [
+    /\bwindows?\b/i,
+    /signature/i,
+    /raster/i,
+    /comparison gap/i,
+    /self-?time/i,
+    /\bsampled\b/i,
+    /first-window/,
+    /previous-window/,
+    /:dirty/,
+    /-unmodeled/,
+  ];
+
+  function visibleText(): string {
+    return getShadowRoot().textContent ?? '';
+  }
+
+  it('keeps internal vocabulary out of every visible surface', async () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ sampled: true }), canvas);
+    emitReport(
+      makeReport({
+        canvasId: 'unclear-canvas',
+        nearestReactOwner: 'VideoLayer',
+        signatureStatus: 'unknown',
+        unknownReason: 'HTMLVideoElement',
+        sampled: true,
+      }),
+      makeCanvas(false),
+    );
+    refreshOverlay();
+    const root = getShadowRoot();
+
+    expect(JARGON.filter((pattern) => pattern.test(visibleText()))).toEqual([]);
+
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    expect(root.querySelector('.note')?.textContent).toContain(
+      'canvas-scan watches what your app asks each canvas to draw',
+    );
+    expect(JARGON.filter((pattern) => pattern.test(visibleText()))).toEqual([]);
+
+    root
+      .querySelector<HTMLButtonElement>('[data-canvas-id="unclear-canvas"]')!
+      .click();
+    refreshOverlay();
+    await Promise.resolve();
+    refreshOverlay();
+    expect(root.querySelector('.popover-body')?.textContent).toContain(
+      'a video — its pixels change every frame',
+    );
+    expect(JARGON.filter((pattern) => pattern.test(visibleText()))).toEqual([]);
+  });
+
+  it('hides sampling mechanics unless sampling is on', () => {
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+
+    expect(root.querySelector<HTMLElement>('.sampling')?.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('.unknown-reasons')?.hidden).toBe(
+      true,
+    );
+  });
+
+  it('translates every unknown reason the engine can emit', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    const reasons = [
+      'first-window',
+      'previous-window',
+      'canvas-resize',
+      'gradient-mutated',
+      'transform-unmodeled',
+      'clip-unmodeled',
+      'path-unmodeled',
+      'array-hole',
+      'array-accessor',
+      'array-element',
+      'CanvasPattern',
+      'HTMLVideoElement',
+      'OffscreenCanvas',
+      'ImageData',
+      'Path2D',
+      'Path2D:dirty',
+      'CanvasGradient:dirty',
+      'value:function',
+      'object:anonymous',
+    ];
+
+    for (const [index, reason] of reasons.entries()) {
+      emitReport(
+        makeReport({
+          canvasId: `reason-${index}`,
+          signatureStatus: 'unknown',
+          unknownReason: reason,
+          // Sorts the canvas under test to the top of the capped row list.
+          canvasApiSelfTimeMs: index + 1,
+        }),
+        makeCanvas(false),
+      );
+      refreshOverlay();
+      root.querySelector<HTMLButtonElement>('.counts')!.click();
+      refreshOverlay();
+      root
+        .querySelector<HTMLButtonElement>(`[data-canvas-id="reason-${index}"]`)!
+        .click();
+      refreshOverlay();
+
+      const line = root.querySelector<HTMLElement>('.unknown-reasons div')!;
+      expect(line.title).toBe(reason);
+      expect(line.textContent).toBe(
+        `1 frame unclear: ${describeReason(reason)}`,
+      );
+      root.querySelector<HTMLButtonElement>('.close')!.click();
+      refreshOverlay();
+    }
+  });
+});
+
+// Expected phrasing, written independently of the overlay's table so a typo in
+// either one fails the test.
+function describeReason(reason: string): string {
+  const phrases: Record<string, string> = {
+    'first-window': 'first frame seen — nothing to compare yet',
+    'previous-window': 'the frame before was unclear',
+    'canvas-resize': 'the canvas was resized',
+    'gradient-mutated': 'a gradient changed while drawing',
+    'transform-unmodeled': 'a transform canvas-scan cannot follow',
+    'clip-unmodeled': 'a clipping shape canvas-scan cannot follow',
+    'path-unmodeled': 'a path canvas-scan cannot follow',
+    'array-hole': 'a list argument had missing entries',
+    'array-accessor': 'a list argument computed its values',
+    'array-element': 'a list argument held values that are not numbers',
+    CanvasPattern: 'a pattern — its pixels can change at any time',
+    HTMLVideoElement: 'a video — its pixels change every frame',
+    OffscreenCanvas: 'an offscreen canvas — not visible to canvas-scan',
+    ImageData: 'raw pixel data — its pixels cannot be checked',
+    Path2D: 'a shape object canvas-scan did not see built',
+    'Path2D:dirty': 'a shape object changed after it was built',
+    'CanvasGradient:dirty': 'a gradient changed after it was built',
+    'value:function': 'an argument canvas-scan cannot read (function)',
+    'object:anonymous': 'an argument canvas-scan cannot read (anonymous)',
+  };
+  return phrases[reason];
+}
+
 describe('overlay outline compatibility and cleanup', () => {
   it('uses the default two-raster-operation flash threshold', () => {
     mountOverlay();
@@ -550,14 +713,14 @@ describe('overlay outline compatibility and cleanup', () => {
     expect(outline?.style.width).toBe('104px');
     expect(outline?.style.height).toBe('54px');
     expect(outline?.querySelector('.label')?.textContent).toContain(
-      'same signature ×2',
+      'sent the same draw commands again ×2',
     );
 
     emitReport(makeReport({ rasterOperationCount: 5 }), canvas);
     refreshOverlay();
     expect(root.querySelector('.outline')).toBe(outline);
     expect(outline?.querySelector('.label')?.textContent).toContain(
-      'same signature ×3',
+      'sent the same draw commands again ×3',
     );
   });
 
