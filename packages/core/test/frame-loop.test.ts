@@ -567,6 +567,98 @@ describe('report history', () => {
     }
   });
 
+  it('does not let an older duplicate destroy the lifetime that owns the id', () => {
+    // Two live records sharing a DOM id. The older one still draws; it must
+    // not be able to retire its successor.
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const older = makeRecord({ id: 'shared', rasterOps: 3 });
+    const newer = makeRecord({ id: 'shared', rasterOps: 7 });
+    records.add(older);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+
+      records.add(newer);
+      older.activeInWindow = true;
+      older.rasterOps = 3;
+      callbacks.shift()!(1);
+      const location = { file: '/Newer.tsx', line: 2, column: 0 };
+      setSourceLocation('shared', location);
+
+      // The older record keeps drawing.
+      older.activeInWindow = true;
+      older.rasterOps = 3;
+      newer.activeInWindow = true;
+      newer.rasterOps = 7;
+      callbacks.shift()!(2);
+
+      expect(latestReports.get('shared')?.sourceLocation).toEqual(location);
+      expect(getHistory('shared').map(r => r.rasterOperationCount)).toEqual([
+        7, 7,
+      ]);
+    } finally {
+      records.delete(older);
+      records.delete(newer);
+      latestReports.delete('shared');
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retires the predecessor as soon as a successor draws, even uncaptured', () => {
+    // With sampling on, a successor can draw during an uncaptured window. The
+    // predecessor's history must not keep standing in for it.
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const first = makeRecord({ id: 'sampled-reuse', rasterOps: 3 });
+    records.add(first);
+
+    try {
+      startFrameLoop({ captureEvery: 2 });
+      callbacks.shift()!(0);
+      callbacks.shift()!(1);
+      expect(getHistory('sampled-reuse').length).toBeGreaterThan(0);
+      setSourceLocation('sampled-reuse', {
+        file: '/First.tsx',
+        line: 1,
+        column: 0,
+      });
+
+      records.delete(first);
+      const second = makeRecord({ id: 'sampled-reuse', rasterOps: 9 });
+      records.add(second);
+      // Draws during a window that is not captured, then stops.
+      second.activeInWindow = true;
+      callbacks.shift()!(2);
+
+      // The shared window counter makes capture parity unpredictable across
+      // tests, so assert what must hold either way: nothing from the retired
+      // canvas survives.
+      expect(
+        getHistory('sampled-reuse').map(r => r.rasterOperationCount),
+      ).not.toContain(3);
+      expect(latestReports.get('sampled-reuse')?.sourceLocation ?? null).toBeNull();
+      records.delete(second);
+    } finally {
+      records.delete(first);
+      latestReports.delete('sampled-reuse');
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('stamps a late source location onto history already recorded', () => {
     const callbacks: FrameRequestCallback[] = [];
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {

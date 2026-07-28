@@ -15,6 +15,17 @@ function fixture() {
   return dir;
 }
 
+// A package is installed when a real manifest is present, not when a directory
+// with the right name exists.
+function installPackage(dir: string) {
+  const target = path.join(dir, 'node_modules/canvas-scan');
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(
+    path.join(target, 'package.json'),
+    JSON.stringify({ name: 'canvas-scan', version: '0.2.0' }),
+  );
+}
+
 function writePackageJson(dir: string, contents: object) {
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -79,9 +90,7 @@ describe('canvas-scan init CLI', () => {
       path.join(dir, 'src/main.tsx'),
       "import 'canvas-scan/auto';\nrender();\n",
     );
-    fs.mkdirSync(path.join(dir, 'node_modules/canvas-scan'), {
-      recursive: true,
-    });
+    installPackage(dir);
 
     const plan = planInit(dir);
     expect(plan.install).toBeNull();
@@ -190,9 +199,7 @@ describe('canvas-scan init CLI', () => {
     writePackageJson(dir, {
       devDependencies: { 'canvas-scan': '^0.1.0' },
     });
-    fs.mkdirSync(path.join(dir, 'node_modules/canvas-scan'), {
-      recursive: true,
-    });
+    installPackage(dir);
 
     expect(planInit(dir).install).toBeNull();
   });

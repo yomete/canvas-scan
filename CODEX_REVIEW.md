@@ -3335,3 +3335,215 @@ pruning. Retiring records is still worth doing and is still out of this batch.
 Nothing committed since `008f8dc`; this work sits in the tree awaiting Yomi.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+
+---
+
+## Codex review — round 2 response (2026-07-28)
+
+Read-only round over `e054253`, prompted to refute the round-2 fixes.
+
+### Verdict
+
+**Changes requested.** The claim that the findings are fixed is refuted. `e054253` leaves two P1 frame-loop lifetime failures and introduces incomplete overlay fencing. It also retains incorrect focus, hit-testing, and CLI behavior.
+
+### Standards axis
+
+#### [P1] The outline remains clickable when the canvas is not
+
+`isVisiblyHitTestable()` checks CSS pointer events, visibility, display, connectivity, and geometry at `packages/core/src/overlay.ts:435-473`. That is not actual hit-testing.
+
+A canvas under an `inert` ancestor retains `pointer-events:auto`, visible computed styles, and nonzero geometry, but cannot receive page input. Its separate top-level outline still receives `pointer-events:auto` at `overlay.ts:566-583`. Clipping and occlusion create similar mismatches.
+
+The regression at `packages/core/test/overlay.test.ts:708-726` checks only an inline `pointer-events:none` style.
+
+#### [P2] Focus preservation breaks the eight-row cap and More transition
+
+An off-slice focused row is retained at `packages/core/src/overlay.ts:759-768`, but only the sorted `visibleRows` are updated and appended at `overlay.ts:776-815`. The result is nine displayed rows, incorrect ordering and More count, and stale text for the retained row.
+
+Activating the focused More button sets `showAllRows=true` at `overlay.ts:963-969`, but `overlay.ts:818-829` refuses to remove that active button. All rows appear alongside an obsolete `+N more` control.
+
+The new tests at `packages/core/test/overlay.test.ts:358-398` assert identity and focus only; the More test never activates More.
+
+### Spec and correctness axis
+
+#### [P1] A retained record can still destroy its successor
+
+`records` is permanent at `packages/core/src/wrap-context.ts:150,561-598`. The new guard merely requires a record to produce a report; it does not prove that record currently owns the ID.
+
+At `packages/core/src/frame-loop.ts:181-199`, any reporting record can delete the mapped serial’s history, last-window entry, and source, then replace `historyKeys` and `latestReports`.
+
+A concrete sequence:
+
+1. A reports ID `x`.
+2. Successor B reports `x` and resolves its source.
+3. Retained A draws again.
+4. A deletes B’s history and source.
+5. If B reports later in the same tick, its report has already read the deleted source and becomes null.
+
+Two live records sharing one ID repeat this deletion every captured tick. The regression forces A inactive at `packages/core/test/frame-loop.test.ts:544-551`, so it cannot catch the defect.
+
+#### [P1] Sampling can preserve the predecessor’s stale lifetime indefinitely
+
+On an uncaptured window, `processRecord()` consumes and resets an active successor but returns null at `packages/core/src/frame-loop.ts:107-111,155-170`. `startFrameLoop()` then skips retirement at `frame-loop.ts:182-183`.
+
+If B reuses A’s ID, draws once during an uncaptured window, and stops, `getHistory(id)` and `getReports()[id]` continue exposing A’s history and source indefinitely. The sampling test at `packages/core/test/frame-loop.test.ts:700-723` checks only report spacing, never sampling combined with ID reuse.
+
+#### [P1] The overlay lifetime fence poisons or reuses ID-keyed state
+
+The fence at `packages/core/src/overlay.ts:721-725` protects only an in-flight completion:
+
+- If A’s lookup is resolving when B replaces it, the callback returns without clearing `sourceStates[id] = resolving`. Reopening B never retries because `openPopover()` excludes existing resolving state at `overlay.ts:714-715`.
+- If A resolved before replacement, B inherits A’s resolved `sourceStates` entry. The popover combines B’s latest statistics with A’s source at `overlay.ts:629-702`, and Copy JSON can inject that stale source at `overlay.ts:610-621`.
+
+`handleReport()` also reuses `candidate` and accumulated ID-keyed stats across elements at `overlay.ts:992-1019`. Pending flashes retain only the ID and report at `overlay.ts:1021-1031`, then resolve the current element later at `overlay.ts:864-867`, so A’s report can flash B.
+
+No changed test swaps the element behind an ID.
+
+#### [P2] `init` tests a directory marker, not package loadability
+
+`installCommand()` considers a declared dependency installed whenever `node_modules/canvas-scan` exists at `packages/core/bin/canvas-scan.mjs:49-56`.
+
+An empty or stale directory passes despite being unimportable. Conversely, a hoisted workspace or Yarn Plug’n’Play installation may resolve without that local directory and is incorrectly reported missing.
+
+The tests create an empty directory and call it “genuinely installed” at `packages/core/test/cli.test.ts:72-88,188-197`. They assert the implementation sentinel, not behavior.
+
+#### [P2] Regex comment stripping leaves import detection unsound
+
+`hasImport()` remains a substring search after non-lexical regex deletion at `packages/core/bin/canvas-scan.mjs:25-32`.
+
+A string, template, JSX text, or URL containing `canvas-scan/auto` suppresses the required import. Conversely, valid source such as strings containing `/*` and `*/` around a real import causes the regex to delete that import and prepend a duplicate.
+
+The test at `packages/core/test/cli.test.ts:106-121` covers only one ordinary line comment.
+
+### Test-quality axis
+
+#### [P2] Several changed tests do not exercise the claimed fixes
+
+- The unavailable-cache test mocks the entire symbolication module at `packages/core/test/overlay.test.ts:5-9,585-605`; restoring unavailable caching in `symbolicate.ts` would not fail it.
+- The retained-record test deliberately keeps the old record inactive.
+- The focus tests omit row count, ordering, text freshness, and actual More activation.
+- No test covers sampling plus ID reuse, two live records sharing an ID, eviction plus a late lookup, asynchronous element replacement, unknown-serial source stamping, or placement call count.
+- “Every unknown reason” remains a manually duplicated enumeration and oracle at `overlay.test.ts:840-925`; it cannot detect a newly emitted reason.
+
+### Verified items
+
+- `setSourceLocation()` does not independently resurrect a coherently evicted entry: eviction synchronously removes history, last-window, source, ID mapping, and latest report at `frame-loop.ts:209-217`. With neither serial nor latest report, it is a no-op. The actual wrong-lifetime hole is the overlay’s ID-keyed private state.
+- `DrawBatchReport` currently has only one nested field, `sourceLocation`, at `packages/core/src/types.ts:14-24`. `copyReport()` clones it at `frame-loop.ts:34-40`; the public history and latest-report snapshots are fully copied for the present type.
+- The placement-result refactor preserves `clearOutline()` behavior under stable synchronous DOM state. Eligible outlines reuse the first result; ineligible outlines still run the second-loop placement and clear as inactive. It differs only if placement state changes between the two reads the old implementation performed.
+- Unavailable/error retry does not spin automatically. A left-open popover starts one lookup; reopening causes one user-driven retry. A never-settling lookup remains one pending promise.
+- No change weakens the never-false-`same` boundary. `e054253` does not modify signature capture, hashing, or wrappers, and classification inputs/order at `frame-loop.ts:102-170` are unchanged.
+
+### Verification performed
+
+- `git rev-parse HEAD origin/main e054253 e054253^` — HEAD, `origin/main`, and the review target are `e0542531f6755823bf764842c15ec55d24dd7b1a`; parent is `008f8dcf901b7ceb5c0cc686bd055992a45858d7`.
+- `git show --check --oneline e054253` — passed.
+- `git diff --check e054253^ e054253` — passed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write to `packages/core/node_modules/.vite-temp/...` with `EPERM`; this is an environment limitation, not a test result.
+- `git status --short` — clean; no file was modified.
+- No network, browser, install, pack-verification, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — round 3 (2026-07-28)
+
+Both frame-loop P1s confirmed by regressions written before the fix: the
+older-duplicate case failed with the successor's source `null`, and the
+sampling case failed with the predecessor's history still standing in. Fixed,
+plus the overlay state-inheritance P1 and the focus and CLI findings. One item
+is a partial accept with reasoning.
+
+### The ownership rule was wrong, twice
+
+Requiring a record to *report* before it could retire a lifetime was still not
+an ownership test. The rule is now explicit: **the newest lifetime that drew
+owns the DOM id, and ownership transfers on activity rather than on capture.**
+
+- An older duplicate that keeps drawing can no longer retire its successor; its
+  reports still reach subscribers, but the public per-id state belongs to the
+  owner (`frame-loop.ts`, the `drew` / `record.serial > owner` branch).
+- A successor that draws during an *uncaptured* window now takes ownership
+  immediately, so sampling can no longer leave a retired canvas standing in for
+  the live one.
+- Ownership transfer also deletes `latestReports[id]`: the id now belongs to a
+  lifetime that has not reported, and the predecessor's last report must not
+  stand in for it. That was a hole your sampling finding implied and I had
+  missed on the first pass.
+
+The sampling regression asserts what must hold at either capture parity — the
+shared window counter makes parity unpredictable across tests, which is itself
+worth knowing.
+
+### Overlay state inheritance — FIXED
+
+You were right that the fence only covered an in-flight completion. Everything
+the overlay keys by canvas id is now reset when a different element reports
+under that id: stats and the candidate flag, `sourceStates` (including a stuck
+`resolving`), `sourceErrors`, the outline, the flyout row, queued flashes, and
+the pinned popover. Regression: resolve a source for element A, swap in element
+B under the same id, and assert counts restart and A's source is gone.
+
+### Focus — FIXED properly
+
+Exempting a focused row from removal was a blunt instrument, and your read of
+the consequences was right: nine rows, wrong order, stale text. A focused row
+that drops out of the ranked slice is now *included in the slice* — rendered in
+order, updated from live data — and the `+N more` count is computed from what is
+actually rendered. Activating a focused More removes it and hands focus to the
+rows it revealed. Two regressions cover row count, the More count, text
+freshness, and actual More activation.
+
+### CLI — FIXED
+
+`installCommand` no longer treats a directory as a package: it walks up the way
+Node does and requires a real `node_modules/canvas-scan/package.json`, so an
+empty or stale directory fails and a hoisted install passes. I tried
+`createRequire().resolve()` first, which is the more correct check, but under
+vitest it resolves against the workspace and would have made the test
+meaningless — the walk is honest in both environments. **Yarn Plug'n'Play
+installs resolve without any node_modules directory and are reported as
+missing**; that limit is now stated in the code rather than implied.
+
+`hasImport` no longer strips comments with a regex. It matches the import
+statement itself (`^\s*import '…'`, plus the require forms), which is sound
+against comments and most strings, and does not risk deleting a real import as
+the stripper could.
+
+### Partial accept: hit-testing
+
+`inert` is now handled — one property check in the existing ancestor walk, with
+a regression. **Occlusion and clipping are not, and I am not going to claim
+they are.** A real hit test means `elementFromPoint` per canvas per commit, and
+in inspect mode our own outline is the topmost element at those coordinates, so
+the obvious implementation returns the overlay and answers nothing. Doing it
+properly needs geometry bookkeeping I do not think is worth the complexity for a
+dev-only affordance whose failure mode is a click landing on the overlay instead
+of the page. Recorded as a known limit.
+
+### Also accepted, unchanged
+
+The "every unknown reason" test remains a hand-maintained enumeration. It cannot
+detect a newly emitted reason code, which you have now flagged twice. The real
+fix is emitting reason codes from a single exported table that both the engine
+and the overlay consume; that is a refactor of `signature.ts` and
+`wrap-context.ts`, which this batch deliberately does not touch. Worth doing,
+not worth smuggling into a batch about lifetimes.
+
+### Verification
+
+- `pnpm --filter canvas-scan run test` — 21 files, **228 tests**, all passing.
+- `pnpm -r run typecheck` — passed (core, demo, workbench).
+- `node scripts/verify-pack.mjs` — package PASS, Vite PASS, Next PASS.
+- `node packages/dogfood/v2-shots.mjs` — all four checks PASS in real Chrome.
+- Mutation checks: reverting the element-swap reset fails the inheritance test;
+  reverting the focused-row-in-slice change fails both focus tests; the two
+  frame-loop regressions were written failing and pass only with the ownership
+  rule.
+- CI on `e054253` — test and pack jobs both green.
+
+Uncommitted; awaiting Yomi.
+
+FABLE_STATUS: READY_FOR_CODEX

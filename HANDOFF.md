@@ -647,6 +647,37 @@ cached. Fixing it needs a signal from bippy or a path heuristic.
 unreviewed code. Round-tripping it through the reviewer caught what self-review
 did not.
 
+### Round 3 (2026-07-28): the ownership rule was wrong twice
+
+Codex refuted round 2. Requiring a record to *report* before it could retire a
+lifetime still was not an ownership test, and two P1s survived: an older
+duplicate that kept drawing destroyed its successor's history and source, and a
+successor that drew during an uncaptured window left the predecessor standing in
+indefinitely. Both reproduced with regressions written before the fix.
+
+The rule is now explicit — **the newest lifetime that drew owns the DOM id, and
+ownership transfers on activity rather than on capture** — which also closed a
+third hole: transfer now drops `latestReports[id]`, since the id belongs to a
+lifetime that has not reported yet.
+
+Also fixed: the overlay inherited all id-keyed state across an element swap
+(resolved source, counts, candidate flag, stuck `resolving`, queued flashes), so
+a new canvas could show the retired component's file:line; the round-2 focus fix
+produced nine rows with stale text and a wrong "+N more" (a focused row now
+stays *in* the ranked slice, rendered live); `init` treated a bare directory as
+an installed package; `hasImport` used regex comment-stripping instead of
+matching the import statement.
+
+Declined, with reasons recorded in the review log: full occlusion/clipping hit
+testing (needs `elementFromPoint` per canvas per commit, and in inspect mode our
+own outline is the topmost element there — `inert` IS now handled), and the
+hand-maintained unknown-reason enumeration in the tests, which cannot detect a
+newly emitted code. The real fix for the latter is a single exported reason
+table shared by engine and overlay — a `signature.ts` refactor, worth doing on
+its own rather than inside a batch about lifetimes.
+
+**228 tests.**
+
 ## Plain-language copy pass (2026-07-28, Yomi's call)
 
 **Done, verified, uncommitted.** Yomi's question — "is everything here

@@ -23,13 +23,12 @@ export function detectFramework(dir) {
 }
 
 function hasImport(file) {
-  // A mention inside a comment is not an import; treating it as one would
-  // silently skip the edit the user asked for.
-  const source = fs
-    .readFileSync(file, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1');
-  return source.includes('canvas-scan/auto');
+  // Match the import statement itself, not any mention of the name: a
+  // commented-out line or a string is not an import, and treating one as an
+  // import silently skips the edit the user asked for.
+  return /^[ \t]*(?:import\s+['"]canvas-scan\/auto['"]|(?:const|let|var)[^\n=]*=\s*require\(\s*['"]canvas-scan\/auto['"]\s*\)|require\(\s*['"]canvas-scan\/auto['"]\s*\))/m.test(
+    fs.readFileSync(file, 'utf8'),
+  );
 }
 
 function readDependencies(dir) {
@@ -46,15 +45,25 @@ function readDependencies(dir) {
   }
 }
 
-function installCommand(dir, dependencies) {
-  // A dependency entry is a declaration, not an installation: a fresh clone
-  // lists canvas-scan and still cannot import it.
-  if (
-    'canvas-scan' in dependencies &&
-    fs.existsSync(path.join(dir, 'node_modules/canvas-scan'))
-  ) {
-    return null;
+// A dependency entry is a declaration, not an installation, and a bare
+// directory is not a package. Walk up the way Node does, and require a real
+// manifest. Yarn Plug'n'Play installs resolve without any node_modules
+// directory and are reported as missing here.
+function isInstalled(dir) {
+  for (let current = path.resolve(dir); ; ) {
+    if (
+      fs.existsSync(path.join(current, 'node_modules/canvas-scan/package.json'))
+    ) {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
   }
+}
+
+function installCommand(dir, dependencies) {
+  if ('canvas-scan' in dependencies && isInstalled(dir)) return null;
   if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
     return 'pnpm add -D canvas-scan';
   }

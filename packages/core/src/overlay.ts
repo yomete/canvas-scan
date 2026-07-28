@@ -469,6 +469,8 @@ function isVisiblyHitTestable(canvas: Element): boolean {
       return false;
     }
     if (style.display === 'none') return false;
+    // An inert subtree cannot receive input, so neither should our outline.
+    if ((el as HTMLElement).inert) return false;
   }
   return true;
 }
@@ -756,13 +758,20 @@ function renderFlyout(): void {
       b.aggregate.selfTimeMs - a.aggregate.selfTimeMs,
   );
 
-  const visibleRows = showAllRows ? rows : rows.slice(0, 8);
   const active = (flyout.getRootNode() as ShadowRoot).activeElement;
+  const visibleRows = showAllRows ? rows : rows.slice(0, 8);
+  // A row the user is on stays rendered even if a busier canvas overtakes it
+  // in the sort — but it stays as a real row, kept in order and up to date,
+  // rather than as an orphan the render loop no longer touches.
+  const activeCanvasId =
+    active instanceof HTMLElement ? active.dataset.canvasId : undefined;
+  if (activeCanvasId && !visibleRows.some(row => row.canvasId === activeCanvasId)) {
+    const focused = rows.find(row => row.canvasId === activeCanvasId);
+    if (focused) visibleRows.push(focused);
+  }
   const visibleCanvasIds = new Set(visibleRows.map(row => row.canvasId));
   for (const [canvasId, row] of flyoutRows) {
-    // A row the user is on must not be yanked out from under them because a
-    // busier canvas overtook it in the sort.
-    if (visibleCanvasIds.has(canvasId) || row === active) continue;
+    if (visibleCanvasIds.has(canvasId)) continue;
     row.remove();
     flyoutRows.delete(canvasId);
   }
@@ -817,16 +826,21 @@ function renderFlyout(): void {
 
   // Reused, not recreated: rebuilding it would drop focus mid-click.
   let more = flyout.querySelector<HTMLButtonElement>('.more');
-  if (!showAllRows && rows.length > 8) {
+  const hiddenCount = rows.length - visibleRows.length;
+  if (!showAllRows && hiddenCount > 0) {
     if (!more) {
       more = document.createElement('button');
       more.className = 'more';
       more.type = 'button';
     }
-    more.textContent = `+${rows.length - 8} more`;
+    more.textContent = `+${hiddenCount} more`;
     flyout.append(more);
-  } else if (more && more !== active) {
+  } else if (more) {
+    // Expanding removes the control the user just pressed, so hand focus to
+    // the rows it revealed rather than dropping it on the document.
+    const wasActive = more === active;
     more.remove();
+    if (wasActive) flyout.querySelector<HTMLButtonElement>('.row')?.focus();
   }
   if (
     active instanceof HTMLButtonElement &&
@@ -990,6 +1004,28 @@ function handlePopoverClick(event: MouseEvent): void {
 }
 
 function handleReport(report: DrawBatchReport, canvas: unknown): void {
+  // Everything the overlay keys by canvas id — counts, resolved source, queued
+  // flashes — belongs to the element that earned it. When a new element takes
+  // over an id, that state would otherwise be inherited: the old component's
+  // file:line shown for the new canvas, or a stuck "resolving…".
+  const previous = canvases.get(report.canvasId);
+  if (previous !== undefined && previous !== canvas) {
+    stats.delete(report.canvasId);
+    sourceStates.delete(report.canvasId);
+    sourceErrors.delete(report.canvasId);
+    locatingCanvases.delete(report.canvasId);
+    outlines.get(report.canvasId)?.remove();
+    outlines.delete(report.canvasId);
+    flyoutRows.get(report.canvasId)?.remove();
+    flyoutRows.delete(report.canvasId);
+    for (let index = pendingFlashes.length - 1; index >= 0; index--) {
+      if (pendingFlashes[index].canvasId === report.canvasId) {
+        pendingFlashes.splice(index, 1);
+      }
+    }
+    if (selectedCanvasId === report.canvasId) closePopover();
+  }
+
   const canvasStats = stats.get(report.canvasId) ?? {
     candidate: false,
     changed: 0,

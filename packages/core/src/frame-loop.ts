@@ -179,18 +179,34 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     windowIndex++;
 
     for (const record of records) {
+      // Ownership of a DOM id belongs to the NEWEST lifetime that drew, and
+      // transfers on activity rather than on capture: `records` is never
+      // pruned, so an older duplicate that still draws must not retire its
+      // successor, and sampling must not leave a retired canvas standing in
+      // for the live one.
+      const drew = record.activeInWindow;
       const processed = processRecord(record, windowIndex, captureEvery);
-      if (!processed) continue;
-      // Retire the previous lifetime only when the canvas that owns the id NOW
-      // reports. `records` is never pruned, so a retired record is still
-      // iterated here and must not be able to retire its successor.
-      const previousSerial = historyKeys.get(record.id);
-      if (previousSerial !== undefined && previousSerial !== record.serial) {
-        histories.delete(previousSerial);
-        lastReportedWindows.delete(previousSerial);
-        sourceLocations.delete(previousSerial);
+      if (drew) {
+        const owner = historyKeys.get(record.id);
+        if (owner === undefined || record.serial > owner) {
+          if (owner !== undefined) {
+            histories.delete(owner);
+            lastReportedWindows.delete(owner);
+            sourceLocations.delete(owner);
+            // The id now belongs to a lifetime that has not reported yet; the
+            // predecessor's last report must not stand in for it.
+            latestReports.delete(record.id);
+          }
+          historyKeys.set(record.id, record.serial);
+        }
       }
-      historyKeys.set(record.id, record.serial);
+      if (!processed) continue;
+      // An older duplicate still reports to subscribers, but the public
+      // per-id state belongs to the owner.
+      if (historyKeys.get(record.id) !== record.serial) {
+        emitReport(processed.report, record.canvas);
+        continue;
+      }
       latestReports.set(processed.report.canvasId, processed.report);
       const history = histories.get(record.serial) ?? [];
       history.push(processed.report);

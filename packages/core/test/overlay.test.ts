@@ -397,6 +397,49 @@ describe('overlay flyout', () => {
     expect(root.activeElement).toBe(more);
   });
 
+  it('keeps the row cap and the more count correct while a row is focused', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'quiet', signatureStatus: 'changed' }), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('[data-canvas-id="quiet"].row')!.focus();
+
+    for (let index = 0; index < 10; index++) {
+      emitReport(makeReport({ canvasId: `busy-${index}` }), makeCanvas(false));
+      emitReport(makeReport({ canvasId: `busy-${index}` }), makeCanvas(false));
+    }
+    refreshOverlay();
+
+    // Eight ranked rows plus the focused one the user is reading.
+    expect(root.querySelectorAll('.row')).toHaveLength(9);
+    expect(root.querySelector('.more')?.textContent).toBe('+2 more');
+    // The retained row is still rendered from live data, not frozen.
+    expect(
+      root.querySelector('[data-canvas-id="quiet"] .row-text')?.textContent,
+    ).toContain('same in 0 of');
+  });
+
+  it('hands focus to the revealed rows when more is activated', () => {
+    mountOverlay();
+    for (let index = 0; index < 10; index++) {
+      emitReport(makeReport({ canvasId: `many-${index}` }), makeCanvas(false));
+    }
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const more = root.querySelector<HTMLButtonElement>('.more')!;
+    more.focus();
+    more.click();
+    refreshOverlay();
+
+    expect(root.querySelector('.more')).toBeNull();
+    expect(root.querySelectorAll('.row')).toHaveLength(10);
+    expect(root.activeElement).toBe(root.querySelector('.row'));
+  });
+
   it("updates a reused row's text in place", () => {
     mountOverlay();
     const canvas = makeCanvas(false);
@@ -703,6 +746,70 @@ describe('overlay inspect mode and popover', () => {
 
     expect(outline.hidden).toBe(true);
     expect(outline.style.pointerEvents).toBe('none');
+  });
+
+  it('deactivates a canvas inside an inert subtree', () => {
+    mountOverlay();
+    const parent = document.createElement('div');
+    const canvas = makeCanvas(false);
+    parent.append(canvas);
+    document.body.append(parent);
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+    expect(outline.style.pointerEvents).toBe('auto');
+
+    parent.inert = true;
+    refreshOverlay();
+
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+  });
+
+  it('does not inherit a retired canvas state when an id is reused', async () => {
+    // A new element taking over a DOM id must not inherit the previous
+    // canvas's resolved source, counts, or candidate flag.
+    resolveSourceOutcome.mockResolvedValue({
+      kind: 'found',
+      location: { file: '/src/Old.tsx', line: 1, column: 0 },
+    });
+    mountOverlay();
+    const first = makeCanvas(false);
+    emitReport(makeReport({ canvasId: 'shared' }), first);
+    emitReport(makeReport({ canvasId: 'shared' }), first);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+    await Promise.resolve();
+    await Promise.resolve();
+    refreshOverlay();
+    expect(root.querySelector('.source')?.textContent).toBe(
+      'source: Old.tsx:1',
+    );
+
+    // The element behind the id is replaced.
+    const second = makeCanvas(false);
+    emitReport(
+      makeReport({ canvasId: 'shared', signatureStatus: 'changed' }),
+      second,
+    );
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+
+    // Counts restart from the new element, and the old source is gone.
+    expect(root.querySelector('.row-text')?.textContent).toContain(
+      'same in 0 of 1 frame',
+    );
+    expect(root.querySelector('.counts')?.textContent).toBe(
+      '1 canvas · 0 review candidates',
+    );
   });
 
   it('deactivates a canvas the page has made click-through', () => {
