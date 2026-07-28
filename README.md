@@ -17,9 +17,12 @@ source location, resolved on demand through your dev sourcemaps.
 
 ## Status
 
-`canvas-scan@0.2.0` is on npm. The core is tested against
+`canvas-scan@0.3.0` is on npm. The core is tested against
 react-konva and chart.js on real library internals — see
 [packages/dogfood/FINDINGS.md](packages/dogfood/FINDINGS.md).
+
+`canvas-scan@0.3.0` changes the shape of `canvasId`. It is now unique per
+canvas lifetime, not the element's DOM `id`. See "Report shape" below.
 
 ## What the tool measures
 

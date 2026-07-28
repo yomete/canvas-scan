@@ -33,7 +33,7 @@ export function start(options: CanvasScanOptions = {}): void {
   startFrameLoop(options);
   if (options.overlay !== false) mountOverlay(options);
   (window as any).__CANVAS_SCAN__ = {
-    version: '0.2.0',
+    version: '0.3.0',
     getHistory,
     getReports,
   };

@@ -750,6 +750,40 @@ against the new copy. Vocabulary bridge documented in both READMEs: a
 window is one animation frame; the field names stay the programmatic
 vocabulary.
 
+### Round 5 and the 0.3.0 release (2026-07-28)
+
+Round 5 was **the first round in five with no P1 finding**. Codex confirmed the
+claim the rewrite existed to prove: serial-backed ids structurally prevent two
+production canvas records from sharing a key, and no history, ownership or
+source-attribution corruption remains. Four P2s were fixed (post-prune source
+recreation, the slotted-`inert` walk, `isInstalled` accepting any manifest,
+`hasImport` missing real import forms). One was scoped out with reasons: the
+permanent `records` registry, which is now the largest open defect but is a
+memory and CPU concern only, because lifetime identity means it cannot cause
+wrong attribution.
+
+**The release gate caught a real cost.** The first bench runs failed at 2.058
+and 2.133 ms against the 2 ms budget. An A/B against `15b8485` on the same
+night measured 1.702 ms, which looked like proof of a regression — but that
+baseline run ALSO failed the gate, on p95, and the machine load was 6 to 8.
+The honest reading was that the machine was the loudest variable, so the
+"regression confirmed" verdict was withdrawn.
+
+Two genuine per-commit costs came out of the overlay anyway: `placeOutline`
+asked `isVisiblyHitTestable` for every outline on every commit, forcing a style
+recalculation per frame, and the prune copied the core's key set each commit.
+Only inspect mode can make an outline catch clicks, so only inspect mode needs
+that answer now. On a quiet machine (load 3.45) the gate then passed three
+times consecutively: 1.588, 1.663 and 1.986 ms.
+
+**Rule confirmed for next time: do not certify the release gate on a loaded
+machine.** Check `uptime` first, and require three consecutive passes.
+
+`0.3.0` is a minor bump, not a patch, because `canvasId` changed shape. Both
+READMEs state that in the Status section. The packed-version gate added earlier
+in the day proved itself on this bump: `verify-pack` checks the ESM chunk, the
+minified IIFE and the packed README all carry the manifest version.
+
 ## Later phases / launch checklist
 
 - **M1 — correctness/overhead hardening** (the acceptance suite lives here):
