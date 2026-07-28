@@ -2,11 +2,20 @@ import { safelyInstallRDTHook } from 'bippy';
 import { addSkippedOwners } from './attribution';
 import { getHistory, latestReports, startFrameLoop } from './frame-loop';
 import { mountOverlay } from './overlay';
-import type { CanvasScanOptions } from './types';
+import type {
+  CanvasScanOptions,
+  DrawBatchReport,
+} from './types';
 import { installCanvasPatch } from './wrap-context';
 import { installPath2DPatch } from './wrap-path2d';
 
 let started = false;
+
+export function getReports(): Record<string, DrawBatchReport> {
+  return Object.fromEntries(
+    [...latestReports].map(([id, report]) => [id, { ...report }]),
+  );
+}
 
 export function start(options: CanvasScanOptions = {}): void {
   if (typeof window === 'undefined' || started) return;
@@ -21,7 +30,7 @@ export function start(options: CanvasScanOptions = {}): void {
   (window as any).__CANVAS_SCAN__ = {
     version: '0.2.0',
     getHistory,
-    getReports: () => Object.fromEntries(latestReports),
+    getReports,
   };
 }
 

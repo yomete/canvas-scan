@@ -39,6 +39,18 @@ export function findOwnerFiber(canvas: any): FiberNode | null {
   return fiber ? findOwner(fiber) : null;
 }
 
+export function findOwnerFiberForCanvas(canvas: any): FiberNode | null {
+  const own = findOwnerFiber(canvas);
+  if (own) return own;
+  // Imperatively appended canvases carry no fiber; the nearest React-managed
+  // ancestor owns them (same rule resolveAttribution already applies).
+  for (let el = canvas?.parentElement; el; el = el.parentElement) {
+    const owner = findOwnerFiber(el);
+    if (owner) return owner;
+  }
+  return null;
+}
+
 export function resolveAttribution(canvas: any): {
   nearestReactOwner: string | null;
   attributionKind: AttributionKind;
@@ -61,12 +73,19 @@ export function resolveAttribution(canvas: any): {
 
     // Imperatively appended canvases (react-konva, pixi) carry no fiber stamp;
     // the nearest React-managed ancestor is the best truthful attribution.
+    const owner = findOwnerFiberForCanvas(canvas);
+    if (owner) {
+      return {
+        nearestReactOwner: getDisplayName(owner.type),
+        attributionKind: 'container-only',
+      };
+    }
+
     for (let el = canvas.parentElement; el; el = el.parentElement) {
       const hostFiber = getFiberFromHostInstance(el);
       if (!hostFiber) continue;
-      const owner = findOwnerFiber(el);
       return {
-        nearestReactOwner: owner ? getDisplayName(owner.type) : null,
+        nearestReactOwner: null,
         attributionKind: 'container-only',
       };
     }

@@ -544,41 +544,74 @@ outputs folder ends at the earlier approval, while the in-repo copy carries
 copy is canonical; check `grep -n "^CODEX_STATUS" CODEX_REVIEW.md | tail -1`
 before claiming any review state.
 
-Status of its findings, re-verified against the shipped tree on 2026-07-28
-(details and evidence in the Fable response appended to `CODEX_REVIEW.md`):
+Status of its findings. All six code findings were verified open against the
+shipped tree, then **fixed in the remediation batch below (uncommitted)**;
+evidence lives in the Fable response appended to `CODEX_REVIEW.md`.
 
-- **OPEN — public `sourceLocation` never reaches the public API.** Confirmed
-  in real Chrome: the popover shows `source: App.tsx:3` while
-  `getReports()['raf-chart'].sourceLocation` is `null`, and 1 of 120 history
-  entries carries it. `frame-loop.ts` builds every report with
-  `sourceLocation: null`; `overlay.ts` mutates only the one object that
-  happens to be latest at resolution time. Needs a canonical per-canvas store.
-- **OPEN — a focused flyout row is destroyed by the next report.** Confirmed
-  in real Chrome: focus a row, wait 700 ms, and the node is replaced and
-  disconnected (`sameNode:false, stillFocused:false`). `handleReport` bumps
-  `flyoutRevision` for any canvas and `renderFlyout` calls `replaceChildren`
-  with fresh buttons. Needs keyed rows or focus restoration.
-- **OPEN — `visibility:hidden` canvases stay pointer-active in inspect mode.**
-  `placeOutline` checks only `isConnected` and a nonzero rect.
-- **OPEN — source lookup drops container-only owners** (it re-runs
-  `findOwnerFiber` on the unstamped canvas instead of the attributed
-  ancestor), collapses "unavailable" and "threw" into `null`, and permanently
-  caches transient failures. The second `symbolicateStack()` pass is
-  redundant — bippy 0.6.1's `getOwnerStack` already symbolicates.
-- **OPEN — history is mutable and unbounded.** `getHistory` copies the array
-  but shares report objects, nothing prunes canvas IDs, and identity keys on
-  the DOM id, so a reused id merges separate canvas lifetimes.
-- **OPEN — `v2-shots.mjs` bypasses hit-testing** (synthetic `dispatchEvent`
-  inside the shadow root, and it asserts the last outline rather than a named
-  canvas), so it cannot catch an occlusion or `pointer-events` regression.
-- **FIXED** — `symbolicate.ts` and `v2-shots.mjs` are properly tracked with
-  real content (commit `15b8485`), not empty intent-to-add placeholders.
-- **PARTLY FIXED** — the release track: version is `0.2.0` in the manifest,
-  in `index.ts`, and in both built bundles. Still open: no test asserts the
-  version baked into the ESM/IIFE build or the packed README, and
-  `init --write` still says "already installed" from the presence of the
-  import line alone, without checking the dependency. The README script-tag
-  path and the stale "npm name unclaimed" note are fixed as of this pass.
+## Remediation batch (2026-07-28, PBJ: Fable plan → Codex gpt-5.6-sol → Fable judge)
+
+**Done, verified, uncommitted. 207 tests (was 192).**
+
+- **FIXED — public `sourceLocation` now reaches the public API.** Was: popover
+  showed `source: App.tsx:3` while `getReports()['raf-chart'].sourceLocation`
+  was `null` (1 of 120 history entries carried it). Now: a canonical
+  per-canvas store in `frame-loop.ts` (`setSourceLocation`) republishes the
+  latest report and seeds every subsequent one. Real Chrome after the fix:
+  `latestSource {file: App.tsx, line: 3}`, 85 of 120 history entries carry it.
+- **FIXED — a focused flyout row survives reports.** Rows are keyed by
+  `canvasId` in `flyoutRows`, updated in place, reordered by re-appending,
+  with an explicit focus restore. Real Chrome: `sameNode:true,
+  stillFocused:true` (was `false,false`).
+- **FIXED — hidden canvases are no longer clickable.** `isVisiblyHitTestable`
+  walks ancestors for `visibility:hidden|collapse` and `display:none`. Real
+  Chrome: hiding the effect canvas leaves its outline `hidden` with
+  `pointer-events:none`.
+- **FIXED — source lookup.** `findOwnerFiberForCanvas` in `attribution.ts` is
+  now the single owner walk used by both attribution and symbolication, so
+  container-only canvases (konva, Excalidraw) resolve. `SourceOutcome`
+  distinguishes `found | unavailable | error`; errors are never cached, so a
+  transient failure retries. The redundant `symbolicateStack()` pass is gone
+  (bippy 0.6.1's `getOwnerStack` symbolicates internally).
+- **FIXED — history is immutable, identified, and bounded.** `getHistory` and
+  `getReports` return per-report copies; histories key on the record `serial`
+  so a reused DOM id starts a fresh lifetime; `MAX_TRACKED_CANVASES = 64` with
+  least-recently-reported eviction across all four maps.
+- **FIXED — `v2-shots.mjs` hit-tests.** Real Playwright pointer clicks
+  (Playwright's CSS engine pierces open shadow roots) on the toolbar and on a
+  named canvas outline, asserting `EffectChart` rather than the last outline.
+- **FIXED (judge catch, not in the Codex diff)** — the source store was keyed
+  by canvas id with no invalidation, so a reused DOM id inherited the retired
+  canvas's source location. Lifetime retirement now runs *before* the report
+  is built, and eviction clears the source entry too. Regression added and
+  confirmed to fail without the fix.
+- **FIXED earlier** — `symbolicate.ts` and `v2-shots.mjs` are properly tracked
+  with real content (commit `15b8485`), not intent-to-add placeholders.
+
+**Release-track tail, swept in the same batch:**
+
+- **FIXED — the shipped bundles can no longer lie about their version.**
+  `assertPackedVersion` in `scripts/pack-manifest.mjs` requires the packed ESM
+  chunk and the minified IIFE to carry `version: "<manifest version>"` and the
+  packed README to advertise `canvas-scan@<version>`; `verify-pack.mjs` runs it
+  against the real tarball, so CI's pack job gates it. A fast unit regression
+  also asserts the `src/index.ts` literal matches `package.json`, catching the
+  drift before a build bakes it in. Proven fail-closed by planting `9.9.9` in
+  `index.ts` and watching the pack step fail.
+- **FIXED — `init` no longer calls an import an installation.** An import line
+  does not mean the package is installed. When `canvas-scan` is missing from
+  `package.json`, `init` now says "the import is already there, but canvas-scan
+  is not in package.json yet." and still prints the install command; only a
+  genuine dependency gets "canvas-scan is already installed."
+
+Still deferred: `CanvasRecord`s are never retired from the `records` Set in
+`wrap-context.ts` (a real leak, separate from history retention).
+
+Verification: **213 tests**; `pnpm -r run typecheck`; `node
+scripts/verify-pack.mjs` (package + Vite + Next fixtures);
+`node packages/dogfood/v2-shots.mjs` PASS; real-Chrome probe confirming all four
+user-visible fixes; mutation checks confirming the new regressions fail without
+their fixes. The Chrome perf gate (`bench-chrome.mjs`) has not been re-run — do
+that before any release.
 
 ## Plain-language copy pass (2026-07-28, Yomi's call)
 

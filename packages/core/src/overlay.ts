@@ -1,5 +1,9 @@
-import { getHistory, subscribeToReports } from './frame-loop';
-import { resolveSourceLocation } from './symbolicate';
+import {
+  getHistory,
+  setSourceLocation,
+  subscribeToReports,
+} from './frame-loop';
+import { resolveSourceOutcome } from './symbolicate';
 import type {
   AttributionKind,
   CanvasScanOptions,
@@ -37,6 +41,7 @@ type SourceState =
 const stats = new Map<string, CanvasStats>();
 const canvases = new Map<string, unknown>();
 const outlines = new Map<string, HTMLDivElement>();
+const flyoutRows = new Map<string, HTMLButtonElement>();
 const locateTimeouts = new Map<string, number>();
 const locatingCanvases = new Set<string>();
 const flashAnimationFrames = new Map<string, number>();
@@ -44,6 +49,7 @@ const flashTimeouts = new Map<string, number>();
 const fadingFlashes = new Set<string>();
 const expiredFlashes = new Set<string>();
 const sourceStates = new Map<string, SourceState>();
+const sourceErrors = new Set<string>();
 const pendingFlashes: Array<{
   canvasId: string;
   report: DrawBatchReport;
@@ -419,6 +425,11 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
     outline.style.pointerEvents = 'none';
     return false;
   }
+  if (!isVisiblyHitTestable(canvas)) {
+    outline.hidden = true;
+    outline.style.pointerEvents = 'none';
+    return false;
+  }
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
     outline.hidden = true;
@@ -430,6 +441,18 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
   outline.style.left = `${rect.left - 2}px`;
   outline.style.width = `${rect.width + 4}px`;
   outline.style.height = `${rect.height + 4}px`;
+  return true;
+}
+
+function isVisiblyHitTestable(canvas: Element): boolean {
+  if (typeof getComputedStyle !== 'function') return true;
+  for (let el: Element | null = canvas; el; el = el.parentElement) {
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') {
+      return false;
+    }
+    if (style.display === 'none') return false;
+  }
   return true;
 }
 
@@ -546,10 +569,13 @@ function closePopover(): void {
   selectedCanvasId = null;
 }
 
-function sourceLabel(state: SourceState | undefined): {
+function sourceLabel(state: SourceState | undefined, failed: boolean): {
   text: string;
   title: string;
 } {
+  if (failed) {
+    return { text: 'lookup failed — reopen to retry', title: '' };
+  }
   if (!state || state.status === 'resolving') {
     return { text: 'resolving…', title: '' };
   }
@@ -641,7 +667,10 @@ function renderPopover(): void {
   }
 
   const source = popover.querySelector<HTMLElement>('.source');
-  const label = sourceLabel(sourceStates.get(canvasId));
+  const label = sourceLabel(
+    sourceStates.get(canvasId),
+    sourceErrors.has(canvasId),
+  );
   if (source) {
     source.textContent = `source: ${label.text}`;
     source.title = label.title;
@@ -655,13 +684,22 @@ function openPopover(canvasId: string): void {
   flyoutOpen = false;
 
   if (!sourceStates.has(canvasId)) {
+    sourceErrors.delete(canvasId);
     sourceStates.set(canvasId, { status: 'resolving' });
     const canvas = canvases.get(canvasId);
     const generation = mountGeneration;
-    void resolveSourceLocation(canvas).then((location) => {
+    void resolveSourceOutcome(canvas).then((outcome) => {
       if (!host || mountGeneration !== generation) return;
+      if (outcome.kind === 'error') {
+        sourceStates.delete(canvasId);
+        sourceErrors.add(canvasId);
+        markDirty();
+        return;
+      }
+      const location = outcome.kind === 'found' ? outcome.location : null;
+      sourceErrors.delete(canvasId);
       sourceStates.set(canvasId, { location, status: 'resolved' });
-      canvasStats.latest.sourceLocation = location;
+      setSourceLocation(canvasId, location);
       markDirty();
     });
   }
@@ -686,18 +724,36 @@ function renderFlyout(): void {
   );
 
   const visibleRows = showAllRows ? rows : rows.slice(0, 8);
+  const active = (flyout.getRootNode() as ShadowRoot).activeElement;
+  const visibleCanvasIds = new Set(visibleRows.map(row => row.canvasId));
+  for (const [canvasId, row] of flyoutRows) {
+    if (visibleCanvasIds.has(canvasId)) continue;
+    row.remove();
+    flyoutRows.delete(canvasId);
+  }
+  flyout.querySelector('.note')?.remove();
+  flyout.querySelector('.more')?.remove();
   const note = document.createElement('div');
   note.className = 'note';
   note.textContent = EXPLAINER;
-  const children: HTMLElement[] = [note];
+  flyout.append(note);
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
-    const row = document.createElement('button');
-    row.className = 'row';
-    row.type = 'button';
-    row.dataset.canvasId = canvasId;
-    row.append(makeBadge(canvasStats.kind));
-    const text = document.createElement('span');
-    text.className = 'row-text';
+    let row = flyoutRows.get(canvasId);
+    if (!row) {
+      row = document.createElement('button');
+      row.className = 'row';
+      row.type = 'button';
+      row.dataset.canvasId = canvasId;
+      row.append(makeBadge(canvasStats.kind));
+      const text = document.createElement('span');
+      text.className = 'row-text';
+      row.append(text);
+      flyoutRows.set(canvasId, row);
+    }
+    const badge = row.querySelector<HTMLElement>('.badge')!;
+    badge.textContent = badgeText(canvasStats.kind);
+    badge.title = canvasStats.kind;
+    const text = row.querySelector<HTMLElement>('.row-text')!;
     const owner = canvasStats.owner ?? canvasId;
     let content =
       `${owner} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
@@ -720,8 +776,7 @@ function renderFlyout(): void {
     }
     text.textContent = content;
     row.title = title;
-    row.append(text);
-    children.push(row);
+    flyout.append(row);
   }
 
   if (!showAllRows && rows.length > 8) {
@@ -729,9 +784,15 @@ function renderFlyout(): void {
     more.className = 'more';
     more.type = 'button';
     more.textContent = `+${rows.length - 8} more`;
-    children.push(more);
+    flyout.append(more);
   }
-  flyout.replaceChildren(...children);
+  if (
+    active instanceof HTMLButtonElement &&
+    active.classList.contains('row') &&
+    active.isConnected
+  ) {
+    active.focus();
+  }
   renderedFlyoutRevision = flyoutRevision;
 }
 
@@ -1123,6 +1184,7 @@ export function unmountOverlay(): void {
   dragX = 0;
   dragY = 0;
   outlines.clear();
+  flyoutRows.clear();
   locatingCanvases.clear();
   fadingFlashes.clear();
   expiredFlashes.clear();
@@ -1130,4 +1192,5 @@ export function unmountOverlay(): void {
   stats.clear();
   canvases.clear();
   sourceStates.clear();
+  sourceErrors.clear();
 }

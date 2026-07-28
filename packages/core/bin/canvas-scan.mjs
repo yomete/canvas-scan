@@ -66,6 +66,15 @@ function minimumNextVersion(spec) {
   };
 }
 
+// An import line does not mean the package is there to import. `install` is
+// null exactly when canvas-scan is already a dependency, so it decides which
+// of the two situations we are actually in.
+function alreadyImportedReason(install) {
+  return install === null
+    ? 'canvas-scan is already installed.'
+    : 'the import is already there, but canvas-scan is not in package.json yet.';
+}
+
 function nextManualInstructions(spec, unparseable) {
   const detection = unparseable
     ? `detected next version spec '${spec}' — could not verify >= 15.3. `
@@ -99,7 +108,7 @@ export function planInit(dir) {
       return {
         framework,
         install,
-        action: { kind: 'none', reason: 'canvas-scan is already installed.' },
+        action: { kind: 'none', reason: alreadyImportedReason(install) },
         instructions: `${entry} already imports canvas-scan/auto.`,
       };
     }
@@ -144,7 +153,7 @@ export function planInit(dir) {
       return {
         framework,
         install,
-        action: { kind: 'none', reason: 'canvas-scan is already installed.' },
+        action: { kind: 'none', reason: alreadyImportedReason(install) },
         instructions:
           'instrumentation-client.ts already imports canvas-scan/auto.',
       };
@@ -180,7 +189,7 @@ export function applyInit(plan, dir) {
   const file = path.resolve(dir, plan.action.file);
 
   if (fs.existsSync(file) && hasImport(file)) {
-    return { changed: false, message: 'canvas-scan is already installed.' };
+    return { changed: false, message: alreadyImportedReason(plan.install) };
   }
 
   if (plan.action.kind === 'create') {

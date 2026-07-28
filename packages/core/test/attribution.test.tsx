@@ -1,13 +1,35 @@
 // @vitest-environment jsdom
 
-import { expect, it } from 'vitest';
-import { addSkippedOwners, resolveAttribution } from '../src/attribution';
-import { resolveSourceLocation } from '../src/symbolicate';
+import { beforeEach, expect, it, vi } from 'vitest';
+
+const { getOwnerStack } = vi.hoisted(() => ({
+  getOwnerStack: vi.fn(),
+}));
+
+vi.mock('bippy/source', async importOriginal => {
+  const actual = await importOriginal<typeof import('bippy/source')>();
+  getOwnerStack.mockImplementation(actual.getOwnerStack);
+  return { ...actual, getOwnerStack };
+});
+
+import {
+  addSkippedOwners,
+  findOwnerFiberForCanvas,
+  resolveAttribution,
+} from '../src/attribution';
+import {
+  resolveSourceLocation,
+  resolveSourceOutcome,
+} from '../src/symbolicate';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import React, { useLayoutEffect, useRef } from 'react';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
+
+beforeEach(() => {
+  getOwnerStack.mockClear();
+});
 
 it('attributes a JSX canvas to its nearest React owner', () => {
   function MyChart() {
@@ -66,6 +88,9 @@ it('resolves no source for a canvas outside a React tree', async () => {
   const canvas = document.createElement('canvas');
 
   await expect(resolveSourceLocation(canvas)).resolves.toBeNull();
+  await expect(resolveSourceOutcome(canvas)).resolves.toEqual({
+    kind: 'unavailable',
+  });
 });
 
 it('resolves a React canvas to a source location when one is available', async () => {
@@ -78,13 +103,99 @@ it('resolves a React canvas to a source location when one is available', async (
   flushSync(() => root.render(<SourceChart />));
 
   const canvas = container.querySelector('[data-testid="source-c"]')!;
-  const location = await resolveSourceLocation(canvas);
+  getOwnerStack.mockResolvedValueOnce([
+    {
+      fileName: '/src/SourceChart.tsx',
+      lineNumber: 14,
+      columnNumber: 3,
+    },
+  ]);
+
+  await expect(resolveSourceOutcome(canvas)).resolves.toEqual({
+    kind: 'found',
+    location: {
+      file: '/src/SourceChart.tsx',
+      line: 14,
+      column: 3,
+    },
+  });
+  expect(getOwnerStack).toHaveBeenCalledOnce();
+
+  root.unmount();
+});
+
+it('finds the owner for an imperatively appended canvas', () => {
+  function ImperativeSourceHost() {
+    const ref = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+      const canvas = document.createElement('canvas');
+      canvas.id = 'imperative-source';
+      ref.current!.appendChild(canvas);
+    }, []);
+
+    return <div ref={ref} />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<ImperativeSourceHost />));
+
   expect(
-    location === null ||
-      (typeof location.file === 'string' &&
-        location.file.length > 0 &&
-        typeof location.line === 'number'),
-  ).toBe(true);
+    findOwnerFiberForCanvas(container.querySelector('#imperative-source')!),
+  ).not.toBeNull();
+
+  root.unmount();
+});
+
+it('reports source lookup errors distinctly', async () => {
+  function ThrowingSource() {
+    return <canvas id="throwing-source" />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<ThrowingSource />));
+  getOwnerStack.mockRejectedValueOnce(new Error('lookup failed'));
+
+  await expect(
+    resolveSourceOutcome(container.querySelector('#throwing-source')!),
+  ).resolves.toEqual({ kind: 'error' });
+
+  root.unmount();
+});
+
+it('retries source lookup after a transient error', async () => {
+  function RecoveringSource() {
+    return <canvas id="recovering-source" />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<RecoveringSource />));
+  const canvas = container.querySelector('#recovering-source')!;
+  getOwnerStack
+    .mockRejectedValueOnce(new Error('temporary failure'))
+    .mockResolvedValueOnce([
+      {
+        fileName: '/src/RecoveringSource.tsx',
+        lineNumber: 24,
+        columnNumber: 5,
+      },
+    ]);
+
+  await expect(resolveSourceOutcome(canvas)).resolves.toEqual({
+    kind: 'error',
+  });
+  await expect(resolveSourceOutcome(canvas)).resolves.toEqual({
+    kind: 'found',
+    location: {
+      file: '/src/RecoveringSource.tsx',
+      line: 24,
+      column: 5,
+    },
+  });
+  expect(getOwnerStack).toHaveBeenCalledTimes(2);
 
   root.unmount();
 });

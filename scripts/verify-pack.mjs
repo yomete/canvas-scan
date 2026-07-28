@@ -3,10 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertManifestEntries } from './pack-manifest.mjs';
+import {
+  assertManifestEntries,
+  assertPackedVersion,
+} from './pack-manifest.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = path.join(repoRoot, 'packages/core');
+const { version } = JSON.parse(
+  fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'),
+);
 const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), 'canvas-scan-verify-pack-'),
 );
@@ -264,7 +270,28 @@ try {
     tarball = path.join(packDirectory, tarballs[0]);
     const listing = spawnSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
     if (listing.status !== 0) throw new Error('could not list tarball');
-    assertManifestEntries(listing.stdout.trim().split('\n'));
+    const entries = listing.stdout.trim().split('\n');
+    assertManifestEntries(entries);
+
+    const readEntry = (entry) => {
+      const extracted = spawnSync('tar', ['-xzOf', tarball, entry], {
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      if (extracted.status !== 0) {
+        throw new Error(`could not read ${entry} from the tarball`);
+      }
+      return extracted.stdout;
+    };
+    const chunk = entries.find((entry) => /dist\/chunk-/.test(entry));
+    assertPackedVersion(
+      {
+        esm: readEntry(chunk),
+        iife: readEntry('package/dist/canvas-scan.iife.js'),
+        readme: readEntry('package/README.md'),
+      },
+      version,
+    );
   });
 
   if (packed) {

@@ -52,6 +52,39 @@ describe('canvas-scan init CLI', () => {
     ).toHaveLength(1);
   });
 
+  it('does not call an import without the dependency "already installed"', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(
+      path.join(dir, 'src/main.tsx'),
+      "import 'canvas-scan/auto';\nrender();\n",
+    );
+
+    const plan = planInit(dir);
+    expect(plan.install).toBe('npm install -D canvas-scan');
+    expect(plan.action.reason).toBe(
+      'the import is already there, but canvas-scan is not in package.json yet.',
+    );
+    expect(applyInit(plan, dir).message).toBe(plan.action.reason);
+  });
+
+  it('reports a genuinely installed project as already installed', () => {
+    const dir = fixture();
+    writePackageJson(dir, {
+      devDependencies: { vite: '^7.0.0', 'canvas-scan': '^0.2.0' },
+    });
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(
+      path.join(dir, 'src/main.tsx'),
+      "import 'canvas-scan/auto';\nrender();\n",
+    );
+
+    const plan = planInit(dir);
+    expect(plan.install).toBeNull();
+    expect(plan.action.reason).toBe('canvas-scan is already installed.');
+  });
+
   it('creates a Next.js instrumentation client once', () => {
     const dir = fixture();
     writePackageJson(dir, { dependencies: { next: '^15.3.0' } });

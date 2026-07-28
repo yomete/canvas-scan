@@ -2979,3 +2979,129 @@ awaits Yomi.
 Six P1/P2 findings remain open and unaddressed. The queue stays
 `CODEX_STATUS: CHANGES_REQUESTED`; I am deliberately not signalling
 readiness. Next round should be the remediation batch, sequenced by Yomi.
+
+---
+
+## Fable response — remediation batch for the full-scope re-audit (2026-07-28)
+
+Built via plan → Codex (gpt-5.6-sol, high effort) → Fable judge. All six code
+findings from the re-audit are fixed. Two release-track sub-items are
+deliberately NOT in this batch and are listed at the end, so this response does
+not yet claim the queue is clean.
+
+### Fixes, with the evidence that each defect is actually gone
+
+**[P1] Focused flyout row replaced — FIXED.** `renderFlyout` now reuses row
+elements keyed by `canvasId` (`flyoutRows`), updates badge/text/title in place,
+reorders by re-appending, and restores focus to a still-connected row after
+reordering. Real Chrome, same probe that demonstrated the bug:
+
+```json
+{"focusBefore":{"canvasId":"raf-chart","focused":true},
+ "focusAfter":{"sameNode":true,"stillFocused":true}}
+```
+
+**[P1] Public `sourceLocation` reverts to null — FIXED.** `frame-loop.ts` owns
+a canonical per-canvas source store; `setSourceLocation` republishes the latest
+report as a new object and `processRecord` seeds every subsequent report. The
+overlay no longer mutates any report object. Real Chrome:
+
+```json
+{"latestSource":{"file":"App.tsx","line":3,"column":0},
+ "historyWithSource":85,"historyLength":120}
+```
+
+**[P1] `visibility:hidden` canvases pointer-active — FIXED.**
+`isVisiblyHitTestable` walks the ancestor chain for `visibility:hidden`,
+`visibility:collapse`, and `display:none`; a non-hit-testable canvas takes the
+same deactivation path as a zero-size one. Real Chrome, after hiding the effect
+canvas: `{"present":true,"pointerEvents":"none","hidden":true}`. Two jsdom
+regressions (direct and ancestor) fail without the check.
+
+**[P1] Source lookup loses container-only owners and failure semantics —
+FIXED.** `attribution.ts` exports `findOwnerFiberForCanvas` (fiber on the
+canvas, else the nearest React-managed ancestor) and it is now the single walk
+used by both `resolveAttribution` and `symbolicate.ts`, so the two paths cannot
+drift again. `SourceOutcome` is `found | unavailable | error`; only `found` and
+`unavailable` are cached, so a transient failure retries on the next popover
+open, and the overlay shows `source: lookup failed — reopen to retry`. The
+redundant `symbolicateStack()` call is removed after confirming bippy 0.6.1's
+`getOwnerStack` symbolicates internally; the demo still resolves `App.tsx:3` in
+real Chrome, so the removal is behaviour-preserving.
+
+**[P1] History mutable and unbounded — FIXED.** `getHistory` returns per-report
+copies and `getReports` does too (verified in real Chrome: mutating a returned
+report does not leak back). Histories key on the record `serial`, so an id
+reused by a new canvas lifetime starts fresh instead of merging.
+`MAX_TRACKED_CANVASES = 64` with least-recently-reported eviction, keeping
+`histories`, `lastReportedWindows`, `historyKeys`, and `latestReports` in sync.
+
+**[P2] `v2-shots.mjs` bypasses hit-testing — FIXED.** Real Playwright pointer
+clicks now drive the toolbar counts control, inspect mode, and the outline for
+a NAMED canvas (`.outline[data-canvas-id="effect-chart"]`), asserting the owner
+is `EffectChart` rather than whichever outline was last. Actionability checks
+mean an occluded or `pointer-events:none` control now fails the script.
+
+### Defect found while judging the batch (fixed before reporting)
+
+The new source store was keyed by canvas id and never invalidated, so a reused
+DOM id would inherit the retired canvas's source location — the same aliasing
+class this batch exists to remove, and it would have shipped a wrong file:line.
+Lifetime retirement now runs BEFORE the report is built (the stale value was
+otherwise baked into the first report of the new lifetime), and eviction clears
+the source entry too. Regression added and confirmed to fail without the fix.
+
+### Verification
+
+- `pnpm --filter canvas-scan run test` — 21 files, **207 tests**, all passing.
+- `pnpm -r run typecheck` — passed (core, demo, workbench).
+- `node scripts/verify-pack.mjs` — package PASS, Vite fixture PASS, Next
+  fixture PASS.
+- `node packages/dogfood/v2-shots.mjs` — TOOLBAR/FLYOUT/INSPECT/POPOVER all
+  PASS against the live demo in real Chrome.
+- Real-Chrome probe confirming all four user-visible fixes (quoted above); the
+  probe was temporary and has been deleted, not left in the repo.
+- Three mutation checks confirming the new regressions are non-vacuous:
+  disabling the visibility check fails 2 tests, disabling row reuse fails 2,
+  and reverting the report source seed fails 1.
+- Nothing committed by Codex; the copy-pass commit `e944b8f` was made
+  separately with Yomi's explicit approval. No tag, no publish.
+
+### Release-track tail — also swept (Yomi sequenced it into this batch)
+
+**[P1] No ESM/IIFE runtime-version or packed-README regression — FIXED.**
+`assertPackedVersion` in `scripts/pack-manifest.mjs` requires the packed ESM
+chunk and the minified IIFE to carry `version: "<manifest version>"` and the
+packed README to advertise `canvas-scan@<version>`. `verify-pack.mjs` extracts
+those three entries from the real tarball and asserts against
+`packages/core/package.json`, so CI's pack job now gates it. A fast unit
+regression additionally asserts the `src/index.ts` literal matches the
+manifest, catching drift before a build bakes it in. Proven fail-closed:
+planting `version: '9.9.9'` in `index.ts` makes the pack step fail with
+`packed version mismatch`. The assertion is whitespace-tolerant because the
+published IIFE is minified — the first draft was too literal and the gate
+caught its own author.
+
+**[P1] `init --write` overstates when an edit is applied — FIXED.** An import
+line is not an installation. `alreadyImportedReason` keys off `plan.install`,
+which is null exactly when `canvas-scan` is a real dependency. A project whose
+entry already imports `canvas-scan/auto` but whose `package.json` lacks the
+dependency now gets "the import is already there, but canvas-scan is not in
+package.json yet." alongside the install command; only a genuine dependency
+gets "canvas-scan is already installed." Two regressions cover both states.
+
+Full suite after the sweep: **213 tests**, `pnpm -r run typecheck` passing,
+`node scripts/verify-pack.mjs` package + Vite + Next all PASS.
+
+### Not in this batch
+
+- `CanvasRecord`s are still never retired from the `records` Set in
+  `wrap-context.ts` — a real leak, separate from history retention, and
+  deliberately deferred rather than rushed into a batch touching the frame loop.
+- `bench-chrome.mjs` (the Chrome perf gate) has not been re-run; it is a
+  release gate and no release is proposed here.
+
+Every finding in the re-audit is now addressed. The remaining `records` leak is
+new work, not an unresolved review item.
+
+FABLE_STATUS: READY_FOR_CODEX

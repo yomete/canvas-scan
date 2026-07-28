@@ -3,12 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   emitReport,
   getHistory,
+  latestReports,
   processRecord,
+  setSourceLocation,
   startFrameLoop,
   subscribeToReports,
 } from '../src/frame-loop';
+import { getReports } from '../src/index';
 import type { DrawBatchReport } from '../src/types';
 import { records, type CanvasRecord } from '../src/wrap-context';
+
+let nextSerial = 0;
 
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
@@ -22,7 +27,7 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     },
     contentVersion: 0,
     id: 'test-canvas',
-    serial: 1,
+    serial: ++nextSerial,
     sig: {
       hash: 0x1234,
       unknown: false,
@@ -288,6 +293,30 @@ describe('processRecord', () => {
     );
     expect(processed?.report.sourceLocation).toBeNull();
   });
+
+  it('republishes a source location without mutating the previous report', () => {
+    const record = makeRecord({ id: 'source-republish' });
+    const report = processRecord(record, 1, 1)!.report;
+    const location = { file: '/src/Chart.tsx', line: 12, column: 4 };
+    latestReports.set(record.id, report);
+
+    setSourceLocation(record.id, location);
+
+    expect(report.sourceLocation).toBeNull();
+    expect(latestReports.get(record.id)).not.toBe(report);
+    expect(latestReports.get(record.id)?.sourceLocation).toEqual(location);
+    latestReports.delete(record.id);
+  });
+
+  it('carries a resolved source location into subsequent reports', () => {
+    const record = makeRecord({ id: 'source-subsequent' });
+    const location = { file: '/src/Chart.tsx', line: 18, column: 2 };
+    setSourceLocation(record.id, location);
+
+    expect(processRecord(record, 1, 1)?.report.sourceLocation).toEqual(
+      location,
+    );
+  });
 });
 
 describe('report subscribers', () => {
@@ -384,7 +413,7 @@ describe('report history', () => {
     }
   });
 
-  it('returns a copy of a canvas history', () => {
+  it('returns copies of a canvas history and its reports', () => {
     const callbacks: FrameRequestCallback[] = [];
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       callbacks.push(callback);
@@ -403,6 +432,150 @@ describe('report history', () => {
       history.length = 0;
 
       expect(getHistory(record.id)).toHaveLength(1);
+      const report = getHistory(record.id)[0];
+      report.rasterOperationCount = 99;
+      expect(getHistory(record.id)[0].rasterOperationCount).toBe(2);
+    } finally {
+      records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns copies from getReports', () => {
+    const report = makeRecord({ id: 'reports-copy' });
+    const processed = processRecord(report, 1, 1)!.report;
+    latestReports.set(report.id, processed);
+
+    const reports = getReports();
+    reports[report.id].rasterOperationCount = 99;
+
+    expect(latestReports.get(report.id)?.rasterOperationCount).toBe(2);
+    latestReports.delete(report.id);
+  });
+
+  it('starts a fresh history when a new canvas reuses an id', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const first = makeRecord({ id: 'reused-id', rasterOps: 3 });
+    records.add(first);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      expect(getHistory(first.id).map(report => report.rasterOperationCount))
+        .toEqual([3]);
+
+      records.delete(first);
+      const second = makeRecord({ id: first.id, rasterOps: 7 });
+      records.add(second);
+      callbacks.shift()!(1);
+
+      expect(getHistory(first.id).map(report => report.rasterOperationCount))
+        .toEqual([7]);
+      records.delete(second);
+    } finally {
+      records.delete(first);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not carry a retired canvas source location onto a reused id', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const first = makeRecord({ id: 'reused-source-id' });
+    records.add(first);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      setSourceLocation(first.id, { file: '/src/First.tsx', line: 3, column: 1 });
+      expect(latestReports.get(first.id)?.sourceLocation).not.toBeNull();
+
+      records.delete(first);
+      const second = makeRecord({ id: first.id });
+      records.add(second);
+      callbacks.shift()!(1);
+
+      expect(latestReports.get(first.id)?.sourceLocation).toBeNull();
+      expect(getHistory(first.id).map(report => report.sourceLocation)).toEqual([
+        null,
+      ]);
+      records.delete(second);
+    } finally {
+      records.delete(first);
+      latestReports.delete(first.id);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('evicts the least-recently-reported canvas after 64 lifetimes', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const tracked = Array.from({ length: 65 }, (_, index) =>
+      makeRecord({ id: `retention-${index}`, rasterOps: index }),
+    );
+    for (const record of tracked) records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+
+      expect(getHistory(tracked[0].id)).toEqual([]);
+      expect(latestReports.has(tracked[0].id)).toBe(false);
+      expect(getHistory(tracked[64].id)).toHaveLength(1);
+      expect(latestReports.has(tracked[64].id)).toBe(true);
+      expect(
+        [...latestReports].filter(([id]) => id.startsWith('retention-')),
+      ).toHaveLength(64);
+    } finally {
+      for (const record of tracked) records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('preserves sampled history order', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'sampled-history' });
+    records.add(record);
+
+    try {
+      startFrameLoop({ captureEvery: 2 });
+      for (let index = 1; index <= 4; index++) {
+        record.activeInWindow = true;
+        record.rasterOps = index;
+        callbacks.shift()!(index);
+      }
+
+      const rasterOperationCounts = getHistory(record.id).map(
+        report => report.rasterOperationCount,
+      );
+      expect(rasterOperationCounts).toHaveLength(2);
+      expect(rasterOperationCounts[1]).toBe(rasterOperationCounts[0] + 2);
     } finally {
       records.delete(record);
       debug.mockRestore();

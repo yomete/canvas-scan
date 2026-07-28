@@ -30,7 +30,7 @@ const toolbarCount = await inShadow(`return root.querySelectorAll('.toolbar').le
 record('toolbar', toolbarCount === 1 ? [] : [`expected one toolbar, found ${toolbarCount}`]);
 
 // open flyout
-await inShadow(`root.querySelector('.control.counts').dispatchEvent(new MouseEvent('click',{bubbles:true,composed:true}))`);
+await page.locator('.control.counts').click();
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${out}/v2-flyout.png` });
 const flyoutState = await inShadow(`
@@ -51,23 +51,23 @@ record(
 );
 
 // inspect mode + click the effect canvas outline
-await inShadow(`root.querySelector('.control.inspect').dispatchEvent(new MouseEvent('click',{bubbles:true,composed:true}))`);
+await page.locator('.control.inspect').click();
 await page.waitForTimeout(400);
 const outlineInfo = await inShadow(`return [...root.querySelectorAll('.outline')].map(o => o.className + '|' + getComputedStyle(o).pointerEvents).join(' ; ')`);
 console.log('OUTLINES IN INSPECT:', outlineInfo);
-const inspectState = await inShadow(`
-  const outlines = [...root.querySelectorAll('.outline')];
-  const target = outlines[outlines.length - 1];
-  if (!target) return { outlineCount: 0, owner: '' };
-  const owner = target.querySelector('.label')?.textContent?.split(' · ')[0] ?? '';
-  target.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-  return { outlineCount: outlines.length, owner };
-`);
+const effectOutline = page.locator('.outline[data-canvas-id="effect-chart"]');
+const inspectState = {
+  outlineCount: await page.locator('.outline').count(),
+  owner: (await effectOutline.locator('.label').textContent())?.split(' · ')[0] ?? '',
+};
+await effectOutline.click();
 record(
   'inspect',
   [
     inspectState.outlineCount < 1 ? 'expected at least one outline' : null,
-    inspectState.owner.length === 0 ? 'target outline has no owner name' : null,
+    inspectState.owner !== 'EffectChart'
+      ? `expected EffectChart owner, found ${JSON.stringify(inspectState.owner)}`
+      : null,
   ].filter(Boolean),
 );
 let sourceWaitFailure = null;

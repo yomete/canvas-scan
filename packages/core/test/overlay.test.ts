@@ -2,13 +2,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { resolveSourceLocation } = vi.hoisted(() => ({
-  resolveSourceLocation: vi.fn(),
+const { resolveSourceOutcome } = vi.hoisted(() => ({
+  resolveSourceOutcome: vi.fn(),
 }));
 
-vi.mock('../src/symbolicate', () => ({ resolveSourceLocation }));
+vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
-import { emitReport } from '../src/frame-loop';
+import { emitReport, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
 import type { DrawBatchReport } from '../src/types';
 
@@ -70,8 +70,8 @@ function refreshOverlay(): void {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
-  resolveSourceLocation.mockReset();
-  resolveSourceLocation.mockResolvedValue(null);
+  resolveSourceOutcome.mockReset();
+  resolveSourceOutcome.mockResolvedValue({ kind: 'unavailable' });
 });
 
 afterEach(() => {
@@ -79,6 +79,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.replaceChildren();
+  latestReports.clear();
 });
 
 describe('overlay toolbar', () => {
@@ -328,6 +329,54 @@ describe('overlay flyout', () => {
     expect(root.querySelector('.row')).toBe(row);
   });
 
+  it('keeps a focused row through reports for other canvases', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'canvas-a' }), makeCanvas(false));
+    emitReport(makeReport({ canvasId: 'canvas-b' }), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const row = root.querySelector<HTMLButtonElement>(
+      '[data-canvas-id="canvas-a"].row',
+    )!;
+    row.focus();
+
+    emitReport(
+      makeReport({ canvasId: 'canvas-b', canvasApiSelfTimeMs: 1 }),
+      makeCanvas(false),
+    );
+    refreshOverlay();
+
+    expect(
+      root.querySelector('[data-canvas-id="canvas-a"].row'),
+    ).toBe(row);
+    expect(root.activeElement).toBe(row);
+  });
+
+  it("updates a reused row's text in place", () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    emitReport(makeReport({ canvasId: 'reused-row' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const row = root.querySelector<HTMLButtonElement>(
+      '[data-canvas-id="reused-row"].row',
+    )!;
+
+    emitReport(makeReport({ canvasId: 'reused-row' }), canvas);
+    refreshOverlay();
+
+    expect(
+      root.querySelector('[data-canvas-id="reused-row"].row'),
+    ).toBe(row);
+    expect(row.querySelector('.row-text')?.textContent).toContain(
+      'same in 2 of 2 frames',
+    );
+  });
+
   it('registers no row listeners while rebuilding ten rows', () => {
     mountOverlay();
     refreshOverlay();
@@ -384,20 +433,23 @@ describe('overlay inspect mode and popover', () => {
       configurable: true,
       value: { writeText },
     });
-    resolveSourceLocation.mockResolvedValue({
-      file: '/src/EffectCanvas.tsx',
-      line: 42,
-      column: 7,
+    resolveSourceOutcome.mockResolvedValue({
+      kind: 'found',
+      location: {
+        file: '/src/EffectCanvas.tsx',
+        line: 42,
+        column: 7,
+      },
     });
     mountOverlay();
-    emitReport(
-      makeReport({
-        signatureStatus: 'unknown',
-        unknownReason: 'first-window',
-        sampled: true,
-      }),
-      makeCanvas(false),
-    );
+    const canvas = makeCanvas(false);
+    const firstReport = makeReport({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+      sampled: true,
+    });
+    latestReports.set(firstReport.canvasId, firstReport);
+    emitReport(firstReport, canvas);
     refreshOverlay();
     const root = getShadowRoot();
     root.querySelector<HTMLButtonElement>('.counts')!.click();
@@ -421,7 +473,7 @@ describe('overlay inspect mode and popover', () => {
     expect(root.querySelector('.source')?.textContent).toBe(
       'source: resolving…',
     );
-    expect(resolveSourceLocation).toHaveBeenCalledOnce();
+    expect(resolveSourceOutcome).toHaveBeenCalledOnce();
 
     await Promise.resolve();
     await Promise.resolve();
@@ -430,6 +482,23 @@ describe('overlay inspect mode and popover', () => {
     const source = root.querySelector<HTMLElement>('.source')!;
     expect(source.textContent).toBe('source: EffectCanvas.tsx:42');
     expect(source.title).toBe('/src/EffectCanvas.tsx:42:7');
+    expect(latestReports.get(firstReport.canvasId)?.sourceLocation).toEqual({
+      file: '/src/EffectCanvas.tsx',
+      line: 42,
+      column: 7,
+    });
+
+    const nextReport = makeReport({
+      sourceLocation: latestReports.get(firstReport.canvasId)!.sourceLocation,
+    });
+    latestReports.set(nextReport.canvasId, nextReport);
+    emitReport(nextReport, canvas);
+    refreshOverlay();
+    expect(latestReports.get(nextReport.canvasId)?.sourceLocation).toEqual({
+      file: '/src/EffectCanvas.tsx',
+      line: 42,
+      column: 7,
+    });
 
     root.querySelector<HTMLButtonElement>('.copy')!.click();
     expect(writeText).toHaveBeenCalledOnce();
@@ -463,7 +532,45 @@ describe('overlay inspect mode and popover', () => {
     expect(root.querySelector('.popover-owner')?.textContent).toBe(
       'EffectCanvas',
     );
-    expect(resolveSourceLocation).toHaveBeenCalledOnce();
+    expect(resolveSourceOutcome).toHaveBeenCalledOnce();
+  });
+
+  it('retries a failed source lookup when the popover is reopened', async () => {
+    resolveSourceOutcome
+      .mockResolvedValueOnce({ kind: 'error' })
+      .mockResolvedValueOnce({
+        kind: 'found',
+        location: {
+          file: '/src/RetryCanvas.tsx',
+          line: 8,
+          column: 1,
+        },
+      });
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    await Promise.resolve();
+    refreshOverlay();
+    expect(root.querySelector('.source')?.textContent).toBe(
+      'source: lookup failed — reopen to retry',
+    );
+
+    root.querySelector<HTMLButtonElement>('.close')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    await Promise.resolve();
+    refreshOverlay();
+
+    expect(resolveSourceOutcome).toHaveBeenCalledTimes(2);
+    expect(root.querySelector('.source')?.textContent).toBe(
+      'source: RetryCanvas.tsx:8',
+    );
   });
 
   it('deactivates failed placements and restores them when visible again', () => {
@@ -485,6 +592,47 @@ describe('overlay inspect mode and popover', () => {
     refreshOverlay();
     expect(outline.hidden).toBe(false);
     expect(outline.style.pointerEvents).toBe('auto');
+  });
+
+  it('deactivates a visibility-hidden canvas and restores it', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+
+    canvas.style.visibility = 'hidden';
+    refreshOverlay();
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+
+    canvas.style.visibility = 'visible';
+    refreshOverlay();
+    expect(outline.hidden).toBe(false);
+    expect(outline.style.pointerEvents).toBe('auto');
+  });
+
+  it('deactivates a canvas inside a visibility-hidden ancestor', () => {
+    mountOverlay();
+    const parent = document.createElement('div');
+    const canvas = makeCanvas(false);
+    parent.append(canvas);
+    document.body.append(parent);
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+
+    parent.style.visibility = 'hidden';
+    refreshOverlay();
+
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
   });
 
   it('deactivates a detached canvas on the next inspect commit', () => {
