@@ -18,7 +18,10 @@ const MAX_TRACKED_CANVASES = 64;
 const histories = new Map<number, DrawBatchReport[]>();
 const historyKeys = new Map<string, number>();
 const lastReportedWindows = new Map<number, number>();
-const sourceLocations = new Map<string, SourceLocation | null>();
+// Keyed by canvas LIFETIME (record.serial), never by DOM id: a reused id must
+// not inherit the retired canvas's source location, and a retired record that
+// is still in `records` must not be able to clear the new lifetime's entry.
+const sourceLocations = new Map<number, SourceLocation | null>();
 
 export type ReportListener = (report: DrawBatchReport, canvas: unknown) => void;
 
@@ -26,17 +29,44 @@ const reportListeners = new Set<ReportListener>();
 
 let windowIndex = 0;
 
+// `sourceLocation` is a nested object, so a shallow spread would hand callers a
+// live handle on stored state.
+export function copyReport(report: DrawBatchReport): DrawBatchReport {
+  return {
+    ...report,
+    sourceLocation: report.sourceLocation
+      ? { ...report.sourceLocation }
+      : null,
+  };
+}
+
 export function getHistory(canvasId: string): DrawBatchReport[] {
   const serial = historyKeys.get(canvasId);
   if (serial === undefined) return [];
-  return (histories.get(serial) ?? []).map(report => ({ ...report }));
+  return (histories.get(serial) ?? []).map(copyReport);
+}
+
+export function getLatestReport(canvasId: string): DrawBatchReport | null {
+  const latest = latestReports.get(canvasId);
+  return latest ? copyReport(latest) : null;
 }
 
 export function setSourceLocation(
   canvasId: string,
   location: SourceLocation | null,
 ): void {
-  sourceLocations.set(canvasId, location);
+  const serial = historyKeys.get(canvasId);
+  if (serial !== undefined) {
+    sourceLocations.set(serial, location);
+    // The source belongs to the canvas, not to one frame: a canvas that stops
+    // drawing before the lookup resolves would otherwise keep a null history.
+    const history = histories.get(serial);
+    if (history) {
+      for (const [index, report] of history.entries()) {
+        history[index] = { ...report, sourceLocation: location };
+      }
+    }
+  }
   const latest = latestReports.get(canvasId);
   if (latest) {
     latestReports.set(canvasId, { ...latest, sourceLocation: location });
@@ -95,7 +125,7 @@ export function processRecord(
       canvasId: record.id,
       nearestReactOwner: record.attribution.nearestReactOwner,
       attributionKind: record.attribution.attributionKind,
-      sourceLocation: sourceLocations.get(record.id) ?? null,
+      sourceLocation: sourceLocations.get(record.serial) ?? null,
       rasterOperationCount: record.rasterOps,
       canvasApiSelfTimeMs: Number(record.selfTimeMs.toFixed(3)),
       signatureStatus,
@@ -149,16 +179,17 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     windowIndex++;
 
     for (const record of records) {
-      // Retire the previous lifetime BEFORE the report is built: a reused DOM
-      // id must not inherit the retired canvas's source location.
+      const processed = processRecord(record, windowIndex, captureEvery);
+      if (!processed) continue;
+      // Retire the previous lifetime only when the canvas that owns the id NOW
+      // reports. `records` is never pruned, so a retired record is still
+      // iterated here and must not be able to retire its successor.
       const previousSerial = historyKeys.get(record.id);
       if (previousSerial !== undefined && previousSerial !== record.serial) {
         histories.delete(previousSerial);
         lastReportedWindows.delete(previousSerial);
-        sourceLocations.delete(record.id);
+        sourceLocations.delete(previousSerial);
       }
-      const processed = processRecord(record, windowIndex, captureEvery);
-      if (!processed) continue;
       historyKeys.set(record.id, record.serial);
       latestReports.set(processed.report.canvasId, processed.report);
       const history = histories.get(record.serial) ?? [];
@@ -178,11 +209,11 @@ export function startFrameLoop(options: CanvasScanOptions): void {
         if (oldestSerial !== undefined) {
           histories.delete(oldestSerial);
           lastReportedWindows.delete(oldestSerial);
+          sourceLocations.delete(oldestSerial);
           for (const [canvasId, serial] of historyKeys) {
             if (serial !== oldestSerial) continue;
             historyKeys.delete(canvasId);
             latestReports.delete(canvasId);
-            sourceLocations.delete(canvasId);
             break;
           }
         }

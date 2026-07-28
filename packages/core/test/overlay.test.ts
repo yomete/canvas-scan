@@ -235,7 +235,8 @@ describe('overlay flyout', () => {
     expect(firstRow.dataset.canvasId).toBe('canvas-9');
     expect(firstRow.querySelector('.badge')?.textContent).toBe('co');
     expect(firstRow.querySelector('.badge')?.getAttribute('title')).toBe(
-      'container-only',
+      'a library made this canvas inside the component’s markup, so the owner ' +
+        'is the nearest one above it (container-only)',
     );
     expect(root.querySelectorAll('.row')).toHaveLength(8);
     expect(root.querySelector('.more')?.textContent).toBe('+2 more');
@@ -352,6 +353,48 @@ describe('overlay flyout', () => {
       root.querySelector('[data-canvas-id="canvas-a"].row'),
     ).toBe(row);
     expect(root.activeElement).toBe(row);
+  });
+
+  it('keeps a focused row alive when busier canvases push it past the eighth slot', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'quiet', signatureStatus: 'changed' }), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const row = root.querySelector<HTMLButtonElement>(
+      '[data-canvas-id="quiet"].row',
+    )!;
+    row.focus();
+
+    // Ten canvases that all outrank it on same-count push it out of the slice.
+    for (let index = 0; index < 10; index++) {
+      emitReport(makeReport({ canvasId: `busy-${index}` }), makeCanvas(false));
+      emitReport(makeReport({ canvasId: `busy-${index}` }), makeCanvas(false));
+    }
+    refreshOverlay();
+
+    expect(root.querySelector('[data-canvas-id="quiet"].row')).toBe(row);
+    expect(root.activeElement).toBe(row);
+  });
+
+  it('keeps focus on the more control while it is being used', () => {
+    mountOverlay();
+    for (let index = 0; index < 10; index++) {
+      emitReport(makeReport({ canvasId: `many-${index}` }), makeCanvas(false));
+    }
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const more = root.querySelector<HTMLButtonElement>('.more')!;
+    more.focus();
+
+    emitReport(makeReport({ canvasId: 'many-3' }), makeCanvas(false));
+    refreshOverlay();
+
+    expect(root.querySelector('.more')).toBe(more);
+    expect(root.activeElement).toBe(more);
   });
 
   it("updates a reused row's text in place", () => {
@@ -512,7 +555,11 @@ describe('overlay inspect mode and popover', () => {
     expect(copied.aggregates.unknown).toBe(1);
   });
 
-  it('opens detached canvases from rows and caches source resolution', async () => {
+  it('opens detached canvases from rows and caches a resolved source', async () => {
+    resolveSourceOutcome.mockResolvedValue({
+      kind: 'found',
+      location: { file: '/src/EffectCanvas.tsx', line: 42, column: 7 },
+    });
     mountOverlay();
     emitReport(makeReport(), makeCanvas(false));
     refreshOverlay();
@@ -533,6 +580,29 @@ describe('overlay inspect mode and popover', () => {
       'EffectCanvas',
     );
     expect(resolveSourceOutcome).toHaveBeenCalledOnce();
+  });
+
+  it('asks again when the source was merely unavailable', async () => {
+    // "Unavailable" is usually a sourcemap that was not ready yet, so a
+    // reopened popover must retry rather than repeat a stale answer.
+    resolveSourceOutcome.mockResolvedValue({ kind: 'unavailable' });
+    mountOverlay();
+    emitReport(makeReport(), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('.close')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    refreshOverlay();
+
+    expect(resolveSourceOutcome).toHaveBeenCalledTimes(2);
   });
 
   it('retries a failed source lookup when the popover is reopened', async () => {
@@ -635,6 +705,26 @@ describe('overlay inspect mode and popover', () => {
     expect(outline.style.pointerEvents).toBe('none');
   });
 
+  it('deactivates a canvas the page has made click-through', () => {
+    // If the page lets clicks pass through the canvas, our outline must not
+    // catch them instead.
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+    expect(outline.style.pointerEvents).toBe('auto');
+
+    canvas.style.pointerEvents = 'none';
+    refreshOverlay();
+
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+  });
+
   it('deactivates a detached canvas on the next inspect commit', () => {
     mountOverlay();
     const canvas = makeCanvas();
@@ -726,7 +816,7 @@ describe('overlay copy', () => {
     await Promise.resolve();
     refreshOverlay();
     expect(root.querySelector('.popover-body')?.textContent).toContain(
-      'a video — its pixels change every frame',
+      'a video — its pixels can change at any time',
     );
     expect(JARGON.filter((pattern) => pattern.test(visibleText()))).toEqual([]);
   });
@@ -763,8 +853,11 @@ describe('overlay copy', () => {
       'array-element',
       'CanvasPattern',
       'HTMLVideoElement',
+      'HTMLCanvasElement',
       'OffscreenCanvas',
+      'ImageBitmap',
       'ImageData',
+      'CanvasGradient',
       'Path2D',
       'Path2D:dirty',
       'CanvasGradient:dirty',
@@ -807,7 +900,7 @@ describe('overlay copy', () => {
 function describeReason(reason: string): string {
   const phrases: Record<string, string> = {
     'first-window': 'first frame seen — nothing to compare yet',
-    'previous-window': 'the frame before was unclear',
+    'previous-window': 'the last frame it was compared with was unclear',
     'canvas-resize': 'the canvas was resized',
     'gradient-mutated': 'a gradient changed while drawing',
     'transform-unmodeled': 'a transform canvas-scan cannot follow',
@@ -817,9 +910,12 @@ function describeReason(reason: string): string {
     'array-accessor': 'a list argument computed its values',
     'array-element': 'a list argument held values that are not numbers',
     CanvasPattern: 'a pattern — its pixels can change at any time',
-    HTMLVideoElement: 'a video — its pixels change every frame',
+    HTMLVideoElement: 'a video — its pixels can change at any time',
+    HTMLCanvasElement: 'another canvas that is not being tracked',
+    ImageBitmap: 'an image bitmap — canvas-scan does not read pixels',
+    CanvasGradient: 'a gradient canvas-scan did not see built',
     OffscreenCanvas: 'an offscreen canvas — not visible to canvas-scan',
-    ImageData: 'raw pixel data — its pixels cannot be checked',
+    ImageData: 'raw pixel data — canvas-scan does not read pixels',
     Path2D: 'a shape object canvas-scan did not see built',
     'Path2D:dirty': 'a shape object changed after it was built',
     'CanvasGradient:dirty': 'a gradient changed after it was built',

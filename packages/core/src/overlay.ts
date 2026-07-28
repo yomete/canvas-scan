@@ -1,5 +1,6 @@
 import {
   getHistory,
+  getLatestReport,
   setSourceLocation,
   subscribeToReports,
 } from './frame-loop';
@@ -306,7 +307,7 @@ const EXPLAINER =
 
 const UNKNOWN_PHRASES = new Map([
   ['first-window', 'first frame seen — nothing to compare yet'],
-  ['previous-window', 'the frame before was unclear'],
+  ['previous-window', 'the last frame it was compared with was unclear'],
   ['canvas-resize', 'the canvas was resized'],
   ['gradient-mutated', 'a gradient changed while drawing'],
   ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
@@ -318,11 +319,11 @@ const UNKNOWN_PHRASES = new Map([
   ['Path2D', 'a shape object canvas-scan did not see built'],
   ['CanvasGradient', 'a gradient canvas-scan did not see built'],
   ['CanvasPattern', 'a pattern — its pixels can change at any time'],
-  ['HTMLVideoElement', 'a video — its pixels change every frame'],
+  ['HTMLVideoElement', 'a video — its pixels can change at any time'],
   ['HTMLCanvasElement', 'another canvas that is not being tracked'],
   ['OffscreenCanvas', 'an offscreen canvas — not visible to canvas-scan'],
-  ['ImageBitmap', 'an image bitmap — its pixels cannot be checked'],
-  ['ImageData', 'raw pixel data — its pixels cannot be checked'],
+  ['ImageBitmap', 'an image bitmap — canvas-scan does not read pixels'],
+  ['ImageData', 'raw pixel data — canvas-scan does not read pixels'],
 ]);
 
 const OBJECT_NOUNS = new Map([
@@ -354,10 +355,22 @@ function badgeText(kind: AttributionKind): string {
   return 'un';
 }
 
+const BADGE_TITLES: Record<AttributionKind, string> = {
+  'jsx-owner': 'this canvas is written in the component’s JSX',
+  'direct-host': 'a canvas with no owning component above it',
+  'container-only':
+    'a library made this canvas inside the component’s markup, so the owner is the nearest one above it',
+  unattributed: 'canvas-scan could not find an owning React component',
+};
+
+function badgeTitle(kind: AttributionKind): string {
+  return `${BADGE_TITLES[kind]} (${kind})`;
+}
+
 function makeBadge(kind: AttributionKind): HTMLSpanElement {
   const badge = document.createElement('span');
   badge.className = 'badge';
-  badge.title = kind;
+  badge.title = badgeTitle(kind);
   badge.textContent = badgeText(kind);
   return badge;
 }
@@ -446,6 +459,10 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
 
 function isVisiblyHitTestable(canvas: Element): boolean {
   if (typeof getComputedStyle !== 'function') return true;
+  // Computed pointer-events already resolves inheritance, so the canvas's own
+  // value is the answer: if the page lets clicks pass through it, our outline
+  // must not catch them instead.
+  if (getComputedStyle(canvas).pointerEvents === 'none') return false;
   for (let el: Element | null = canvas; el; el = el.parentElement) {
     const style = getComputedStyle(el);
     if (style.visibility === 'hidden' || style.visibility === 'collapse') {
@@ -537,19 +554,21 @@ function locateCanvas(canvasId: string): void {
 }
 
 function updateInspectOutlines(): void {
-  const activeCanvasIds = new Set<string>();
+  // Placement reads layout and computed style, so each outline is placed at
+  // most once per commit and the result is reused below.
+  const placements = new Map<string, boolean>();
   for (const [canvasId, canvas] of canvases) {
     if (!(canvas instanceof Element)) continue;
     if (!inspectMode && !locatingCanvases.has(canvasId)) continue;
-    const outline = ensureOutline(canvasId, canvas);
-    if (!outline) continue;
-    activeCanvasIds.add(canvasId);
+    placements.set(canvasId, ensureOutline(canvasId, canvas) !== null);
   }
 
   for (const [canvasId, outline] of outlines) {
     const canvas = canvases.get(canvasId);
+    const active = placements.get(canvasId) === true;
     const placed =
-      canvas instanceof Element && placeOutline(outline, canvas);
+      placements.get(canvasId) ??
+      (canvas instanceof Element && placeOutline(outline, canvas));
     const interactive = inspectMode && placed;
     if (interactive) {
       const label = outline.querySelector('.label');
@@ -561,7 +580,7 @@ function updateInspectOutlines(): void {
     outline.classList.toggle('selected', canvasId === selectedCanvasId);
     outline.classList.toggle('locate', locatingCanvases.has(canvasId) && placed);
     outline.style.pointerEvents = interactive ? 'auto' : 'none';
-    if (!placed || !activeCanvasIds.has(canvasId)) clearOutline(canvasId);
+    if (!placed || !active) clearOutline(canvasId);
   }
 }
 
@@ -591,8 +610,14 @@ function sourceLabel(state: SourceState | undefined, failed: boolean): {
 function copyPopoverJson(canvasId: string): void {
   const canvasStats = stats.get(canvasId);
   if (!canvasStats) return;
+  // Prefer the canonical report (it carries a source resolved after this canvas
+  // last drew), but never copy less than the popover is showing: retention can
+  // evict the canonical entry while the popover still displays the location.
+  const latest = getLatestReport(canvasId) ?? canvasStats.latest;
+  const state = sourceStates.get(canvasId);
+  const shown = state?.status === 'resolved' ? state.location : null;
   const payload = JSON.stringify({
-    latest: canvasStats.latest,
+    latest: { ...latest, sourceLocation: latest.sourceLocation ?? shown },
     aggregates: getAggregate(canvasId),
   });
   try {
@@ -615,7 +640,7 @@ function renderPopover(): void {
   const aggregate = getAggregate(canvasId);
   const badge = popover.querySelector<HTMLElement>('.popover-badge');
   if (badge) {
-    badge.title = canvasStats.kind;
+    badge.title = badgeTitle(canvasStats.kind);
     badge.textContent = badgeText(canvasStats.kind);
   }
   const owner = popover.querySelector<HTMLElement>('.popover-owner');
@@ -683,13 +708,21 @@ function openPopover(canvasId: string): void {
   selectedCanvasId = canvasId;
   flyoutOpen = false;
 
-  if (!sourceStates.has(canvasId)) {
+  // Retry when the last answer was "unavailable": that is usually a sourcemap
+  // that was not ready yet, and the user reopening the popover is a request to
+  // ask again. A resolved location is kept.
+  const known = sourceStates.get(canvasId);
+  if (!known || (known.status === 'resolved' && known.location === null)) {
     sourceErrors.delete(canvasId);
     sourceStates.set(canvasId, { status: 'resolving' });
     const canvas = canvases.get(canvasId);
     const generation = mountGeneration;
     void resolveSourceOutcome(canvas).then((outcome) => {
       if (!host || mountGeneration !== generation) return;
+      // The canvas that owns this id may have been replaced while the lookup
+      // was in flight; stamping the retired canvas's file:line onto its
+      // successor would be a confidently wrong answer.
+      if (canvases.get(canvasId) !== canvas) return;
       if (outcome.kind === 'error') {
         sourceStates.delete(canvasId);
         sourceErrors.add(canvasId);
@@ -727,15 +760,18 @@ function renderFlyout(): void {
   const active = (flyout.getRootNode() as ShadowRoot).activeElement;
   const visibleCanvasIds = new Set(visibleRows.map(row => row.canvasId));
   for (const [canvasId, row] of flyoutRows) {
-    if (visibleCanvasIds.has(canvasId)) continue;
+    // A row the user is on must not be yanked out from under them because a
+    // busier canvas overtook it in the sort.
+    if (visibleCanvasIds.has(canvasId) || row === active) continue;
     row.remove();
     flyoutRows.delete(canvasId);
   }
-  flyout.querySelector('.note')?.remove();
-  flyout.querySelector('.more')?.remove();
-  const note = document.createElement('div');
-  note.className = 'note';
-  note.textContent = EXPLAINER;
+  let note = flyout.querySelector<HTMLDivElement>('.note');
+  if (!note) {
+    note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = EXPLAINER;
+  }
   flyout.append(note);
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     let row = flyoutRows.get(canvasId);
@@ -752,7 +788,7 @@ function renderFlyout(): void {
     }
     const badge = row.querySelector<HTMLElement>('.badge')!;
     badge.textContent = badgeText(canvasStats.kind);
-    badge.title = canvasStats.kind;
+    badge.title = badgeTitle(canvasStats.kind);
     const text = row.querySelector<HTMLElement>('.row-text')!;
     const owner = canvasStats.owner ?? canvasId;
     let content =
@@ -779,16 +815,22 @@ function renderFlyout(): void {
     flyout.append(row);
   }
 
+  // Reused, not recreated: rebuilding it would drop focus mid-click.
+  let more = flyout.querySelector<HTMLButtonElement>('.more');
   if (!showAllRows && rows.length > 8) {
-    const more = document.createElement('button');
-    more.className = 'more';
-    more.type = 'button';
+    if (!more) {
+      more = document.createElement('button');
+      more.className = 'more';
+      more.type = 'button';
+    }
     more.textContent = `+${rows.length - 8} more`;
     flyout.append(more);
+  } else if (more && more !== active) {
+    more.remove();
   }
   if (
     active instanceof HTMLButtonElement &&
-    active.classList.contains('row') &&
+    (active.classList.contains('row') || active.classList.contains('more')) &&
     active.isConnected
   ) {
     active.focus();

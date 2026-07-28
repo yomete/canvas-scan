@@ -54,8 +54,11 @@ export async function resolveSourceOutcome(
   const cached = sourceLocations.get(canvas);
   if (cached) return cached;
 
+  // Only a resolved location is worth keeping. `unavailable` is often just
+  // "the sourcemap was not ready yet", and an error is transient by
+  // definition; caching either one pins a bad answer for the whole session.
   const outcome = resolveUncached(canvas).then(result => {
-    if (result.kind === 'error') sourceLocations.delete(canvas);
+    if (result.kind !== 'found') sourceLocations.delete(canvas);
     return result;
   });
   sourceLocations.set(canvas, outcome);

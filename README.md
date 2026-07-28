@@ -120,7 +120,11 @@ the exact install step. Add `--write` to apply it: the command prepends
   canvasId: string;
   nearestReactOwner: string | null;
   attributionKind: 'jsx-owner' | 'direct-host' | 'container-only' | 'unattributed';
-  sourceLocation: null;              // reserved
+  sourceLocation: {                  // resolved on demand; null until then
+    file: string;
+    line: number;
+    column: number;
+  } | null;
   rasterOperationCount: number;
   canvasApiSelfTimeMs: number;
   signatureStatus: 'same' | 'changed' | 'unknown';

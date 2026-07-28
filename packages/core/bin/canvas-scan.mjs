@@ -23,7 +23,13 @@ export function detectFramework(dir) {
 }
 
 function hasImport(file) {
-  return fs.readFileSync(file, 'utf8').includes('canvas-scan/auto');
+  // A mention inside a comment is not an import; treating it as one would
+  // silently skip the edit the user asked for.
+  const source = fs
+    .readFileSync(file, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return source.includes('canvas-scan/auto');
 }
 
 function readDependencies(dir) {
@@ -41,7 +47,14 @@ function readDependencies(dir) {
 }
 
 function installCommand(dir, dependencies) {
-  if ('canvas-scan' in dependencies) return null;
+  // A dependency entry is a declaration, not an installation: a fresh clone
+  // lists canvas-scan and still cannot import it.
+  if (
+    'canvas-scan' in dependencies &&
+    fs.existsSync(path.join(dir, 'node_modules/canvas-scan'))
+  ) {
+    return null;
+  }
   if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
     return 'pnpm add -D canvas-scan';
   }

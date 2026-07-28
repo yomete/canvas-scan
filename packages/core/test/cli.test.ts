@@ -79,10 +79,46 @@ describe('canvas-scan init CLI', () => {
       path.join(dir, 'src/main.tsx'),
       "import 'canvas-scan/auto';\nrender();\n",
     );
+    fs.mkdirSync(path.join(dir, 'node_modules/canvas-scan'), {
+      recursive: true,
+    });
 
     const plan = planInit(dir);
     expect(plan.install).toBeNull();
     expect(plan.action.reason).toBe('canvas-scan is already installed.');
+  });
+
+  it('treats a declared but uninstalled dependency as needing an install', () => {
+    const dir = fixture();
+    writePackageJson(dir, {
+      devDependencies: { vite: '^7.0.0', 'canvas-scan': '^0.2.0' },
+    });
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(
+      path.join(dir, 'src/main.tsx'),
+      "import 'canvas-scan/auto';\nrender();\n",
+    );
+
+    // Declared in package.json, never installed — a fresh clone.
+    expect(planInit(dir).install).toBe('npm install -D canvas-scan');
+  });
+
+  it('does not mistake a commented mention for a real import', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    fs.mkdirSync(path.join(dir, 'src'));
+    const entry = path.join(dir, 'src/main.tsx');
+    fs.writeFileSync(
+      entry,
+      "// TODO: add import 'canvas-scan/auto';\nrender();\n",
+    );
+
+    const plan = planInit(dir);
+    expect(plan.action.kind).toBe('prepend');
+    expect(applyInit(plan, dir).changed).toBe(true);
+    expect(fs.readFileSync(entry, 'utf8').split('\n')[0]).toBe(
+      "import 'canvas-scan/auto';",
+    );
   });
 
   it('creates a Next.js instrumentation client once', () => {
@@ -153,6 +189,9 @@ describe('canvas-scan init CLI', () => {
     const dir = fixture();
     writePackageJson(dir, {
       devDependencies: { 'canvas-scan': '^0.1.0' },
+    });
+    fs.mkdirSync(path.join(dir, 'node_modules/canvas-scan'), {
+      recursive: true,
     });
 
     expect(planInit(dir).install).toBeNull();

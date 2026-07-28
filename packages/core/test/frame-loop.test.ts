@@ -294,28 +294,65 @@ describe('processRecord', () => {
     expect(processed?.report.sourceLocation).toBeNull();
   });
 
+  // setSourceLocation resolves the canvas LIFETIME through historyKeys, so
+  // these drive the real tick rather than processRecord in isolation.
   it('republishes a source location without mutating the previous report', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) =>
+        callbacks.push(callback),
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const record = makeRecord({ id: 'source-republish' });
-    const report = processRecord(record, 1, 1)!.report;
-    const location = { file: '/src/Chart.tsx', line: 12, column: 4 };
-    latestReports.set(record.id, report);
+    records.add(record);
 
-    setSourceLocation(record.id, location);
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      const published = latestReports.get(record.id)!;
+      const location = { file: '/src/Chart.tsx', line: 12, column: 4 };
 
-    expect(report.sourceLocation).toBeNull();
-    expect(latestReports.get(record.id)).not.toBe(report);
-    expect(latestReports.get(record.id)?.sourceLocation).toEqual(location);
-    latestReports.delete(record.id);
+      setSourceLocation(record.id, location);
+
+      expect(published.sourceLocation).toBeNull();
+      expect(latestReports.get(record.id)).not.toBe(published);
+      expect(latestReports.get(record.id)?.sourceLocation).toEqual(location);
+    } finally {
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('carries a resolved source location into subsequent reports', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) =>
+        callbacks.push(callback),
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const record = makeRecord({ id: 'source-subsequent' });
-    const location = { file: '/src/Chart.tsx', line: 18, column: 2 };
-    setSourceLocation(record.id, location);
+    records.add(record);
 
-    expect(processRecord(record, 1, 1)?.report.sourceLocation).toEqual(
-      location,
-    );
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      const location = { file: '/src/Chart.tsx', line: 18, column: 2 };
+      setSourceLocation(record.id, location);
+
+      record.activeInWindow = true;
+      record.rasterOps = 2;
+      callbacks.shift()!(1);
+
+      expect(latestReports.get(record.id)?.sourceLocation).toEqual(location);
+      expect(getHistory(record.id).at(-1)?.sourceLocation).toEqual(location);
+    } finally {
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -481,6 +518,114 @@ describe('report history', () => {
       records.delete(second);
     } finally {
       records.delete(first);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a new lifetime intact while the retired record is still tracked', () => {
+    // Production never prunes `records`, so the retired record keeps being
+    // iterated. It must not retire its own successor.
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const first = makeRecord({ id: 'retained', rasterOps: 3 });
+    records.add(first);
+    const second = makeRecord({ id: 'retained', rasterOps: 7 });
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+
+      // The old canvas stops drawing but stays in `records`.
+      first.activeInWindow = false;
+      records.add(second);
+      callbacks.shift()!(1);
+      setSourceLocation('retained', { file: '/Second.tsx', line: 5, column: 0 });
+      first.activeInWindow = false;
+      second.activeInWindow = true;
+      second.rasterOps = 7;
+      callbacks.shift()!(2);
+
+      expect(getHistory('retained').map(report => report.rasterOperationCount))
+        .toEqual([7, 7]);
+      expect(latestReports.get('retained')?.sourceLocation).toEqual({
+        file: '/Second.tsx',
+        line: 5,
+        column: 0,
+      });
+    } finally {
+      records.delete(first);
+      records.delete(second);
+      latestReports.delete('retained');
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stamps a late source location onto history already recorded', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'late-stamp' });
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      // The canvas stops drawing before the lookup resolves.
+      setSourceLocation('late-stamp', {
+        file: '/Late.tsx',
+        line: 9,
+        column: 0,
+      });
+
+      expect(getHistory('late-stamp').map(report => report.sourceLocation))
+        .toEqual([{ file: '/Late.tsx', line: 9, column: 0 }]);
+    } finally {
+      records.delete(record);
+      latestReports.delete('late-stamp');
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('hands out deep copies so a caller cannot rewrite a stored source', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('window', { requestAnimationFrame });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'deep-copy' });
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(0);
+      setSourceLocation('deep-copy', { file: '/Real.tsx', line: 4, column: 0 });
+
+      getHistory('deep-copy')[0].sourceLocation!.file = '/Hacked.tsx';
+      getReports()['deep-copy'].sourceLocation!.line = 999;
+
+      expect(getHistory('deep-copy')[0].sourceLocation).toEqual({
+        file: '/Real.tsx',
+        line: 4,
+        column: 0,
+      });
+      expect(getReports()['deep-copy'].sourceLocation?.line).toBe(4);
+    } finally {
+      records.delete(record);
+      latestReports.delete('deep-copy');
       debug.mockRestore();
       vi.unstubAllGlobals();
     }

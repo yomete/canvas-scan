@@ -613,6 +613,40 @@ user-visible fixes; mutation checks confirming the new regressions fail without
 their fixes. The Chrome perf gate (`bench-chrome.mjs`) has not been re-run — do
 that before any release.
 
+### Round 2 (2026-07-28): the remediation batch was itself reviewed, and failed
+
+Codex re-reviewed `e944b8f` + `008f8dc` and returned CHANGES_REQUESTED. **The
+most serious finding was a regression introduced by the previous batch's judge
+stage.** Moving lifetime retirement ahead of `processRecord` — done to stop a
+reused DOM id inheriting a stale source — was wrong because production never
+prunes the `records` Set: the retired record kept being iterated and retired its
+own successor every tick, wiping the new canvas's history and permanently
+nulling its source. Verified with a probe under production conditions (history
+length 1 instead of 2, source null forever). The fix was to key the source store
+by `record.serial` instead of by DOM id, which makes cross-lifetime leakage
+impossible by construction, and to move retirement back inside the reporting
+branch.
+
+Also fixed in round 2: `getHistory()[0].sourceLocation.file` could mutate stored
+state (shallow copy shared the nested object); a canvas that stopped drawing
+before its lookup resolved kept a null history and Copy JSON; a late lookup
+could stamp a retired component's file:line onto its successor (fenced on canvas
+identity); a focused row was still destroyed when a busier canvas pushed it past
+the eighth slot, and `.more` was recreated every report; `pointer-events:none`
+canvases kept clickable outlines; every outline was placed twice per commit;
+failed and unavailable lookups were cached forever; several reason phrases were
+inaccurate; both READMEs still documented `sourceLocation: null // reserved`;
+and `init` equated a package.json entry with an installation.
+
+Accepted but NOT fixed, recorded rather than papered over: bippy returns the
+generated frame on a transient sourcemap failure, and canvas-scan cannot
+distinguish that from a real bundle location, so a degraded `found` can still be
+cached. Fixing it needs a signal from bippy or a path heuristic.
+
+**222 tests.** The lesson worth keeping: a fix written during a judge stage is
+unreviewed code. Round-tripping it through the reviewer caught what self-review
+did not.
+
 ## Plain-language copy pass (2026-07-28, Yomi's call)
 
 **Done, verified, uncommitted.** Yomi's question — "is everything here
