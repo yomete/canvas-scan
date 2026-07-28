@@ -84,6 +84,37 @@ describe('canvas context wrapping', () => {
     expect(context.canvas).toBe(canvas);
   });
 
+  it('gives a canvas with a DOM id an id prefixed by the element id', () => {
+    const identifiedCanvas = new FakeCanvas();
+    identifiedCanvas.id = 'chart';
+    identifiedCanvas.getContext('2d');
+
+    const record = getRecord(identifiedCanvas)!;
+    expect(record.id).toBe(`chart#${record.serial}`);
+  });
+
+  it('gives a canvas without a DOM id an id derived from its serial', () => {
+    const identifiedCanvas = new FakeCanvas();
+    identifiedCanvas.id = 'identified';
+    identifiedCanvas.getContext('2d');
+    const anonymousCanvas = new FakeCanvas();
+    anonymousCanvas.getContext('2d');
+
+    const record = getRecord(anonymousCanvas)!;
+    expect(record.id).toBe(`canvas:${record.serial}`);
+  });
+
+  it('gives canvases with the same DOM id different ids', () => {
+    const first = new FakeCanvas();
+    const second = new FakeCanvas();
+    first.id = 'shared';
+    second.id = 'shared';
+    first.getContext('2d');
+    second.getContext('2d');
+
+    expect(getRecord(first)!.id).not.toBe(getRecord(second)!.id);
+  });
+
   it('preserves setter round-trips and captures the assignment', () => {
     const record = getRecord(canvas)!;
     const hashBefore = record.sig.hash;

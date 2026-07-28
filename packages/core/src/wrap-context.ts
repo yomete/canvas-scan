@@ -155,7 +155,6 @@ const gradientDependents = new WeakMap<object, Set<CanvasRecord>>();
 
 let installed = false;
 let killed = false;
-let nextCanvasId = 1;
 let nextCanvasSerial = 1;
 let windowCaptured = true;
 // Captured at install time: instance-level shadowing of getLineDash must
@@ -566,13 +565,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       !recordByCanvas.has(this)
     ) {
       const elementId = this.getAttribute('id');
+      const serial = nextCanvasSerial++;
       const record: CanvasRecord = {
         canvas: this,
         contentDirty: false,
         contentSig: newWindowSignature(),
         contentVersion: 0,
-        id: elementId || `canvas:${nextCanvasId++}`,
-        serial: nextCanvasSerial++,
+        id: elementId ? `${elementId}#${serial}` : `canvas:${serial}`,
+        serial,
         sig: newWindowSignature(),
         rasterOps: 0,
         selfTimeMs: 0,

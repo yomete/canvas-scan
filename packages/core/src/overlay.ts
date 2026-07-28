@@ -1,6 +1,7 @@
 import {
   getHistory,
   getLatestReport,
+  getTrackedCanvasIds,
   setSourceLocation,
   subscribeToReports,
 } from './frame-loop';
@@ -463,14 +464,18 @@ function isVisiblyHitTestable(canvas: Element): boolean {
   // value is the answer: if the page lets clicks pass through it, our outline
   // must not catch them instead.
   if (getComputedStyle(canvas).pointerEvents === 'none') return false;
-  for (let el: Element | null = canvas; el; el = el.parentElement) {
+  for (let el: Element | null = canvas; el;) {
     const style = getComputedStyle(el);
     if (style.visibility === 'hidden' || style.visibility === 'collapse') {
       return false;
     }
     if (style.display === 'none') return false;
     // An inert subtree cannot receive input, so neither should our outline.
-    if ((el as HTMLElement).inert) return false;
+    if ((el as HTMLElement).inert === true || el.hasAttribute('inert')) {
+      return false;
+    }
+    const root = el.getRootNode() as ShadowRoot;
+    el = el.parentElement ?? root.host ?? null;
   }
   return true;
 }
@@ -709,6 +714,7 @@ function openPopover(canvasId: string): void {
   if (!canvasStats) return;
   selectedCanvasId = canvasId;
   flyoutOpen = false;
+  flyoutRevision++;
 
   // Retry when the last answer was "unavailable": that is usually a sourcemap
   // that was not ready yet, and the user reopening the popover is a request to
@@ -721,10 +727,6 @@ function openPopover(canvasId: string): void {
     const generation = mountGeneration;
     void resolveSourceOutcome(canvas).then((outcome) => {
       if (!host || mountGeneration !== generation) return;
-      // The canvas that owns this id may have been replaced while the lookup
-      // was in flight; stamping the retired canvas's file:line onto its
-      // successor would be a confidently wrong answer.
-      if (canvases.get(canvasId) !== canvas) return;
       if (outcome.kind === 'error') {
         sourceStates.delete(canvasId);
         sourceErrors.add(canvasId);
@@ -767,7 +769,7 @@ function renderFlyout(): void {
     active instanceof HTMLElement ? active.dataset.canvasId : undefined;
   if (activeCanvasId && !visibleRows.some(row => row.canvasId === activeCanvasId)) {
     const focused = rows.find(row => row.canvasId === activeCanvasId);
-    if (focused) visibleRows.push(focused);
+    if (focused) visibleRows[visibleRows.length - 1] = focused;
   }
   const visibleCanvasIds = new Set(visibleRows.map(row => row.canvasId));
   for (const [canvasId, row] of flyoutRows) {
@@ -840,7 +842,9 @@ function renderFlyout(): void {
     // the rows it revealed rather than dropping it on the document.
     const wasActive = more === active;
     more.remove();
-    if (wasActive) flyout.querySelector<HTMLButtonElement>('.row')?.focus();
+    if (wasActive) {
+      flyout.querySelectorAll<HTMLButtonElement>('.row')[8]?.focus();
+    }
   }
   if (
     active instanceof HTMLButtonElement &&
@@ -855,6 +859,25 @@ function renderFlyout(): void {
 function refresh(): void {
   if (host && !host.isConnected) {
     (document.body ?? document.documentElement).append(host);
+  }
+  // Per-canvas overlay state must not outlive the core's retention. An empty
+  // set means the frame loop is not the thing feeding this overlay (before the
+  // first report, or when reports are pushed directly), so there is nothing to
+  // prune against.
+  const tracked = getTrackedCanvasIds();
+  if (tracked.size > 0) {
+    for (const canvasId of [...stats.keys()]) {
+      if (tracked.has(canvasId)) continue;
+      stats.delete(canvasId);
+      canvases.delete(canvasId);
+      sourceStates.delete(canvasId);
+      sourceErrors.delete(canvasId);
+      outlines.get(canvasId)?.remove();
+      outlines.delete(canvasId);
+      flyoutRows.get(canvasId)?.remove();
+      flyoutRows.delete(canvasId);
+      if (selectedCanvasId === canvasId) closePopover();
+    }
   }
   if (!canvasCount || !candidateCount || !countsButton || !toolbar) return;
   let totalCandidates = 0;
@@ -1004,28 +1027,6 @@ function handlePopoverClick(event: MouseEvent): void {
 }
 
 function handleReport(report: DrawBatchReport, canvas: unknown): void {
-  // Everything the overlay keys by canvas id — counts, resolved source, queued
-  // flashes — belongs to the element that earned it. When a new element takes
-  // over an id, that state would otherwise be inherited: the old component's
-  // file:line shown for the new canvas, or a stuck "resolving…".
-  const previous = canvases.get(report.canvasId);
-  if (previous !== undefined && previous !== canvas) {
-    stats.delete(report.canvasId);
-    sourceStates.delete(report.canvasId);
-    sourceErrors.delete(report.canvasId);
-    locatingCanvases.delete(report.canvasId);
-    outlines.get(report.canvasId)?.remove();
-    outlines.delete(report.canvasId);
-    flyoutRows.get(report.canvasId)?.remove();
-    flyoutRows.delete(report.canvasId);
-    for (let index = pendingFlashes.length - 1; index >= 0; index--) {
-      if (pendingFlashes[index].canvasId === report.canvasId) {
-        pendingFlashes.splice(index, 1);
-      }
-    }
-    if (selectedCanvasId === report.canvasId) closePopover();
-  }
-
   const canvasStats = stats.get(report.canvasId) ?? {
     candidate: false,
     changed: 0,
@@ -1122,6 +1123,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     flyoutOpen = !flyoutOpen;
     selectedCanvasId = null;
     showAllRows = false;
+    flyoutRevision++;
     markDirty();
   });
 
@@ -1133,6 +1135,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   collapseButton.addEventListener('click', () => {
     collapsed = true;
     flyoutOpen = false;
+    flyoutRevision++;
     inspectMode = false;
     closePopover();
     markDirty();

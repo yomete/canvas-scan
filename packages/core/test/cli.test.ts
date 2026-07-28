@@ -130,6 +130,32 @@ describe('canvas-scan init CLI', () => {
     );
   });
 
+  it('does not mistake an import in a block comment for a real import', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    fs.mkdirSync(path.join(dir, 'src'));
+    const entry = path.join(dir, 'src/main.tsx');
+    fs.writeFileSync(
+      entry,
+      "/*\nimport 'canvas-scan/auto';\n*/\nrender();\n",
+    );
+
+    expect(planInit(dir).action.kind).toBe('prepend');
+  });
+
+  it('does not mistake an import in a template literal for a real import', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    fs.mkdirSync(path.join(dir, 'src'));
+    const entry = path.join(dir, 'src/main.tsx');
+    fs.writeFileSync(
+      entry,
+      "const example = `\nimport 'canvas-scan/auto';\n`;\nrender();\n",
+    );
+
+    expect(planInit(dir).action.kind).toBe('prepend');
+  });
+
   it('creates a Next.js instrumentation client once', () => {
     const dir = fixture();
     writePackageJson(dir, { dependencies: { next: '^15.3.0' } });

@@ -23,11 +23,15 @@ export function detectFramework(dir) {
 }
 
 function hasImport(file) {
-  // Match the import statement itself, not any mention of the name: a
-  // commented-out line or a string is not an import, and treating one as an
-  // import silently skips the edit the user asked for.
+  const source = fs
+    .readFileSync(file, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/`(?:\\[\s\S]|[^\\`])*`/g, '');
+
+  // Match the import statement itself after removing multiline constructs
+  // whose contents can begin at the start of a line.
   return /^[ \t]*(?:import\s+['"]canvas-scan\/auto['"]|(?:const|let|var)[^\n=]*=\s*require\(\s*['"]canvas-scan\/auto['"]\s*\)|require\(\s*['"]canvas-scan\/auto['"]\s*\))/m.test(
-    fs.readFileSync(file, 'utf8'),
+    source,
   );
 }
 

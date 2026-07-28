@@ -118,7 +118,7 @@ the exact install step. Add `--write` to apply it: the command prepends
 
 ```ts
 {
-  canvasId: string;
+  canvasId: string;                         // unique per canvas lifetime, e.g. "chart#7"
   nearestReactOwner: string | null;
   attributionKind: 'jsx-owner' | 'direct-host' | 'container-only' | 'unattributed';
   sourceLocation: {                  // resolved on demand; null until then

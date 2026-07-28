@@ -678,6 +678,42 @@ its own rather than inside a batch about lifetimes.
 
 **228 tests.**
 
+### Round 4 → the identity rewrite (2026-07-28, Yomi's call)
+
+Round 4 found two more P1s (eviction erased the ownership high-water mark so an
+older record could reclaim an id; non-owner reports let the overlay interleave
+two lifetimes and publish one canvas's file:line as another's). At that point
+**four consecutive rounds had found a P1 in the previous round's fix, and every
+one was the same root cause**: the public `canvasId` was the canvas's DOM `id`
+attribute — mutable, reusable, and shared between lifetimes — while `records`
+is never pruned. Ownership rules, retirement ordering, high-water marks and
+element-swap resets were all scaffolding to make one id safely mean two
+canvases.
+
+**The fix was to stop patching and change the identity.** `canvasId` is now
+unique per canvas LIFETIME, minted once in `wrap-context.ts` from the existing
+`record.serial`: `` `${elementId}#${serial}` `` when the element has an id,
+`` `canvas:${serial}` `` otherwise. Every arbitration mechanism was then DELETED
+— `historyKeys`, the ownership branch, retirement, the non-owner emit path, the
+overlay's element-swap reset, the async lifetime fence. All four core maps key
+on `canvasId` again and evict together. Net **−81 lines**.
+
+Verified end to end in real Chrome: remounting a canvas with the same DOM id
+produced `effect-chart#3` alongside the retired `effect-chart#2`, each with an
+independent history — no merging, no inherited source.
+
+Also in the batch (round-4 findings, independent of identity): the eight-row cap
+is held when a focused row is retained (it replaces the lowest-ranked row rather
+than becoming a ninth); activating "more" focuses a newly revealed row; the
+flyout render cache is invalidated when `showAllRows`/`flyoutOpen` change;
+`inert` is detected by attribute as well as property and the walk crosses shadow
+boundaries via `getRootNode().host`; `hasImport` strips block comments and
+template literals before matching; the overlay prunes per-canvas state the core
+has evicted (new `getTrackedCanvasIds`).
+
+**232 tests.** `canvasId` string shape is a visible API change, taken
+deliberately while the package is two days old.
+
 ## Plain-language copy pass (2026-07-28, Yomi's call)
 
 **Done, verified, uncommitted.** Yomi's question — "is everything here

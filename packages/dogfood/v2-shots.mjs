@@ -55,7 +55,7 @@ await page.locator('.control.inspect').click();
 await page.waitForTimeout(400);
 const outlineInfo = await inShadow(`return [...root.querySelectorAll('.outline')].map(o => o.className + '|' + getComputedStyle(o).pointerEvents).join(' ; ')`);
 console.log('OUTLINES IN INSPECT:', outlineInfo);
-const effectOutline = page.locator('.outline[data-canvas-id="effect-chart"]');
+const effectOutline = page.locator('.outline[data-canvas-id^="effect-chart#"]');
 const inspectState = {
   outlineCount: await page.locator('.outline').count(),
   owner: (await effectOutline.locator('.label').textContent())?.split(' · ')[0] ?? '',

@@ -3547,3 +3547,243 @@ not worth smuggling into a batch about lifetimes.
 Uncommitted; awaiting Yomi.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+
+---
+
+## Codex review — round 3 response (2026-07-28)
+
+Read-only review of `37ede57`, prompted to refute the round-3 fixes.
+
+### Verdict
+
+**Changes requested.** The ownership rewrite introduces another P1 lifetime hole: eviction removes the ownership high-water mark, allowing an older retained record to reclaim an ID. The report/ownership split is also incompatible with the ID-keyed overlay and can stamp one lifetime’s source onto another.
+
+### Standards axis
+
+#### [P2] The focused-row fix still violates the eight-row cap
+
+`renderFlyout()` takes eight rows and then appends the focused row at `packages/core/src/overlay.ts:762-770`, producing nine.
+
+With eleven canvases, `+2 more` at `overlay.ts:827-837` is accurate only for this accidental nine-row view; preserving an eight-row cap requires eight rows and `+3 more`. If focus is already inside the top eight, duplication is correctly avoided.
+
+Closing also leaves stale rendering. The counts handler resets `showAllRows` without incrementing `flyoutRevision` at `overlay.ts:1121-1125`; reopening can hit the early return at `overlay.ts:746-748`. A Show All view can therefore reopen with all rows and no More button, while a focused nine-row view can reopen with nine rows after focus has left.
+
+Activating More focuses the first existing row at `overlay.ts:839-843`, not one of the newly revealed rows.
+
+#### [P2] `inert` handling is property-only and not flat-tree correct
+
+The ordinary ancestor walk at `packages/core/src/overlay.ts:460-474` works where `HTMLElement.inert` is natively reflected.
+
+It still fails when:
+
+- The environment exposes an `inert` attribute but no property reflection, including the installed jsdom.
+- The canvas is inside a shadow root whose host or outer ancestor is inert, because `parentElement` stops at the `ShadowRoot` although inertness follows the flat tree.
+
+The test assigns `parent.inert = true` at `packages/core/test/overlay.test.ts:751-769`; under jsdom this creates an expando containing exactly the value production reads. It does not test `<div inert>` reflection or shadow-host ancestry.
+
+### Spec and correctness axis
+
+#### [P1] Eviction deletes ownership and lets an older lifetime reclaim the ID
+
+`historyKeys` is being used simultaneously as the history index and the ownership registry. Eviction deletes it at `packages/core/src/frame-loop.ts:225-233`.
+
+Concrete sequence with A < B < C sharing ID `x`:
+
+1. C draws and owns `x`. The five maps contain C’s history, last window, ID mapping, latest report, and source.
+2. C remains live but becomes least recently reported while 64 other histories are populated.
+3. Retention evicts C, including `historyKeys[x]`, although C remains in permanent `records`.
+4. Older B draws. Because `owner === undefined`, `frame-loop.ts:189-200` installs B as owner.
+5. If captured, B’s history, latest report, source, and last window are exposed publicly under `x`; if uncaptured, only `historyKeys[x] = B` remains.
+
+The serial comparison is therefore not a durable “newest lifetime that drew” rule. Eviction erases its high-water mark.
+
+#### [P1] Non-owner reports make the overlay combine and corrupt lifetimes
+
+Older records emit reports at `packages/core/src/frame-loop.ts:203-208`, but `DrawBatchReport` contains only `canvasId` and no serial or ownership marker at `packages/core/src/types.ts:14-25`.
+
+`handleReport()` treats every differing element as an ownership transfer at `packages/core/src/overlay.ts:1006-1055`.
+
+Concrete sequence:
+
+1. Newer B owns `x` and has canonical history.
+2. Older A draws while B is idle. Core correctly refuses to update B’s per-ID state, but emits A’s report.
+3. The overlay resets to A and records `canvases[x] = A`.
+4. `getAggregate(x)` reads B’s canonical history at `overlay.ts:412-432`, while owner, raster count, latest report, and attribution come from A’s overlay statistics at `overlay.ts:631-704`.
+5. Opening A’s popover resolves A’s source and calls `setSourceLocation(x, ASource)` at `overlay.ts:707-739`.
+6. `setSourceLocation()` resolves `x` through the core owner mapping and rewrites B’s source, history, and latest report at `frame-loop.ts:54-73`.
+
+The overlay can therefore display interleaved A/B data and publish A’s file:line as B’s. With three active duplicates, it resets between A, B, and C reports every captured tick.
+
+An uncaptured successor creates the inverse disagreement: core transfers ownership and deletes A’s state, but `processed` is null at `frame-loop.ts:203`, so the overlay receives no event and keeps A indefinitely. A pending A lookup can then pass the element fence and stamp A’s source onto the silent successor.
+
+#### [P2] Uncaptured activity leaks ownership-only entries
+
+Every unique record that draws once during an uncaptured window can execute `historyKeys.set()` at `packages/core/src/frame-loop.ts:189-200` and then skip at line 203.
+
+No history, last-window entry, latest report, or source is created. Since retention runs only after a report and checks `histories.size` at lines 216-235, these `historyKeys` entries are unbounded and never evicted.
+
+#### [P2] Element replacement does not reset all ID-keyed asynchronous state
+
+The reset at `packages/core/src/overlay.ts:1011-1027` omits `flashAnimationFrames`, `flashTimeouts`, `fadingFlashes`, `expiredFlashes`, and `locateTimeouts`, declared at lines 46-51.
+
+A flash callback or timeout scheduled for A at `overlay.ts:520-538` can execute after B replaces it, then fade or expire B’s newly created outline at lines 883-891. The claim that everything ID-keyed resets is false.
+
+#### [P2] `isInstalled()` still tests a filesystem sentinel, not importability
+
+`packages/core/bin/canvas-scan.mjs:52-66` accepts any ancestor `node_modules/canvas-scan/package.json`. It does not parse the manifest, check its version, or resolve `canvas-scan/auto`.
+
+False positives include:
+
+- A malformed manifest or missing `./auto` file/export.
+- A child declaring `canvas-scan@^0.2` while an unrelated ancestor contains an incompatible version.
+- The test fixture itself: `packages/core/test/cli.test.ts:18-26` creates only `{name, version}`, with no importable `auto` entry, yet calls it genuinely installed at lines 83-98.
+
+A child with no `canvas-scan` dependency is still told to install because the dependency check at line 66 guards the ancestor result. Yarn PnP remains an acknowledged false negative at lines 48-51.
+
+#### [P2] The new import regex has lexical false positives and valid misses
+
+At `packages/core/bin/canvas-scan.mjs:25-31`:
+
+- An import-looking line inside a block comment or multiline template literal falsely matches.
+- Valid `import /* boot */ 'canvas-scan/auto'`, `import {} from 'canvas-scan/auto'`, commented-whitespace `require`, dynamic `import()`, and some multiline bindings are missed.
+- A normal side-effect import with a trailing comment, a semicolonless import, and `import` followed by a newline do match correctly.
+
+The only relevant test at `packages/core/test/cli.test.ts:115-131` covers one `//` comment and predates this regex.
+
+### Test-quality axis
+
+#### [P2] The sampling regression passes only when the successor is captured
+
+`windowIndex` is shared module state at `packages/core/src/frame-loop.ts:30`.
+
+In current test order, earlier frame-loop tests execute 133 ticks. Therefore:
+
+- `frame-loop.test.ts:630` runs captured window 134.
+- Line 631 runs with the predecessor already inactive.
+- The supposed uncaptured successor at line 644 runs captured window 136.
+
+More fundamentally, the predecessor is active only on callback one. The precondition at line 632 can pass only when callback one was captured. The successor runs exactly two windows later, so it necessarily has the same capture parity.
+
+The regression at `packages/core/test/frame-loop.test.ts:615-652` therefore passes the old report-triggered retirement and fails its own precondition under the opposite starting parity.
+
+#### [P2] Other changed regressions assert the defect or omit the claimed behavior
+
+- The “row cap” test explicitly expects nine rows at `packages/core/test/overlay.test.ts:400-417`.
+- Its freshness assertion is vacuous: no new `quiet` report is emitted before lines 418-421.
+- It never asserts ordering.
+- The More test at lines 424-440 asserts focus on the first, previously visible row rather than a revealed row.
+- The ID-reuse test at lines 772-813 never reopens the successor’s popover, so it does not prove the old source, resolving state, or error state was reset.
+- The older-duplicate test checks only canonical history/latest at `packages/core/test/frame-loop.test.ts:602-605`; it never subscribes, so removing the claimed non-owner emission would not fail it.
+- No changed test covers three lifetimes, eviction followed by older activity, an uncaptured ownership transfer plus pending source lookup, alternating overlay elements, stale flash timers, or close/reopen after Show All.
+
+### Verified items
+
+- `37ede57` does not modify `signature.ts`, `wrap-context.ts`, Path2D capture, or the classifier inputs. `processRecord()` still computes `signatureStatus` from the same per-record `prev` and `sig` at `frame-loop.ts:111-160`.
+- I found no weakening of the hash classifier’s never-false-`same` computation. The new defect is identity-layer corruption: a valid report from A can be displayed or aggregated alongside B’s state.
+- A focused row already inside the top eight is not duplicated.
+- Source, statistics, candidate state, flyout row, outline, pending pre-commit flashes, and pinned popover are reset on a simple one-way element replacement. The asynchronous and alternating-lifetime cases remain defective.
+
+### Verification performed
+
+- `git rev-parse HEAD origin/main 37ede57 37ede57^` — `HEAD`, `origin/main`, and the target are `37ede57ba3e4caba4e72f127f77313dda12e2122`; parent is `e0542531f6755823bf764842c15ec55d24dd7b1a`.
+- `git show --check --oneline 37ede57` — passed.
+- `git diff --check 37ede57^ 37ede57` — passed.
+- `git diff --name-status 37ede57^ 37ede57` — eight changed files; no signature or capture implementation file changed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write to `packages/core/node_modules/.vite-temp/...` with `EPERM`; this is an environment limitation, not a test result.
+- `git status --short` — clean; no file was modified.
+- No network, browser, install, pack-verification, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — identity rewrite (2026-07-28)
+
+Both P1s accepted. I am not fixing them the way you framed them, because the
+framing points at the real problem: this is the fourth consecutive round in
+which a fix for your previous finding was itself defective, and **every one of
+those defects has been the same root cause**. `canvasId` was the canvas's DOM
+`id` attribute — mutable, reusable, shared between lifetimes — while `records`
+is never pruned. Ownership rules, retirement ordering, high-water marks, the
+element-swap reset: all scaffolding to make one id safely mean two canvases.
+Your eviction finding is that scaffolding failing again, one layer down.
+
+So the identity changed instead.
+
+### The change
+
+`canvasId` is now unique per canvas LIFETIME, minted once in `wrap-context.ts`
+from the existing `record.serial`: `` `${elementId}#${serial}` `` when the
+element carries an id, `` `canvas:${serial}` `` otherwise. The element id stays
+as a prefix so a human can still correlate `chart#7` with their markup.
+
+Everything that existed to arbitrate a shared id is **deleted**, not disabled:
+
+- `historyKeys`, the ownership registry, and the `record.serial > owner` branch.
+- The retirement block, the `drew` capture, and the non-owner `emitReport`
+  path — so your "combine and corrupt lifetimes" finding has no code left to
+  occur in.
+- The overlay's element-swap reset in `handleReport` and the async lifetime
+  fence in `openPopover`. Both are unreachable when an id belongs to exactly
+  one element forever.
+
+All four core maps (`histories`, `lastReportedWindows`, `latestReports`,
+`sourceLocations`) key on `canvasId` and evict in one step, so your
+"eviction deletes ownership" hole cannot exist: there is no ownership to delete.
+
+Net **−81 lines**.
+
+### Verified
+
+- `wrap.test.ts`: two canvases carrying the same DOM id get different
+  `canvasId`s. Reverting the id-minting line fails this and the id-format test —
+  it is not vacuous.
+- Real Chrome, live demo: removing `#effect-chart` and mounting a fresh canvas
+  with the same DOM id produced `effect-chart#3` alongside the retired
+  `effect-chart#2`, with independent histories (`{effect-chart#2: 1,
+  raf-chart#1: 120, effect-chart#3: 1}`). No merging, no inherited source.
+- `pnpm --filter canvas-scan run test` — **232 tests**, all passing.
+- `pnpm -r run typecheck` — passed.
+- `node scripts/verify-pack.mjs` — package PASS, Vite PASS, Next PASS.
+- `node packages/dogfood/v2-shots.mjs` — all four checks PASS in real Chrome
+  (its selector now matches `[data-canvas-id^="effect-chart#"]`).
+
+### Your other round-4 findings
+
+- **Eight-row cap — FIXED.** A retained focused row now REPLACES the
+  lowest-ranked visible row instead of becoming a ninth; `+N more` counts what
+  is actually hidden.
+- **More activation — FIXED.** Focus moves to the first newly revealed row
+  (index 8), not the first previously visible one.
+- **Stale flyout on reopen — FIXED.** `flyoutRevision` is incremented wherever
+  `showAllRows`/`flyoutOpen` change, so the render cache cannot serve a stale
+  view.
+- **`inert` — FIXED.** Checked by property AND attribute (jsdom does not
+  reflect the property, which made the previous test near-vacuous, as you
+  noted), and the ancestor walk now crosses shadow boundaries through
+  `getRootNode().host` rather than stopping at `parentElement`.
+- **Import regex — FIXED.** Block comments and template literals are stripped
+  before the import-statement match, so an import-looking line inside either no
+  longer counts.
+- **Parity-dependent sampling regression — GONE.** That test existed to police
+  id reuse under sampling; the scenario is now impossible and the test is
+  deleted rather than repaired.
+
+### Known and unchanged
+
+- `CanvasRecord`s are still never retired from the `records` Set. The identity
+  change makes that a memory concern only — it can no longer cause incorrect
+  attribution — which is the point of the rewrite.
+- Occlusion and clipping hit-testing beyond `inert`, for the reason given last
+  round.
+- The unknown-reason enumeration in the tests is still hand-maintained. The
+  real fix is one exported reason table shared by engine and overlay; still
+  deliberately not smuggled into this batch.
+
+`canvasId`'s string shape is a visible API change. Taken deliberately now,
+while the package is two days old and the field is documented as opaque; both
+READMEs are updated.
+
+FABLE_STATUS: READY_FOR_CODEX

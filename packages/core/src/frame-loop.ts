@@ -15,13 +15,9 @@ import {
 export const latestReports = new Map<string, DrawBatchReport>();
 
 const MAX_TRACKED_CANVASES = 64;
-const histories = new Map<number, DrawBatchReport[]>();
-const historyKeys = new Map<string, number>();
-const lastReportedWindows = new Map<number, number>();
-// Keyed by canvas LIFETIME (record.serial), never by DOM id: a reused id must
-// not inherit the retired canvas's source location, and a retired record that
-// is still in `records` must not be able to clear the new lifetime's entry.
-const sourceLocations = new Map<number, SourceLocation | null>();
+const histories = new Map<string, DrawBatchReport[]>();
+const lastReportedWindows = new Map<string, number>();
+const sourceLocations = new Map<string, SourceLocation | null>();
 
 export type ReportListener = (report: DrawBatchReport, canvas: unknown) => void;
 
@@ -41,9 +37,7 @@ export function copyReport(report: DrawBatchReport): DrawBatchReport {
 }
 
 export function getHistory(canvasId: string): DrawBatchReport[] {
-  const serial = historyKeys.get(canvasId);
-  if (serial === undefined) return [];
-  return (histories.get(serial) ?? []).map(copyReport);
+  return (histories.get(canvasId) ?? []).map(copyReport);
 }
 
 export function getLatestReport(canvasId: string): DrawBatchReport | null {
@@ -51,21 +45,21 @@ export function getLatestReport(canvasId: string): DrawBatchReport | null {
   return latest ? copyReport(latest) : null;
 }
 
+export function getTrackedCanvasIds(): Set<string> {
+  return new Set(latestReports.keys());
+}
+
 export function setSourceLocation(
   canvasId: string,
   location: SourceLocation | null,
 ): void {
-  const serial = historyKeys.get(canvasId);
-  if (serial !== undefined) {
-    sourceLocations.set(serial, location);
-    // The source belongs to the canvas, not to one frame: a canvas that stops
-    // drawing before the lookup resolves would otherwise keep a null history.
-    const history = histories.get(serial);
-    if (history) {
-      for (const [index, report] of history.entries()) {
-        history[index] = { ...report, sourceLocation: location };
-      }
-    }
+  const history = histories.get(canvasId);
+  if (!history) return;
+  sourceLocations.set(canvasId, location);
+  // The source belongs to the canvas, not to one frame: a canvas that stops
+  // drawing before the lookup resolves would otherwise keep a null history.
+  for (const [index, report] of history.entries()) {
+    history[index] = { ...report, sourceLocation: location };
   }
   const latest = latestReports.get(canvasId);
   if (latest) {
@@ -125,7 +119,7 @@ export function processRecord(
       canvasId: record.id,
       nearestReactOwner: record.attribution.nearestReactOwner,
       attributionKind: record.attribution.attributionKind,
-      sourceLocation: sourceLocations.get(record.serial) ?? null,
+      sourceLocation: sourceLocations.get(record.id) ?? null,
       rasterOperationCount: record.rasterOps,
       canvasApiSelfTimeMs: Number(record.selfTimeMs.toFixed(3)),
       signatureStatus,
@@ -179,59 +173,28 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     windowIndex++;
 
     for (const record of records) {
-      // Ownership of a DOM id belongs to the NEWEST lifetime that drew, and
-      // transfers on activity rather than on capture: `records` is never
-      // pruned, so an older duplicate that still draws must not retire its
-      // successor, and sampling must not leave a retired canvas standing in
-      // for the live one.
-      const drew = record.activeInWindow;
       const processed = processRecord(record, windowIndex, captureEvery);
-      if (drew) {
-        const owner = historyKeys.get(record.id);
-        if (owner === undefined || record.serial > owner) {
-          if (owner !== undefined) {
-            histories.delete(owner);
-            lastReportedWindows.delete(owner);
-            sourceLocations.delete(owner);
-            // The id now belongs to a lifetime that has not reported yet; the
-            // predecessor's last report must not stand in for it.
-            latestReports.delete(record.id);
-          }
-          historyKeys.set(record.id, record.serial);
-        }
-      }
       if (!processed) continue;
-      // An older duplicate still reports to subscribers, but the public
-      // per-id state belongs to the owner.
-      if (historyKeys.get(record.id) !== record.serial) {
-        emitReport(processed.report, record.canvas);
-        continue;
-      }
       latestReports.set(processed.report.canvasId, processed.report);
-      const history = histories.get(record.serial) ?? [];
+      const history = histories.get(record.id) ?? [];
       history.push(processed.report);
       if (history.length > 120) history.shift();
-      histories.set(record.serial, history);
-      lastReportedWindows.set(record.serial, windowIndex);
+      histories.set(record.id, history);
+      lastReportedWindows.set(record.id, windowIndex);
       if (histories.size > MAX_TRACKED_CANVASES) {
-        let oldestSerial: number | undefined;
+        let oldestCanvasId: string | undefined;
         let oldestWindow = Infinity;
-        for (const [serial, lastWindow] of lastReportedWindows) {
+        for (const [canvasId, lastWindow] of lastReportedWindows) {
           if (lastWindow < oldestWindow) {
-            oldestSerial = serial;
+            oldestCanvasId = canvasId;
             oldestWindow = lastWindow;
           }
         }
-        if (oldestSerial !== undefined) {
-          histories.delete(oldestSerial);
-          lastReportedWindows.delete(oldestSerial);
-          sourceLocations.delete(oldestSerial);
-          for (const [canvasId, serial] of historyKeys) {
-            if (serial !== oldestSerial) continue;
-            historyKeys.delete(canvasId);
-            latestReports.delete(canvasId);
-            break;
-          }
+        if (oldestCanvasId !== undefined) {
+          histories.delete(oldestCanvasId);
+          lastReportedWindows.delete(oldestCanvasId);
+          latestReports.delete(oldestCanvasId);
+          sourceLocations.delete(oldestCanvasId);
         }
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
