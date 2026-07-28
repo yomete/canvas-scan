@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   emitReport,
   getHistory,
-  getTrackedCanvasIds,
   latestReports,
   processRecord,
   setSourceLocation,
@@ -633,7 +632,7 @@ describe('report history', () => {
 
       expect(getHistory(tracked[0].id)).toEqual([]);
       expect(latestReports.has(tracked[0].id)).toBe(false);
-      expect(getTrackedCanvasIds().has(tracked[0].id)).toBe(false);
+      expect(latestReports.has(tracked[0].id)).toBe(false);
       expect(getHistory(tracked[64].id)).toHaveLength(1);
       expect(latestReports.has(tracked[64].id)).toBe(true);
       expect(

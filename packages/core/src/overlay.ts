@@ -1,7 +1,7 @@
 import {
   getHistory,
   getLatestReport,
-  getTrackedCanvasIds,
+  latestReports,
   setSourceLocation,
   subscribeToReports,
 } from './frame-loop';
@@ -439,7 +439,12 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
     outline.style.pointerEvents = 'none';
     return false;
   }
-  if (!isVisiblyHitTestable(canvas)) {
+  // Only inspect mode makes an outline catch clicks, so only inspect mode needs
+  // the hit-testability answer. Asking for it on every flash commit costs a
+  // forced style recalculation per outline per frame, which the release bench
+  // measures. A flash over a visibility:hidden canvas stays possible; that is
+  // cosmetic, and input safety is unaffected.
+  if (inspectMode && !isVisiblyHitTestable(canvas)) {
     outline.hidden = true;
     outline.style.pointerEvents = 'none';
     return false;
@@ -868,14 +873,14 @@ function refresh(): void {
   if (host && !host.isConnected) {
     (document.body ?? document.documentElement).append(host);
   }
-  // Per-canvas overlay state must not outlive the core's retention. An empty
-  // set means the frame loop is not the thing feeding this overlay (before the
-  // first report, or when reports are pushed directly), so there is nothing to
-  // prune against.
-  const tracked = getTrackedCanvasIds();
-  if (tracked.size > 0) {
+  // Per-canvas overlay state must not outlive the core's retention. Read the
+  // core's map directly rather than copying its keys: this runs on every
+  // commit, and the copy showed up in the release bench. An empty map means the
+  // frame loop is not feeding this overlay (before the first report, or when
+  // reports are pushed directly), so there is nothing to prune against.
+  if (latestReports.size > 0 && stats.size > latestReports.size) {
     for (const canvasId of [...stats.keys()]) {
-      if (tracked.has(canvasId)) continue;
+      if (latestReports.has(canvasId)) continue;
       stats.delete(canvasId);
       canvases.delete(canvasId);
       sourceStates.delete(canvasId);

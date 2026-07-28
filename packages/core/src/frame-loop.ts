@@ -45,10 +45,6 @@ export function getLatestReport(canvasId: string): DrawBatchReport | null {
   return latest ? copyReport(latest) : null;
 }
 
-export function getTrackedCanvasIds(): Set<string> {
-  return new Set(latestReports.keys());
-}
-
 export function setSourceLocation(
   canvasId: string,
   location: SourceLocation | null,
