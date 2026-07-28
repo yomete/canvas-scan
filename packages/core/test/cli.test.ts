@@ -156,6 +156,42 @@ describe('canvas-scan init CLI', () => {
     expect(planInit(dir).action.kind).toBe('prepend');
   });
 
+  it('recognises the import forms an entry file actually uses', () => {
+    const forms = [
+      "import 'canvas-scan/auto';",
+      'import "canvas-scan/auto"',
+      "import {} from 'canvas-scan/auto';",
+      "import/* boot */'canvas-scan/auto';",
+      "require ('canvas-scan/auto');",
+      "const _ = require('canvas-scan/auto');",
+    ];
+
+    for (const form of forms) {
+      const dir = fixture();
+      writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(path.join(dir, 'src/main.tsx'), `${form}\nrender();\n`);
+
+      expect(planInit(dir).action.kind, form).toBe('none');
+    }
+  });
+
+  it('does not let a stale node_modules directory pass as installed', () => {
+    const dir = fixture();
+    writePackageJson(dir, {
+      devDependencies: { vite: '^7.0.0', 'canvas-scan': '^0.2.0' },
+    });
+    const stale = path.join(dir, 'node_modules/canvas-scan');
+    fs.mkdirSync(stale, { recursive: true });
+    // A manifest for something else entirely.
+    fs.writeFileSync(
+      path.join(stale, 'package.json'),
+      JSON.stringify({ name: 'not-canvas-scan', version: '1.0.0' }),
+    );
+
+    expect(planInit(dir).install).toBe('npm install -D canvas-scan');
+  });
+
   it('creates a Next.js instrumentation client once', () => {
     const dir = fixture();
     writePackageJson(dir, { dependencies: { next: '^15.3.0' } });

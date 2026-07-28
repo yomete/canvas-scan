@@ -759,6 +759,79 @@ describe('overlay inspect mode and popover', () => {
     expect(outline.style.pointerEvents).toBe('none');
   });
 
+  it('does not resurrect a canvas the core evicted while its lookup was in flight', async () => {
+    let settle: (outcome: unknown) => void = () => {};
+    resolveSourceOutcome.mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    mountOverlay();
+    latestReports.set('kept', makeReport({ canvasId: 'kept' }));
+    latestReports.set('evicted', makeReport({ canvasId: 'evicted' }));
+    emitReport(makeReport({ canvasId: 'kept' }), makeCanvas(false));
+    emitReport(makeReport({ canvasId: 'evicted' }), makeCanvas(false));
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    root
+      .querySelector<HTMLButtonElement>('[data-canvas-id="evicted"].row')!
+      .click();
+    refreshOverlay();
+
+    // Retention drops it while the lookup is still in flight; the next report
+    // for a live canvas is what drives the commit that prunes it.
+    latestReports.delete('evicted');
+    emitReport(makeReport({ canvasId: 'kept' }), makeCanvas(false));
+    refreshOverlay();
+    expect(root.querySelector('[data-canvas-id="evicted"]')).toBeNull();
+
+    settle({
+      kind: 'found',
+      location: { file: '/src/Gone.tsx', line: 3, column: 0 },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    refreshOverlay();
+
+    expect(root.querySelector('[data-canvas-id="evicted"]')).toBeNull();
+    expect(root.querySelector<HTMLElement>('.popover')?.hidden).toBe(true);
+  });
+
+  it('deactivates a canvas slotted into an inert subtree', () => {
+    // A slotted canvas renders inside its slot, so the slot's ancestors decide
+    // whether it can be clicked — not its DOM parent.
+    mountOverlay();
+    const inertBox = document.createElement('div');
+    inertBox.inert = true;
+    const shadowHost = document.createElement('div');
+    inertBox.append(shadowHost);
+    document.body.append(inertBox);
+    const shadow = shadowHost.attachShadow({ mode: 'open' });
+    shadow.append(document.createElement('slot'));
+
+    const lightHost = document.createElement('div');
+    const canvas = makeCanvas(false);
+    lightHost.append(canvas);
+    document.body.append(lightHost);
+    // jsdom does not compute assignment, so state it directly.
+    Object.defineProperty(canvas, 'assignedSlot', {
+      configurable: true,
+      value: shadow.querySelector('slot'),
+    });
+
+    emitReport(makeReport({ signatureStatus: 'changed' }), canvas);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.inspect')!.click();
+    refreshOverlay();
+
+    const outline = root.querySelector<HTMLElement>('.outline')!;
+    expect(outline.hidden).toBe(true);
+    expect(outline.style.pointerEvents).toBe('none');
+  });
+
   it('deactivates a canvas inside an inert subtree', () => {
     mountOverlay();
     const parent = document.createElement('div');

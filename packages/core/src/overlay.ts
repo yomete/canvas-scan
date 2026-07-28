@@ -474,8 +474,12 @@ function isVisiblyHitTestable(canvas: Element): boolean {
     if ((el as HTMLElement).inert === true || el.hasAttribute('inert')) {
       return false;
     }
+    // Follow the flat tree, not just the DOM parent chain: a slotted canvas is
+    // rendered inside its slot, so the slot's ancestors decide whether it can
+    // be clicked. Falling back to the shadow host covers the unslotted case.
     const root = el.getRootNode() as ShadowRoot;
-    el = el.parentElement ?? root.host ?? null;
+    el =
+      (el as HTMLElement).assignedSlot ?? el.parentElement ?? root.host ?? null;
   }
   return true;
 }
@@ -727,6 +731,10 @@ function openPopover(canvasId: string): void {
     const generation = mountGeneration;
     void resolveSourceOutcome(canvas).then((outcome) => {
       if (!host || mountGeneration !== generation) return;
+      // Retention can evict this canvas while the lookup is in flight. Writing
+      // a source state back for a canvas the overlay has already pruned would
+      // create an entry nothing prunes again.
+      if (!stats.has(canvasId)) return;
       if (outcome.kind === 'error') {
         sourceStates.delete(canvasId);
         sourceErrors.add(canvasId);

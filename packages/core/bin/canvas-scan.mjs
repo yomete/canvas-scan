@@ -22,17 +22,22 @@ export function detectFramework(dir) {
   return 'unknown';
 }
 
+// A matcher, not a lexer, and the failure modes are chosen deliberately.
+// Missing a real import re-prepends one, and a duplicate side-effect import is
+// a no-op — the module is only evaluated once. Mistaking a mention for an
+// import is the costly direction: the tool never gets installed and we tell
+// the user it already is. So strip the constructs whose contents can start a
+// line (block comments, template literals) before matching, and accept that a
+// pathological string can defeat the strip.
+const IMPORT_FORMS =
+  /^[ \t]*(?:import\s*(?:(?:\{[^}]*\}|[\w*$][^;\n]*?)\s+from\s*)?['"]canvas-scan\/auto['"]|(?:(?:const|let|var)[^\n=]*=\s*)?require\s*\(\s*['"]canvas-scan\/auto['"]\s*\))/m;
+
 function hasImport(file) {
   const source = fs
     .readFileSync(file, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/`(?:\\[\s\S]|[^\\`])*`/g, '');
-
-  // Match the import statement itself after removing multiline constructs
-  // whose contents can begin at the start of a line.
-  return /^[ \t]*(?:import\s+['"]canvas-scan\/auto['"]|(?:const|let|var)[^\n=]*=\s*require\(\s*['"]canvas-scan\/auto['"]\s*\)|require\(\s*['"]canvas-scan\/auto['"]\s*\))/m.test(
-    source,
-  );
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/`(?:\\[\s\S]|[^\\`])*`/g, '``');
+  return IMPORT_FORMS.test(source);
 }
 
 function readDependencies(dir) {
@@ -55,11 +60,17 @@ function readDependencies(dir) {
 // directory and are reported as missing here.
 function isInstalled(dir) {
   for (let current = path.resolve(dir); ; ) {
-    if (
-      fs.existsSync(path.join(current, 'node_modules/canvas-scan/package.json'))
-    ) {
-      return true;
-    }
+    const manifest = path.join(
+      current,
+      'node_modules/canvas-scan/package.json',
+    );
+    // The manifest must actually be this package: an empty or stale directory
+    // of the right name is not an installation.
+    try {
+      if (JSON.parse(fs.readFileSync(manifest, 'utf8')).name === 'canvas-scan') {
+        return true;
+      }
+    } catch {}
     const parent = path.dirname(current);
     if (parent === current) return false;
     current = parent;

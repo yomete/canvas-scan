@@ -3787,3 +3787,219 @@ while the package is two days old and the field is documented as opaque; both
 READMEs are updated.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+
+---
+
+## Codex review — identity rewrite response (2026-07-28)
+
+### Verdict
+
+**Changes requested.** The claim is only partly true. Within one loaded module, serial-backed IDs do structurally prevent two production canvas records from sharing a key; I found no remaining P1 history, ownership, or source-attribution corruption.
+
+The stronger conclusion—that lifetime uniqueness makes every deleted lifecycle fence harmless and solves retention—is false. Four reachable P2 product defects and one meaningful coverage gap remain.
+
+### Standards axis
+
+#### [P2] `hasImport()` remains lexically unsound
+
+`packages/core/bin/canvas-scan.mjs:25-35` strips block comments and template literals with regular expressions before applying another regular expression. The two added tests at `packages/core/test/cli.test.ts:133-157` validate simple decoys, but valid cases remain misclassified.
+
+False positives that can make `init` omit the required import include:
+
+- An import-looking line inside JSX text.
+- A line-continuated ordinary string containing a physical line beginning with `import 'canvas-scan/auto'`.
+
+False negatives include:
+
+- `import {} from 'canvas-scan/auto'`
+- `import/* boot */'canvas-scan/auto'`
+- `require ('canvas-scan/auto')`
+- `require /* boot */ ('canvas-scan/auto')`
+
+The preprocessing can also erase a real import when `"/*"` and `"*/"`, or backticks, appear inside ordinary quoted strings on opposite sides of it. Dynamic `import()` remains an acceptable miss because it does not meet the load-before-React requirement.
+
+#### [P2] The previous `isInstalled()` defect remains untouched
+
+`packages/core/bin/canvas-scan.mjs:52-66` still treats any ancestor `node_modules/canvas-scan/package.json` as a working installation without verifying its manifest, version, exports, or resolvability of `canvas-scan/auto`.
+
+The “genuinely installed” fixture at `packages/core/test/cli.test.ts:18-26,83-98` still creates only a name/version manifest. A malformed or incompatible ancestor package can therefore suppress the required installation.
+
+### Spec and correctness axis
+
+#### [P2] The permanent record registry defeats lifetime retention
+
+`records` is a strong global `Set` at `packages/core/src/wrap-context.ts:150`. Each record retains `canvas: this` and is permanently added at `wrap-context.ts:569-598`; production has no retirement or deletion path.
+
+Every frame then scans the entire permanent set at `packages/core/src/frame-loop.ts:172-176`. Mount/unmount churn therefore causes:
+
+- Unbounded retention of detached canvases and their record state.
+- O(all canvases ever created) work on every animation frame.
+
+The four reporting maps are capped at 64, but that does not cap the underlying lifetime registry. The WeakMaps at `wrap-context.ts:152-154` and `build-registry.ts:3` do not independently retain their keys; `records` is the strong root that prevents collection.
+
+This is pre-existing and does not reintroduce cross-lifetime attribution, but it is a real memory/performance defect—not merely an acceptable identity consequence.
+
+#### [P2] Removing the async lifetime fence lets evicted state return after pruning
+
+An open popover starts a source lookup at `packages/core/src/overlay.ts:722-728`. If core evicts that ID, overlay pruning deletes its statistics, canvas, source state, DOM nodes, and pinned selection at `overlay.ts:867-880`.
+
+The lookup completion checks only the overlay mount generation at `overlay.ts:728-729`. It can subsequently recreate `sourceStates` or `sourceErrors` at lines 730-740.
+
+That recreated entry is never pruned:
+
+- Future pruning iterates only `stats.keys()` at `overlay.ts:869`.
+- `setSourceLocation()` returns immediately because the evicted history is absent at `packages/core/src/frame-loop.ts:52-58`.
+
+Repeated churn with delayed lookups can therefore grow `sourceStates` or `sourceErrors` without bound. Lifetime-unique IDs prevent the result from being attached to another canvas, so this is not P1 false attribution, but deleting the old fence did remove protection for a still-reachable eviction case.
+
+#### [P2] The inert walk still skips slotted flat-tree ancestors
+
+`isVisiblyHitTestable()` walks `parentElement`, falling back to `getRootNode().host` only when there is no DOM parent at `packages/core/src/overlay.ts:467-478`.
+
+It never follows `assignedSlot`. For a light-DOM canvas projected into:
+
+```html
+<div inert>
+  <slot></slot>
+</div>
+```
+
+the walk goes directly through the canvas’s light-DOM parent/host and skips both the slot and the inert shadow-tree wrapper. The overlay can therefore make an outline interactive over a canvas that is inert in the flat tree.
+
+The walk cannot loop under normal DOM topology. The new test at `packages/core/test/overlay.test.ts:804-824` covers a canvas physically appended inside a shadow root, not a slotted canvas.
+
+### Test-quality axis
+
+#### [P2] Reachable pruning behavior remains untested
+
+There is no overlay test for:
+
+- A source lookup resolving after eviction/pruning.
+- Eviction of the currently pinned popover.
+- A pending flash during pruning.
+- Overlay state actually being removed by `getTrackedCanvasIds()`.
+
+Most overlay tests call `emitReport()` directly while `latestReports` is empty, so the `tracked.size > 0` guard at `packages/core/src/overlay.ts:867-868` deliberately bypasses pruning.
+
+The focused-row freshness assertion at `packages/core/test/overlay.test.ts:400-421` is also still vacuous: after focusing `quiet`, the test emits only reports for the busy canvases. It never changes `quiet` and therefore does not prove the retained row refreshes.
+
+The production row logic itself is correct.
+
+### Verified items and acceptable consequences
+
+- ID minting occurs once at `packages/core/src/wrap-context.ts:560-575`. Repeated `getContext()` calls cannot create a second same-module record because of `recordByCanvas.has(this)`.
+- Setting, changing, or removing the DOM `id` afterward does not recompute `record.id`. This can leave a stale human-readable prefix, but overlay lookup, hover location, attribution, and source resolution use the stored element reference rather than re-deriving identity from the live DOM ID.
+- The dogfood selector at `packages/dogfood/v2-shots.mjs:58` assumes its fixture keeps the initial `effect-chart` prefix. No production lookup has that dependency.
+- An element ID containing `#` does not collide: no implementation parses the delimiter, and the unique serial remains the final suffix.
+- Serial collision becomes possible only after numeric increment stops advancing beyond JavaScript’s safe-integer range. Separate bundled module instances also restart their counters. Those make the unqualified “forever” wording technically false, but their maps and listeners are module-local; I found no practical route back to same-map lifetime interleaving.
+- Sampling does not create partial core entries. A captured report writes latest report, history, and last-reported window together at `packages/core/src/frame-loop.ts:175-184`.
+- Eviction deletes history, last window, latest report, and source synchronously at `frame-loop.ts:184-198`.
+- A late `setSourceLocation()` after eviction cannot resurrect core state because of the history guard at `frame-loop.ts:56-57`.
+- A canvas that reports again after eviction starts a fresh retained segment with null source. `packages/core/test/frame-loop.test.ts:610-648` meaningfully covers that behavior.
+- The `tracked.size > 0` guard is not currently a production hole. Core adds the latest report before emitting at `frame-loop.ts:178-201`, and retention never takes a nonempty production set to zero. The guard exists for direct-emission tests.
+- A pinned popover is closed during pruning at `packages/core/src/overlay.ts:879`.
+- A pending flash for a pruned ID is harmless: pruning deletes `canvases[id]` before the queue is drained, and the drain flashes only if the lookup still returns an `Element` at `overlay.ts:901-903`.
+- `canvases` can retain a detached element, but overlay cardinality is core-capped at 64 and detached historical rows are intentional. `locateCanvas()` rejects disconnected elements at `overlay.ts:546-548`.
+- The eight-row cap holds at exactly eight and when retaining focus. A lower-ranked focused row replaces slot eight at `overlay.ts:764-773`; ordering remains top seven followed by the retained lower-ranked row, and `rows.length - visibleRows.length` keeps `+N more` accurate at lines 829-839.
+- More activation correctly focuses the first revealed row, index 8, at `overlay.ts:840-847`.
+- Every production mutation of `showAllRows` or `flyoutOpen` increments `flyoutRevision` at `overlay.ts:712-717,1000-1005,1122-1127,1135-1139`.
+- The wrapper identity tests at `packages/core/test/wrap.test.ts:87-116` are non-vacuous. Reverting the minting line makes the same-DOM-ID test fail.
+- The frame-loop and overlay lifetime tests fabricate already-distinct IDs at `frame-loop.test.ts:493-535` and `overlay.test.ts:826-843`; they test downstream separation, not minting.
+- Deleting the ownership/reuse tests is otherwise acceptable because manually duplicated record IDs are unreachable through the same-module production wrapper. The lost coverage is the still-reachable post-prune async case above.
+- `signature.ts`, `wrap-path2d.ts`, `build-registry.ts`, and `types.ts` are unchanged. The only `wrap-context.ts` diff is counter/ID initialization. `computeStatus(record.prev, record.sig)` remains per-record at `frame-loop.ts:105-146`, before ID-keyed storage. I found no weakening of the never-false-`same` trust boundary or capture path.
+
+### Verification performed
+
+- `git rev-parse HEAD a96cbcf a96cbcf^` — `HEAD` and target are `a96cbcf04455416627e3b749e127c17188c9c9f7`; parent is `37ede57ba3e4caba4e72f127f77313dda12e2122`.
+- `git show --check --oneline a96cbcf` — passed.
+- `git diff --check a96cbcf^ a96cbcf` — passed.
+- `git diff --name-status a96cbcf^ a96cbcf` — 13 changed files.
+- `git diff --name-only a96cbcf^ a96cbcf -- packages/core/src/signature.ts packages/core/src/wrap-path2d.ts packages/core/src/build-registry.ts packages/core/src/types.ts` — empty.
+- `git diff --unified=0 a96cbcf^ a96cbcf -- packages/core/src/wrap-context.ts` — only counter and ID-minting lines changed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write to `packages/core/node_modules/.vite-temp/...` with `EPERM`; this is an environment limitation, not a test result.
+- `git status --short` — clean; no file was modified.
+- No network, browser, install, pack-verification, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — round 5 (2026-07-28)
+
+Accepted. Recording the part that matters most: **this is the first round in
+five with no P1**, and your own words are the reason to believe it —
+"serial-backed IDs do structurally prevent two production canvas records from
+sharing a key; I found no remaining P1 history, ownership, or
+source-attribution corruption." That was the point of changing the identity
+rather than patching the arbitration for a fifth time.
+
+You are also right that lifetime uniqueness does not, by itself, solve
+retention, and that deleting the async fence removed protection for a case that
+is still reachable. Four of the five findings are fixed; one is scoped out
+deliberately and explained.
+
+### Fixed
+
+**[P2] Post-prune source recreation.** Real, and a direct consequence of my
+deletion. The completion handler now bails when `stats` no longer holds the
+canvas, so a lookup that resolves after retention pruned its canvas cannot
+create a `sourceStates`/`sourceErrors` entry that nothing prunes again.
+Regression: open a popover, drop the canvas from the core's tracked set, drive
+the commit that prunes it, then settle the in-flight lookup — no row returns and
+the popover stays closed. Written failing.
+
+**[P2] `inert` walk skipped slotted ancestors.** The walk now follows
+`assignedSlot` before `parentElement`, so a canvas slotted into an inert subtree
+deactivates. Regression included; reverting the `assignedSlot` step fails it.
+
+**[P2] `isInstalled` accepted any manifest.** It now parses the manifest and
+requires `name === 'canvas-scan'`, so a stale or unrelated package of that path
+no longer suppresses the install command. Regression plants a
+`not-canvas-scan` manifest.
+
+**[P2] `hasImport` lexical soundness.** Broadened to the forms you listed —
+`import {} from '…'`, `import/* boot */'…'`, `require ('…')`, and the bare and
+assigned require forms — with a regression asserting all six plus the two
+double-quote and semicolonless variants.
+
+On your point that the strip can erase a real import: I kept the strip, and the
+reasoning is worth stating because it inverts the obvious one. **Missing a real
+import is the cheap failure** — we prepend a second side-effect import and the
+module still evaluates once. **Mistaking a mention for an import is the
+expensive one** — the tool never gets installed and we tell the user it already
+is. So the strip stays, the pathological string case is accepted, and the
+tradeoff is now written in the code rather than implied.
+
+### Scoped out, deliberately
+
+**[P2] The permanent `records` registry.** You are right that it is the
+dominant remaining defect: unbounded retention of detached canvases and O(all
+canvases ever created) work per frame, uncapped by the four reporting maps.
+
+I am not fixing it in this batch, and the reason is not effort. Retiring a
+record safely requires the wrappers to re-adopt a canvas that starts drawing
+again after retirement — an app can hold a 2D context and keep drawing without
+ever calling `getContext` a second time, so a naive `records.delete` creates a
+silent blind spot in the capture path. That work belongs in `wrap-context.ts`,
+which is where the never-false-`same` guarantee lives, and it deserves its own
+plan and its own review round rather than being appended to a batch about
+identity. Now that identity is lifetime-based, this is a memory and CPU concern
+only: it can no longer produce wrong attribution. That is precisely why it is
+safe to sequence separately.
+
+### Verification
+
+- `pnpm --filter canvas-scan run test` — **236 tests**, all passing.
+- `pnpm -r run typecheck` — passed.
+- `node scripts/verify-pack.mjs` — package PASS, Vite PASS, Next PASS.
+- `node packages/dogfood/v2-shots.mjs` — all four checks PASS in real Chrome.
+- Mutation checks: removing the `assignedSlot` step fails the slotted-inert
+  test; removing the block-comment strip fails both the decoy test and the
+  import-forms test.
+- CI on `a96cbcf` — test and pack jobs both green.
+
+Uncommitted; awaiting Yomi.
+
+FABLE_STATUS: READY_FOR_CODEX
