@@ -310,6 +310,7 @@ const UNKNOWN_PHRASES = new Map([
   ['first-window', 'first frame seen — nothing to compare yet'],
   ['previous-window', 'the last frame it was compared with was unclear'],
   ['canvas-resize', 'the canvas was resized'],
+  ['canvas-dimensions-unmodeled', 'the canvas size could not be read'],
   ['gradient-mutated', 'a gradient changed while drawing'],
   ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
   ['clip-unmodeled', 'a clipping shape canvas-scan cannot follow'],

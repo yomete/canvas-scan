@@ -103,6 +103,14 @@ for (const name of capturedSetterNames) {
 class FakeCanvas {
   private context: FakeContext | null = null;
 
+  get width() {
+    return 300;
+  }
+
+  get height() {
+    return 150;
+  }
+
   getAttribute(_name: string) {
     return null;
   }

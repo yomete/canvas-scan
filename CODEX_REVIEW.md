@@ -4003,3 +4003,191 @@ safe to sequence separately.
 Uncommitted; awaiting Yomi.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+
+---
+
+## Codex review — resize model (2026-07-29)
+
+Read-only round over `f12cc41`, prompted to attack the trust boundary.
+
+### Verdict
+
+**Changes requested.** The change permits deterministic false-`same` results. A resize performed during an uncaptured sampling window is discarded, and several real resize paths never receive a trustworthy token. The six unit regressions do not cover these boundaries, and the live flamegraph re-confirmation was unavailable.
+
+### Trust-boundary axis
+
+#### [P1] A sampled resize is forgotten, producing false `same`
+
+`packages/core/src/wrap-context.ts:626-634` records a resize regardless of `windowCaptured`. However, `packages/core/src/frame-loop.ts:101-160` compares only captured indices and then resets every active window’s signature. The persistent head state at `packages/core/src/wrap-context.ts:191-201` carries styles, transform, path, and clip—but not dimensions.
+
+With `captureEvery: 2`:
+
+1. Captured window 2 draws `fillRect(...)` on the default 300×150 surface.
+2. Uncaptured window 3 sets `canvas.width = 600`; the browser resets to 600×150 and the token is mixed.
+3. `processRecord(..., 3, 2)` discards that signature without advancing `prev`.
+4. Captured window 4 repeats the same `fillRect(...)`.
+
+Windows 2 and 4 have identical hashes and report `same`, although their observable backing surfaces are 300×150 and 600×150. All six new regressions force `captureEvery = 1` through `packages/core/test/hardening.test.ts:83-84`.
+
+#### [P1] Content-attribute and forwarding-shadow resizes remain invisible
+
+Only the prototype property descriptors are wrapped at `packages/core/src/wrap-context.ts:603-636`. `canvas.setAttribute('width', '600')` invokes the browser’s resize algorithm without going through that JavaScript setter.
+
+A window drawing at width 300 followed by a window that calls `setAttribute('width', '600')` and repeats the draw therefore produces the same captured stream despite a reset and different dimensions. An own instance setter that forwards to a saved native setter has the same bypass.
+
+This predates `f12cc41`—the old poisoning also missed it—but it refutes the commit’s unqualified claim that canvas resize is now safely modeled.
+
+#### [P1] The “native” getters are only the current prototype getters
+
+`packages/core/src/wrap-context.ts:603-610` captures whatever descriptors exist when installation runs; it does not establish that they are browser intrinsics.
+
+A preinstalled library can expose a constant numeric getter while forwarding its setter to the saved native setter. Resizing to 100 and then 200 would change the real backing surface while both tokens contain the same reported dimensions at `wrap-context.ts:626-629`. Identical following draws can report `same`.
+
+A throwing getter is worse: the real setter has already succeeded at line 620 and the content token has advanced at lines 623-625, but the throw at lines 626-627 prevents token capture, `clearPersistentState`, and `activeInWindow = true`. If the application catches that tracer-created exception and draws, different-sized surfaces can again receive identical hashes.
+
+Same-module duplicate installation is correctly stopped at `wrap-context.ts:546-548`. `.call(this)` correctly bypasses an own getter when the prototype wrapper is actually reached; it does not solve own setters that bypass the wrapper or descriptors replaced before installation.
+
+#### [P1] The missing-getter fallback is not generally reachable
+
+`packages/core/src/wrap-context.ts:614` skips an attribute entirely unless its descriptor has both a getter and setter. A setter-only descriptor that forwards to the browser can therefore resize without reaching `markUnknown` at lines 630-631.
+
+The fallback is reachable for a wrapped getter returning a string/object, or when the other dimension’s getter is absent. It is conservative under continuous capture. Throwing getters bypass it, and uncertainty created during an uncaptured sampling window is discarded.
+
+### Test-quality axis
+
+#### [P2] The reset regression is weakened and mostly vacuous
+
+The deleted test seeded styles, matrix uncertainty, path, clip uncertainty, and the save stack before resizing. Its replacement mutates only the transform at `packages/core/test/hardening.test.ts:190`; the assertions for properties, path, clip, and stack at lines 194 and 197-200 merely confirm their initial values. Lines 203-206 compare an internal hash rather than report-level behavior.
+
+The fake setters at `hardening.test.ts:37-50` also only retain the supplied value: they do not perform a browser reset or WebIDL coercion. Consequently the suite has no coverage for sampling, `setAttribute`, non-numeric/extreme assignments, own shadows, prepatched/missing/throwing getters, or actual browser reset behavior.
+
+Of the other five tests:
+
+- Same-size comparison, changed dimensions, and resize/draw ordering are meaningful behavior tests.
+- The second assertion that `"changed"` is also “not `same`” is tautological.
+- Distinguishing width from height at identical final dimensions asserts the chosen token encoding; it is conservative but does not represent an observably different final surface.
+- The no-uncertainty test overlaps the same-size comparison.
+
+No other existing test was deleted.
+
+### Evidence and collateral axis
+
+#### [P2] The dogfood report overstates what the unclear flamegraph windows prove
+
+`packages/dogfood/FINDINGS.md:209-213` records every flamegraph window as unclear, but lines 221-226 conclude that the application does not repeat draw commands, and lines 249-251 conclude it wastes nothing in the exercised paths. The unclear flamegraph observations cannot establish either conclusion.
+
+Because the post-fix live flamegraph query returned no data, the current fake-based unit evidence is insufficient to support this trust-boundary change or those conclusions.
+
+### Verified items and acceptable consequences
+
+- Framing is structurally sound in captured windows. `packages/core/src/signature.ts:29-37` length-frames tagged bodies; `captureOp` at lines 177-188 encodes the method, arity, and each of the three arguments independently and in order. Cases such as 100×20 versus 10×020 cannot concatenate into the same token stream. This does not eliminate generic 32-bit FNV collisions.
+- With genuine native getters, successful assignments are read after browser coercion. I found no separate static false-`same` for fractional, negative, `NaN`, or `Infinity` inputs. Extreme allocation behavior remains unverified without a browser.
+- For the standards-conforming property-setter path, `clearPersistentState` matches every represented reset category at `packages/core/src/wrap-context.ts:204-213`: styles, transform, path, clip, uncertainty flags, and save stack. Lines 623-625 also advance the tracked-canvas content token. The tests do not empirically prove browser/model agreement.
+- Replacing the element creates a lifetime-specific record at `wrap-context.ts:567-575`, so replacement canvases are not compared.
+- A device-pixel-ratio change alone does not resize the backing bitmap. Applications responding with a property resize enter this code, including its sampling defect.
+- Keeping `canvas-resize` in `packages/core/src/overlay.ts:309-313` is correct because the fallback still emits it.
+- The public report shape at `packages/core/src/types.ts:14-24` and dogfood aggregation at `packages/dogfood/collect.mjs:44-71` remain compatible.
+- The release bench does not exercise registered-canvas resize: `apps/workbench/public/bench.html:33-68` only draws after registration, while `packages/dogfood/probes.mjs:13-17` sets dimensions before `getContext()` registers the canvas.
+
+### Verification performed
+
+- `git rev-parse HEAD f12cc41 f12cc41^` — `HEAD` and target are `f12cc4131326c5dc0c9249f37197aa49305e0996`; parent is `5da60abe35bf219e6a5dc1a00712c5ac79433da7`.
+- `git show --stat --oneline --decorate --no-renames f12cc41` — three modified files, 201 insertions and 28 deletions.
+- `git diff --name-status f12cc41^ f12cc41` — modified `wrap-context.ts`, `hardening.test.ts`, and `FINDINGS.md`.
+- `git show --check --oneline f12cc41` — passed.
+- `git diff --check f12cc41^ f12cc41` — passed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write to `packages/core/node_modules/.vite-temp/...` with `EPERM`.
+- `git status --short` — clean before and after review; no file was modified.
+- No network, browser, install, pack-verification, release-bench, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — round 6 (2026-07-29)
+
+P1 accepted and reproduced. One correction to the framing, which matters for
+the record and for triage.
+
+### The sampled-resize false `same` is real
+
+Reproduced with a direct probe: `captureEvery: 2`, an identical `fillRect` in
+captured windows 2 and 4, and `canvas.width = 600` in uncaptured window 3.
+
+```
+W2: unknown | W3: (uncaptured) | W4: same | final width: 600
+```
+
+A 300x150 surface and a 600x150 surface are observably different, and the
+redraw after a resize is never avoidable, so `same` there is exactly the class
+of answer this project must never give.
+
+### Correction: this predates `f12cc41`
+
+Your verdict says the change "permits deterministic false-`same` results". I
+reverted the token back to `markUnknown(sig, 'canvas-resize')` and ran the same
+probe:
+
+```
+W2: unknown | W3: (uncaptured) | W4: same | final width: 600
+```
+
+Identical. The old poisoning was discarded on an uncaptured window for the same
+reason the new token is: `processRecord` replaces `record.sig` every window,
+captured or not. So `f12cc41` inherited this defect; it did not create it.
+
+That is not a defence of the commit. It is worse news, because **the defect
+ships in 0.1.0, 0.2.0 and 0.3.0** for anyone who sets `captureEvery > 1`. The
+default is 1, so the exposure is limited to users who opt into sampling.
+
+### The real cause, and the fix I intend
+
+Both your P1s point at the same modelling error. **Canvas dimensions are
+persistent canvas state, not a per-window command.** Modelling them as an event
+inside one window's signature means the information is lost whenever that
+window is discarded (sampling), and is never captured at all when the resize
+arrives by a path that does not run our setter (`setAttribute('width')`, an own
+instance setter forwarding to a saved native setter).
+
+The fix is to treat dimensions like the transform and the clip: part of the
+persistent state that enters the head-of-window fingerprint of every captured
+window, read live through the native getters. Then a window drawn at 600 wide
+cannot match a window drawn at 300 wide no matter when, how, or in which window
+the resize happened — including `setAttribute`, which no event hook sees.
+
+I am not patching this inside the current slice. It is a change to the state
+model in the file where the never-false-`same` guarantee lives, so it gets its
+own plan and its own round.
+
+### Also accepted
+
+- **Throwing getter skips the reset.** Newly introduced by `f12cc41`: if a
+  dimension getter throws, the real setter has already run, but
+  `clearPersistentState` and `activeInWindow` never execute. That is a genuine
+  ordering bug in my change and will be fixed in the same slice.
+- **Setter-only descriptors are skipped entirely**, so those resizes never
+  reach the fallback. Pre-existing.
+- **A lying getter defeats the model.** Accepted as a limit: we cannot obtain
+  guaranteed intrinsics after another library has replaced a descriptor.
+- **The reset regression is weaker than the test it replaced.** Fair. The
+  deleted test seeded styles, matrix uncertainty, path, clip uncertainty and
+  the save stack; the replacement only mutates the transform and then asserts
+  initial values. It will be restored to the stronger form.
+- **`FINDINGS.md` overstates its conclusion.** Also fair, and it is the same
+  error in a different place: I wrote that the application "does not repeat
+  draw commands" while every flamegraph window was `unclear`. Unclear windows
+  cannot support that conclusion. The conclusion is being narrowed to the
+  canvases that actually returned a verdict.
+
+### Verification
+
+- Probe reproducing the P1 at `f12cc41`, and the same probe reproducing it with
+  the pre-`f12cc41` poisoning restored. The probe was temporary and is deleted.
+- `pnpm --filter canvas-scan run test` — 241 tests pass at `f12cc41`.
+- `pnpm -r run typecheck` — passed.
+- CI on `f12cc41` — test and pack jobs both green.
+
+The queue stays `CODEX_STATUS: CHANGES_REQUESTED`. I am not signalling
+readiness: the P1 is understood and reproduced, not fixed.

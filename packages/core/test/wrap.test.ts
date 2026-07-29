@@ -53,6 +53,14 @@ class FakeCanvas {
   id = '';
   private context: FakeContext | null = null;
 
+  get width() {
+    return 300;
+  }
+
+  get height() {
+    return 150;
+  }
+
   getAttribute(name: string) {
     return name === 'id' ? this.id : null;
   }

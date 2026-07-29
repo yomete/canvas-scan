@@ -161,6 +161,8 @@ let windowCaptured = true;
 // never be invoked by the tracer (a Chrome probe showed a shadowed getter
 // returning [] while native state was [5, 5]).
 let nativeGetLineDash: ((this: any) => unknown) | null = null;
+let nativeCanvasWidthGetter: ((this: any) => unknown) | null = null;
+let nativeCanvasHeightGetter: ((this: any) => unknown) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
@@ -193,11 +195,25 @@ function headState(record: CanvasRecord) {
   entries.push(['__matrix', record.matrix.map(quantize)]);
   entries.push(['__path', record.pathHash]);
   entries.push(['__clip', record.clipHash]);
+  let dimensionsUnknown = false;
+  try {
+    const width = nativeCanvasWidthGetter?.call(record.canvas);
+    const height = nativeCanvasHeightGetter?.call(record.canvas);
+    if (typeof width === 'number' && typeof height === 'number') {
+      entries.push(['__width', width]);
+      entries.push(['__height', height]);
+    } else {
+      dimensionsUnknown = true;
+    }
+  } catch {
+    dimensionsUnknown = true;
+  }
   return {
     entries,
     matrixUnknown: record.matrixUnknown,
     clipUnknown: record.clipUnknown,
     pathUnknown: record.pathUnknown,
+    dimensionsUnknown,
   };
 }
 
@@ -608,6 +624,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     canvasProto,
     'height',
   );
+  nativeCanvasWidthGetter = widthDescriptor?.get ?? null;
+  nativeCanvasHeightGetter = heightDescriptor?.get ?? null;
   for (const name of ['width', 'height']) {
     const descriptor =
       name === 'width' ? widthDescriptor : heightDescriptor;
@@ -623,11 +641,15 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         record.contentVersion++;
         record.contentDirty = false;
         refreshContentToken(record);
-        const width = widthDescriptor?.get?.call(this);
-        const height = heightDescriptor?.get?.call(this);
-        if (typeof width === 'number' && typeof height === 'number') {
-          captureOp(record.sig, 'canvas-resize', [name, width, height]);
-        } else {
+        try {
+          const width = widthDescriptor?.get?.call(this);
+          const height = heightDescriptor?.get?.call(this);
+          if (typeof width === 'number' && typeof height === 'number') {
+            captureOp(record.sig, 'canvas-resize', [name, width, height]);
+          } else {
+            markUnknown(record.sig, 'canvas-resize');
+          }
+        } catch {
           markUnknown(record.sig, 'canvas-resize');
         }
         clearPersistentState(record);
@@ -679,6 +701,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           }
           if (headEntries.pathUnknown) {
             markUnknown(record.sig, 'path-unmodeled');
+          }
+          if (headEntries.dimensionsUnknown) {
+            markUnknown(record.sig, 'canvas-dimensions-unmodeled');
           }
         }
         if (windowCaptured) {
@@ -741,6 +766,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             }
             if (headEntries.pathUnknown) {
               markUnknown(record.sig, 'path-unmodeled');
+            }
+            if (headEntries.dimensionsUnknown) {
+              markUnknown(record.sig, 'canvas-dimensions-unmodeled');
             }
           }
           if (windowCaptured) captureSet(record.sig, name, value);

@@ -25,6 +25,14 @@ class WrappedContext {
 class FakeCanvas {
   private context: WrappedContext | null = null;
 
+  get width() {
+    return 300;
+  }
+
+  get height() {
+    return 150;
+  }
+
   getAttribute() {
     return null;
   }

@@ -13,6 +13,14 @@ class FakeContext {
 class FakeCanvas {
   private context: FakeContext | null = null;
 
+  get width() {
+    return 300;
+  }
+
+  get height() {
+    return 150;
+  }
+
   getAttribute() {
     return null;
   }

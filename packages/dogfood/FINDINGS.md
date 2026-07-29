@@ -218,12 +218,12 @@ flamegraph zooms. The edit was local and reverted afterwards.
    named component with the `jsx-owner` kind. The handoff listed React 18 as
    unvalidated. It is now validated on one production application.
 
-2. **The application does not repeat draw commands.** No canvas reported
-   `same` in any path. Hovering the flamegraph draws nothing, because the
-   tooltip is DOM. Hovering the time-series redraws only a one-call crosshair
-   canvas, correctly `changed`. Three Apply clicks with unchanged state caused
-   no redraw at all. This is a negative result for the tool and a good result
-   for the application.
+2. **The canvases the tool could judge did not repeat draw commands.** No
+   judged canvas reported `same`. Hovering the time-series redraws only a
+   one-call crosshair canvas, correctly `changed`, and three Apply clicks with
+   unchanged state caused no redraw at all. The flamegraph returned no verdict
+   at all: every flamegraph window was `unclear`, so this run says nothing about
+   repeated draw commands there.
 
 3. **`canvas-resize` blinds the tool on the canvas that matters most.** Every
    flamegraph redraw reported `unclear`, with the reason `canvas-resize`. The
@@ -247,8 +247,10 @@ flamegraph zooms. The edit was local and reverted afterwards.
 ## Verdict
 
 The install path, the overlay, and attribution all work in a production
-Next.js application on React 18. The tool found no waste, because the
-application wastes nothing in the paths exercised.
+Next.js application on React 18. The tool found no `same` on the canvases it
+could judge. It returned no verdict on the flamegraph or loading placeholder,
+so this run does not establish that the application wastes nothing across all
+paths exercised.
 
 The run earns its keep through finding 3. `canvas-resize` is a self-inflicted
 blind spot: `reset()` already clears the modelled state without poisoning the
