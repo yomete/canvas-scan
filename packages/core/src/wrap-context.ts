@@ -151,6 +151,7 @@ export const records = new Set<CanvasRecord>();
 
 const recordByCanvas = new WeakMap<object, CanvasRecord>();
 const recordByContext = new WeakMap<object, CanvasRecord>();
+const contextByCanvas = new WeakMap<object, object>();
 const gradientDependents = new WeakMap<object, Set<CanvasRecord>>();
 
 let installed = false;
@@ -163,6 +164,7 @@ let windowCaptured = true;
 let nativeGetLineDash: ((this: any) => unknown) | null = null;
 let nativeCanvasWidthGetter: ((this: any) => unknown) | null = null;
 let nativeCanvasHeightGetter: ((this: any) => unknown) | null = null;
+let nativeFillStyleGetter: ((this: any) => unknown) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
@@ -196,6 +198,8 @@ function headState(record: CanvasRecord) {
   entries.push(['__path', record.pathHash]);
   entries.push(['__clip', record.clipHash]);
   let dimensionsUnknown = false;
+  let stateDiverged = false;
+  let stateUnknown = false;
   try {
     const width = nativeCanvasWidthGetter?.call(record.canvas);
     const height = nativeCanvasHeightGetter?.call(record.canvas);
@@ -208,12 +212,28 @@ function headState(record: CanvasRecord) {
   } catch {
     dimensionsUnknown = true;
   }
+  if (record.props.has('fillStyle')) {
+    try {
+      const context = contextByCanvas.get(record.canvas);
+      if (!nativeFillStyleGetter || !context) {
+        stateUnknown = true;
+      } else {
+        stateDiverged =
+          nativeFillStyleGetter.call(context) !==
+          record.props.get('fillStyle');
+      }
+    } catch {
+      stateUnknown = true;
+    }
+  }
   return {
     entries,
     matrixUnknown: record.matrixUnknown,
     clipUnknown: record.clipUnknown,
     pathUnknown: record.pathUnknown,
     dimensionsUnknown,
+    stateDiverged,
+    stateUnknown,
   };
 }
 
@@ -256,6 +276,13 @@ function recordResize(
       }
       if (headEntries.dimensionsUnknown) {
         markUnknown(record.sig, 'canvas-dimensions-unmodeled');
+      }
+      if (headEntries.stateUnknown) {
+        markUnknown(record.sig, 'canvas-state-unmodeled');
+      }
+      if (headEntries.stateDiverged) {
+        markUnknown(record.sig, 'canvas-reset-detected');
+        clearPersistentState(record);
       }
     } catch (error) {
       kill(error);
@@ -617,10 +644,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   const originalGetContext = canvasProto.getContext;
   const originalSetAttribute = canvasProto.setAttribute;
   const originalRemoveAttribute = canvasProto.removeAttribute;
+  const originalHasAttribute = canvasProto.hasAttribute;
   nativeGetLineDash =
     typeof contextProto.getLineDash === 'function'
       ? contextProto.getLineDash
       : null;
+  nativeFillStyleGetter =
+    Object.getOwnPropertyDescriptor(contextProto, 'fillStyle')?.get ??
+    null;
 
   canvasProto.getContext = function (this: any, ...args: unknown[]) {
     const context = originalGetContext.apply(this, args);
@@ -661,6 +692,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       records.add(record);
       recordByCanvas.set(this, record);
       recordByContext.set(context, record);
+      contextByCanvas.set(this, context);
     }
     return context;
   };
@@ -682,10 +714,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       name: unknown,
       ...args: unknown[]
     ) {
-      const result = originalSetAttribute.call(this, name, ...args);
+      // Convert the name ONCE and hand the result to the native call. Two
+      // independent conversions let a stateful toString resize the canvas
+      // while telling us it touched some other attribute.
+      const raw = String(name);
+      const result = originalSetAttribute.call(this, raw, ...args);
       const record = recordByCanvas.get(this);
       if (!record || killed) return result;
-      const attribute = String(name).toLowerCase();
+      const attribute = raw.toLowerCase();
       if (attribute === 'width' || attribute === 'height') {
         recordResize(record, attribute, this);
       }
@@ -699,11 +735,26 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       name: unknown,
       ...args: unknown[]
     ) {
-      const result = originalRemoveAttribute.call(this, name, ...args);
+      const raw = String(name);
+      const attribute = raw.toLowerCase();
       const record = recordByCanvas.get(this);
+      const dimensional = attribute === 'width' || attribute === 'height';
+      // Removing an attribute that is not there is a no-op: the browser resets
+      // nothing. Treating it as a resize would clear modelled state the canvas
+      // still has, which is a false `same` waiting to happen. Presence has to
+      // be read BEFORE the removal.
+      let wasPresent = false;
+      if (record && !killed && dimensional) {
+        try {
+          wasPresent =
+            originalHasAttribute?.call(this, raw) !== false;
+        } catch {
+          wasPresent = true;
+        }
+      }
+      const result = originalRemoveAttribute.call(this, raw, ...args);
       if (!record || killed) return result;
-      const attribute = String(name).toLowerCase();
-      if (attribute === 'width' || attribute === 'height') {
+      if (dimensional && wasPresent) {
         recordResize(record, attribute, this);
       }
       return result;
@@ -736,6 +787,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       if (!record || killed) return original.apply(this, args);
 
       const firstActivity = !record.activeInWindow;
+      const headEntries =
+        windowCaptured && firstActivity
+          ? headState(record)
+          : null;
       // Uncaptured windows discard selfTimeMs at reset, so skip the two
       // performance.now() calls there — they dominate count-only overhead.
       const timed = windowCaptured;
@@ -754,12 +809,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           refreshContentToken(record);
         }
       }
-      const headEntries =
-        windowCaptured && firstActivity
-          ? headState(record)
-          : null;
       try {
-        updateMethodState(record, name, args, this);
         if (headEntries) {
           captureHeadState(record.sig, headEntries.entries);
           if (headEntries.matrixUnknown) {
@@ -774,7 +824,15 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           if (headEntries.dimensionsUnknown) {
             markUnknown(record.sig, 'canvas-dimensions-unmodeled');
           }
+          if (headEntries.stateUnknown) {
+            markUnknown(record.sig, 'canvas-state-unmodeled');
+          }
+          if (headEntries.stateDiverged) {
+            markUnknown(record.sig, 'canvas-reset-detected');
+            clearPersistentState(record);
+          }
         }
+        updateMethodState(record, name, args, this);
         if (windowCaptured) {
           if (name === 'clip' && record.clipUnknown) {
             markUnknown(record.sig, 'clip-unmodeled');
@@ -803,29 +861,19 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     Object.defineProperty(contextProto, name, {
       ...descriptor,
       set(this: any, value: unknown) {
-        originalSet.call(this, value);
         const record = recordByContext.get(this);
-        if (!record || killed) return;
-        const firstActivity = !record.activeInWindow;
-        record.activeInWindow = true;
+        const firstActivity = record
+          ? !record.activeInWindow
+          : false;
         const headEntries =
-          windowCaptured && firstActivity
+          record && !killed && windowCaptured && firstActivity
             ? headState(record)
             : null;
-        setProp(record, name, value);
-        if (typeof value === 'object' && value !== null) {
-          const build = getBuildSignature(value);
-          if (build) {
-            let dependents = gradientDependents.get(value);
-            if (!dependents) {
-              dependents = new Set();
-              gradientDependents.set(value, dependents);
-            }
-            dependents.add(record);
-          }
-        }
-        try {
-          if (headEntries) {
+        originalSet.call(this, value);
+        if (!record || killed) return;
+        record.activeInWindow = true;
+        if (headEntries) {
+          try {
             captureHeadState(record.sig, headEntries.entries);
             if (headEntries.matrixUnknown) {
               markUnknown(record.sig, 'transform-unmodeled');
@@ -839,7 +887,31 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             if (headEntries.dimensionsUnknown) {
               markUnknown(record.sig, 'canvas-dimensions-unmodeled');
             }
+            if (headEntries.stateUnknown) {
+              markUnknown(record.sig, 'canvas-state-unmodeled');
+            }
+            if (headEntries.stateDiverged) {
+              markUnknown(record.sig, 'canvas-reset-detected');
+              clearPersistentState(record);
+            }
+          } catch (error) {
+            kill(error);
           }
+          if (killed) return;
+        }
+        setProp(record, name, value);
+        if (typeof value === 'object' && value !== null) {
+          const build = getBuildSignature(value);
+          if (build) {
+            let dependents = gradientDependents.get(value);
+            if (!dependents) {
+              dependents = new Set();
+              gradientDependents.set(value, dependents);
+            }
+            dependents.add(record);
+          }
+        }
+        try {
           if (windowCaptured) captureSet(record.sig, name, value);
         } catch (error) {
           kill(error);

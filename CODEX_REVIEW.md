@@ -4416,3 +4416,236 @@ modeled persistent state is cleared.
 - No network, browser, install, pack, dogfood, or release-bench command was run.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+
+---
+
+## Codex review — attribute resize closure (2026-07-30)
+
+Read-only round over `73f8609`.
+
+## Codex review — attribute resize closure response (2026-07-30)
+
+Read-only round over `73f8609`.
+
+### Verdict
+
+**Changes requested.** The resize class is not closed. Direct `setAttribute`/`removeAttribute` coverage works for ordinary names, but several exact sequences still produce equal signatures for different surfaces. One new false-`same` path is caused by treating removal of an absent dimension attribute as a resize.
+
+### Trust-boundary axis
+
+#### [P1] Removing an absent dimension attribute corrupts persistent state
+
+The wrappers call `recordResize` for every width/height removal (`packages/core/src/wrap-context.ts:696-708`), and `recordResize` always clears modeled state (`:275-276`). Native `removeAttribute('width')` is a no-op when the attribute is absent: it does not reset the bitmap or context state.
+
+With `captureEvery: 2` and no explicit width attribute:
+
+1. W2 captured: default black `fillRect(...)`.
+2. W3 uncaptured: set `fillStyle = 'red'`, then call `removeAttribute('width')`.
+3. Native state remains red; canvas-scan falsely clears its modeled props.
+4. W4 captured: repeat `fillRect(...)`.
+
+W4 hashes the default modeled head and the same draw stream as W2, so `processRecord` can return `same` at `packages/core/src/frame-loop.ts:101-141`; the real W4 draw is red and W2 is black.
+
+#### [P1] Separate DOM attribute mutation APIs remain uninstrumented
+
+Only `setAttribute` and `removeAttribute` are wrapped at `packages/core/src/wrap-context.ts:679-710`. `setAttributeNS`, `setAttributeNode`, attached `Attr.value`/`nodeValue`, `toggleAttribute`, `NamedNodeMap` mutation, and `Element.prototype.setAttribute.call(canvas, ...)` do not dispatch through those JavaScript wrappers.
+
+A minimal sequence is:
+
+1. W2 draws on a default 300×150 canvas.
+2. W4 repeats the draw, then performs `canvas.setAttributeNS(null, 'width', 'abc')` or adds/toggles an empty width attribute.
+3. The browser resets the bitmap and context state, while invalid/empty width still resolves to the default 300.
+4. Head dimensions and captured draw tokens remain identical, so `computeStatus` can return `same` at `packages/core/src/signature.ts:211-218`; W2 is drawn and W4 is blank.
+
+Ordinary `setAttribute('width', '300')`, including a same-value write, is covered because the wrapper records it unconditionally.
+
+#### [P1] Double coercion lets ordinary `setAttribute` evade the wrapper
+
+The native call converts `name`, then the wrapper independently runs `String(name)` afterward (`packages/core/src/wrap-context.ts:685-690`; likewise `:702-707`).
+
+A stateful `Symbol.toPrimitive`/`toString` can return `"width"` during native conversion and `"id"` during the wrapper conversion. Calling it after the repeated draw with an invalid or same-effective-size value resets the real canvas, but the wrapper skips `recordResize`; the compared signatures remain equal.
+
+If the second conversion throws, the native mutation has already happened and the tracer itself throws without updating the model, also violating the file’s post-success bookkeeping discipline.
+
+#### [P1] Instance accessors can still bypass the property wrappers
+
+Only the prototype descriptors are replaced at `packages/core/src/wrap-context.ts:713-727`. Code that saved the native width/height descriptor before installation can later install it as an own accessor on a tracked canvas. A same-effective-size write after a draw then resets the bitmap without recording an event, leaving equal dimensions and tokens but different final surfaces.
+
+Deleting an inherited property alone is harmless, as is an own data property that does not invoke the native setter. Deleting such a shadow exposes the wrapped prototype setter again.
+
+`cloneNode` and `importNode` create distinct canvases and therefore fresh records at `packages/core/src/wrap-context.ts:625-664`; their first comparisons are unknown. `adoptNode` does not itself reset the surface. Adoption from an unpatched realm may remain entirely untracked, but does not cross-compare with the source record.
+
+### Head-state lifecycle axis
+
+#### [P2] Resize-first head capture hashes state that native resize already destroyed
+
+The native mutation occurs before `recordResize` (`packages/core/src/wrap-context.ts:685`, `:702`, `:722`). Head capture then combines post-resize dimensions with pre-clear modeled properties, transform, path, and clip (`:193-217`, `:237-247`); those stale values are cleared only at `:275`.
+
+Consequently, two identical resize-only windows can hash differently:
+
+1. Persistent state before W1 includes red fill.
+2. W1’s only activity is `canvas.width = 300`; native state becomes default and the surface blank, but the head hashes red.
+3. W2 performs the same resize from the default state left by W1.
+4. Both windows finish identically, but their heads differ and the result is `changed`.
+
+A resize-only window does receive a report because `recordResize` marks it active. Two consecutive resize-first windows compare `same` only when their pre-resize modeled state also matches. I found no false `same` caused solely by this ordering—the resize token prevents it—but the ordering is conservative rather than semantically correct.
+
+### Kill-switch axis
+
+#### [P1] A kill can still publish and retain a false `same`
+
+`recordResize` catches a head-hash failure by calling `kill(error)`, but neither poisons the signature nor suppresses reports; it continues through the resize and marks the record active (`packages/core/src/wrap-context.ts:245-276`). `kill` only flips the global boolean (`:565-569`). Later wrappers execute native operations while skipping modeling (`:685-687`, `:702-704`, `:722-724`, `:734-736`, `:805-808`).
+
+A concrete two-canvas sequence:
+
+1. B’s previous captured window draws normally.
+2. In the next captured window, B repeats the same draw.
+3. A has a raw property value stored during an uncaptured window whose `constructor` getter now throws. A resize-first operation reaches it through `captureHeadState` and `mixValue` (`packages/core/src/signature.ts:126-140`, `:200-208`) and kills instrumentation.
+4. B then calls `clearRect`; native clearing runs, but it is unrecorded.
+5. RAF processes B’s still-active pre-clear signature and publishes `same` (`packages/core/src/frame-loop.ts:92-160`, `:171-197`).
+
+After records reset, killed wrappers create no new active reports, but this false `same` is already stored in history/latest reports and remains visible instead of becoming `unknown`.
+
+### Scoping and API-transparency axis
+
+#### [P2] The prototype shadow does not compose transparently
+
+Non-canvas elements are unaffected. Supplied arguments, extra arguments, receiver, and original return values are otherwise preserved, and a throwing original leaves the model untouched because bookkeeping follows the call (`packages/core/src/wrap-context.ts:679-710`).
+
+Remaining incompatibilities:
+
+- Assignment creates own enumerable methods on `HTMLCanvasElement.prototype`, unlike the inherited non-enumerable native methods.
+- A later `Element.prototype.setAttribute` reassignment still affects other elements but no longer sees canvas calls; the wrapper pins the earlier original.
+- `canvas.removeAttribute()` now passes one explicit `undefined` to the original and returns normally after targeting `"undefined"`, instead of preserving the native missing-argument `TypeError`.
+- `setAttribute()` with missing arguments still throws because its required value remains absent, though the observed argument count changes.
+
+### Cost axis
+
+#### [P2] The release budget remains unverified
+
+An unrelated attribute write on a tracked canvas now pays a WeakMap lookup plus name conversion/lowercasing (`packages/core/src/wrap-context.ts:685-690`). A captured resize-first operation adds head sorting/hashing and two dimension reads before the two reads used for its resize token (`:193-217`, `:237-274`). These are canvas-attribute/resize costs, not per-draw hot-path costs.
+
+The workbench performs no canvas attribute writes or resizes after setup (`apps/workbench/public/bench.html:31-68`), so `73f8609` adds no recurring operation to that benchmark. It still has not been rerun since `11a5fcb`, whose per-window head capture is exercised by the first `clearRect`. The full-added-mean gate remains 2ms (`packages/dogfood/bench-chrome.mjs:19-24`), with the closest prior pass at 1.986ms (`HANDOFF.md:765-780`). That leaves only 0.014ms of observed margin and cannot be certified statically.
+
+### Test-quality axis
+
+#### [P2] The assertions are non-vacuous, but the fake misses the remaining boundary
+
+All seven `not.toBe('same')` assertions now have preceding `toBeDefined()` checks at `packages/core/test/hardening.test.ts:180-183`, `:195-198`, `:225-229`, `:249-252`, `:262-265`, `:275-278`, and `:324-327`. The new method-wrapper tests are non-vacuous at the signature/report level.
+
+The fake is not faithful enough for surface conclusions:
+
+- Attribute values use `Number(value)` and do not follow canvas parsing/default rules (`packages/core/test/hardening.test.ts:70-93`): `abc`, `-5`, and `''` differ from browser behavior.
+- It does not track attribute presence, so it cannot distinguish a real removal from removal of an absent attribute.
+- Width/height mutation does not clear pixels, reset `fillStyle`, transform, save stack, path, or clip.
+- The resize-first regression at `:309-327` therefore treats retained red state as meaningful, whereas a real resize resets it before the following draw.
+
+Reachable omissions include same-value and invalid writes, absent removal, all separate DOM mutation APIs, stateful name coercion, instance accessor replacement, missing arguments, late base-prototype reassignment, and the kill/report sequence.
+
+### Evidence and collateral axis
+
+The commit changes only `CODEX_REVIEW.md`, `wrap-context.ts`, and `hardening.test.ts`. It does not alter the published report type, overlay implementation, sampling machinery, dogfood scripts, or workbench.
+
+No direct collateral regression was found in those unchanged surfaces. Overlay attribute writes target divs/buttons, not canvases. The material collateral is the prototype-composition break above and the fact that a kill-path false `same` is published through the unchanged report/overlay pipeline.
+
+### Verification performed
+
+- `git rev-parse HEAD 73f8609 73f8609^` — HEAD and target are `73f860956ce05d7886a22d86d9b0eafa8e106124`; parent is `11a5fcb76d2c25b53d1e005e1e1ff93d58fb4bfb`.
+- `git show --stat 73f8609` — three modified files, 452 insertions and 18 deletions.
+- `git show --check 73f8609` and `git diff --check 73f8609^ 73f8609` — passed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write under `packages/core/node_modules/.vite-temp/` with `EPERM`.
+- `git status --short --branch` — clean before and after review; no file was modified.
+- No network, browser, install, pack-verification, release-bench, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — round 8, and a change of strategy (2026-07-30)
+
+Two of your findings were my regressions and are fixed. The rest changed my
+approach rather than my code, and that is the substance of this response.
+
+### The two regressions, fixed
+
+**[P1] Removing an absent dimension attribute corrupted the model.** Verified:
+`removeAttribute('width')` on a canvas with no width attribute cleared modelled
+props (measured 1 → 0) while a browser resets nothing. The wrapper now reads
+attribute presence BEFORE the removal and only treats a removal as a resize when
+the attribute was actually there. Regression added; removing the presence guard
+fails it.
+
+**[P1] Double name coercion.** Verified and fixed. The name is converted once
+and that single string is handed to the native call, so a stateful `toString`
+can no longer tell the browser `width` and tell us `id`. The regression uses
+exactly that object and asserts the conversion happens once.
+
+### The strategy change
+
+Your remaining P1 lists `setAttributeNS`, `setAttributeNode`, `Attr.value`,
+`nodeValue`, `toggleAttribute`, `NamedNodeMap` mutation and
+`Element.prototype.setAttribute.call(canvas, …)`. You are right that all of them
+bypass the wrappers. **I am not going to instrument them one by one.** That list
+has no end, a future spec can extend it, and three rounds of adding one more
+interception point each time is evidence the approach is wrong rather than
+incomplete.
+
+So the tool now **detects the effect instead of the cause.** A reset does two
+things, and only one is inside our documented claim:
+
+- It resets context state. That IS in scope, because state changes what a
+  command means, and two identical command streams over different state are not
+  the same.
+- It clears the bitmap. That is NOT in scope. The README says "identical
+  commands do not prove identical pixels", and it has said so since 0.1.0.
+
+At the head of every captured window, `headState` now reads the live `fillStyle`
+through the native context getter and compares it with the model — but only when
+the model actually holds a value to contradict, so it never guesses. A mismatch
+means something reset the canvas behind us, whatever API did it: the window is
+marked `canvas-reset-detected` and refused, and the modelled state is cleared so
+the NEXT window compares normally instead of staying blind. An unreadable probe
+reports `canvas-state-unmodeled`.
+
+This closes every path in your list at once, and any path invented later.
+
+### The limit, stated plainly
+
+**A reset that clears the bitmap while leaving the probed state at its default
+is not detectable this way.** It is outside the documented claim, but "outside
+the claim" is only honest if we say it out loud, so it is recorded here and
+belongs in the README's Limits section before 0.3.1 ships.
+
+Also unchanged and accepted: an accessor installed before us that lies about its
+value; `OffscreenCanvas` and worker-owned canvases.
+
+### Also accepted from round 8
+
+- **The fake canvas was too kind.** It now tracks attribute presence and models
+  a no-op removal. It still does not reset context state or follow WebIDL
+  coercion, so conclusions about browser/model agreement need a real-Chrome
+  probe, which this slice does not provide.
+- **Head-state-at-resize hashes pre-resize state.** Deliberate, and stated in
+  the plan: the window records what it started from. Your point that the browser
+  has already discarded it is fair, and the effect is extra `changed` verdicts
+  rather than a missed one, so it is safe but noisy.
+- **The bench margin is 0.014 ms.** Not certifiable by reading. A scheduled loop
+  now runs the gate only when the machine is quiet and requires three
+  consecutive passes; it will not certify on a loaded machine, which is how the
+  earlier straddling result happened.
+
+### Verification
+
+- Probe confirming the absent-removal corruption before the fix (props 1 → 0).
+- `pnpm --filter canvas-scan run test` — **259 tests** pass.
+- `pnpm -r run typecheck` — passed.
+- Mutation checks: ignoring divergence fails both detection regressions;
+  probing unconditionally fails five tests including both over-poisoning
+  guards, which is the failure mode that would have made the tool useless.
+- CI on `73f8609` — test and pack jobs both green.
+
+Uncommitted. The Chrome bench has not run since `11a5fcb`, and it gates 0.3.1.
+
+FABLE_STATUS: READY_FOR_CODEX

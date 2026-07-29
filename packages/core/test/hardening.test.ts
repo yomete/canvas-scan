@@ -15,12 +15,16 @@ class FakeContext {
   canvas: FakeCanvas;
   invocations: Array<{ method: string; args: unknown[] }> = [];
   private fillStyleValue = '#000000';
+  throwOnFillStyleRead = false;
 
   constructor(canvas: FakeCanvas) {
     this.canvas = canvas;
   }
 
   get fillStyle() {
+    if (this.throwOnFillStyleRead) {
+      throw new Error('fillStyle unavailable');
+    }
     return this.fillStyleValue;
   }
 
@@ -35,6 +39,10 @@ class FakeContext {
 
   translate(...args: unknown[]) {
     this.invocations.push({ method: 'translate', args });
+  }
+
+  resetOutOfBand() {
+    this.fillStyleValue = '#000000';
   }
 }
 
@@ -67,11 +75,18 @@ class FakeCanvas {
     return name === 'id' ? this.id : null;
   }
 
+  present = new Set<string>();
+
+  hasAttribute(name: string) {
+    return this.present.has(String(name).toLowerCase());
+  }
+
   setAttribute(name: string, value: unknown) {
     if (this.throwOnSetAttribute) {
       throw new Error('setAttribute unavailable');
     }
     const attribute = String(name).toLowerCase();
+    this.present.add(attribute);
     if (attribute === 'width') {
       this.widthValue = Number(value);
     } else if (attribute === 'height') {
@@ -81,8 +96,10 @@ class FakeCanvas {
     }
   }
 
+  // A browser resets nothing when the attribute is not there.
   removeAttribute(name: string) {
     const attribute = String(name).toLowerCase();
+    if (!this.present.delete(attribute)) return;
     if (attribute === 'width') {
       this.widthValue = 300;
     } else if (attribute === 'height') {
@@ -90,6 +107,10 @@ class FakeCanvas {
     } else if (attribute === 'id') {
       this.id = '';
     }
+  }
+
+  resetOutOfBand() {
+    this.context?.resetOutOfBand();
   }
 
   getContext(type: string) {
@@ -213,6 +234,105 @@ describe('canvas patch hardening', () => {
     });
   });
 
+  it('reports an out-of-band context reset as unknown', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.resetOutOfBand();
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset-detected',
+    });
+  });
+
+  it('recovers after reporting an out-of-band context reset', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.resetOutOfBand();
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2);
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    const recovered = finish(record, 3);
+
+    expect(recovered?.unknownReason).not.toBe(
+      'canvas-reset-detected',
+    );
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)?.signatureStatus).toBe('same');
+  });
+
+  it('does not infer divergence when the probed model state is empty', () => {
+    const { context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    context.fillRect(0, 0, 10, 10);
+
+    expect(finish(record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('reports an unreadable state probe as unknown', () => {
+    const { context, record } = makeCanvas();
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    context.throwOnFillStyleRead = true;
+    context.fillRect(0, 0, 10, 10);
+    context.throwOnFillStyleRead = false;
+
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-state-unmodeled',
+    });
+  });
+
+  it('does not report divergence for ordinary tracked mutation', () => {
+    const { context, record } = makeCanvas();
+
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'changed',
+      unknownReason: null,
+    });
+
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)).toMatchObject({
+      signatureStatus: 'changed',
+      unknownReason: null,
+    });
+
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
+  });
+
   it('never reports same when a resize changes the dimensions', () => {
     const { canvas, context, record } = makeCanvas();
 
@@ -274,6 +394,66 @@ describe('canvas patch hardening', () => {
     canvas.removeAttribute('width');
     const report = finish(record, 2);
 
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('ignores removal of a dimension attribute that is not there', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    // Seed the style first, so the two compared windows start from the same
+    // persistent state and differ only by the removal under test.
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)?.signatureStatus).toBe('changed');
+
+    // No width attribute was ever set, so this is a browser no-op: it must not
+    // clear modelled state the canvas still has.
+    canvas.removeAttribute('width');
+    expect(record.props.size).toBeGreaterThan(0);
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)?.signatureStatus).toBe('same');
+  });
+
+  it('still treats removal of a present dimension attribute as a resize', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    canvas.setAttribute('width', '600');
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.removeAttribute('width');
+    context.fillRect(0, 0, 10, 10);
+    const report = finish(record, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('converts the attribute name once so coercion cannot hide a resize', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    // Returns 'width' on the first read and 'id' on the second. A wrapper that
+    // converts separately from the native call would resize and record nothing.
+    let reads = 0;
+    const shifty = {
+      toString() {
+        reads += 1;
+        return reads === 1 ? 'width' : 'id';
+      },
+    };
+    canvas.setAttribute(shifty as unknown as string, '600');
+    context.fillRect(0, 0, 10, 10);
+    const report = finish(record, 2);
+
+    expect(reads).toBe(1);
     expect(report).toBeDefined();
     expect(report?.signatureStatus).not.toBe('same');
   });

@@ -1056,6 +1056,8 @@ describe('overlay copy', () => {
       'previous-window',
       'canvas-resize',
       'canvas-dimensions-unmodeled',
+      'canvas-state-unmodeled',
+      'canvas-reset-detected',
       'gradient-mutated',
       'transform-unmodeled',
       'clip-unmodeled',
@@ -1115,6 +1117,9 @@ function describeReason(reason: string): string {
     'previous-window': 'the last frame it was compared with was unclear',
     'canvas-resize': 'the canvas was resized',
     'canvas-dimensions-unmodeled': 'the canvas size could not be read',
+    'canvas-state-unmodeled': 'the canvas state could not be read',
+    'canvas-reset-detected':
+      'the canvas was reset by something canvas-scan could not see',
     'gradient-mutated': 'a gradient changed while drawing',
     'transform-unmodeled': 'a transform canvas-scan cannot follow',
     'clip-unmodeled': 'a clipping shape canvas-scan cannot follow',
