@@ -184,3 +184,74 @@ canvas app converges on (Excalidraw element caches, konva cached shapes, pixi
 render textures) — poisons the compositing canvas to `unknown` by design.
 Canvas-source capture (finding 7) is the gating work for this class of app,
 and it is the same shape of work as the Path2D fix that unlocked chart.js.
+
+---
+
+# Dogfood findings — Polar Signals Cloud profiler, 2026-07-29
+
+The first run against a production application rather than a library fixture.
+
+Setup: `canvas-scan@0.3.0` IIFE bundle, loaded by a script tag in
+`_document.tsx` of the `cloud-v2` Next.js app (Next 16.2.6, **React 18.3.1**),
+against the live production API with a real account. Driven through Chrome by
+the agent: initial load, hover sweeps over the time-series and the flamegraph,
+a re-run of the query, three Apply clicks with unchanged state, and two
+flamegraph zooms. The edit was local and reverted afterwards.
+
+## Per-canvas summary
+
+| canvas | owner (kind) | frames | same/changed/unclear | draw calls | notes |
+|---|---|---|---|---|---|
+| 1 | — (unattributed) | 1 | 0/0/1 | 7 | pre-React utility canvas |
+| 2 | LineChartInner (jsx-owner) | 3 | 0/2/1 | 16 | time-series axis |
+| 3 | LineChartInner (jsx-owner) | 3 | 0/2/1 | 783 | time-series lines |
+| 4 | LineChartInner (jsx-owner) | 5 | 0/4/1 | 1 | hover crosshair |
+| 5 | FlamegraphCanvasInner (jsx-owner) | 1 | 0/0/1 | 760 | first flamegraph |
+| 6 | PlaceholderCanvas (jsx-owner) | 1 | 0/0/1 | 534 | loading placeholder |
+| 7 | FlamegraphCanvasInner (jsx-owner) | 3 | 0/0/3 | 883 | flamegraph after re-query |
+
+**7 canvases, 0 review candidates.**
+
+## Findings
+
+1. **Attribution works on React 18.** Every React-owned canvas resolved to a
+   named component with the `jsx-owner` kind. The handoff listed React 18 as
+   unvalidated. It is now validated on one production application.
+
+2. **The application does not repeat draw commands.** No canvas reported
+   `same` in any path. Hovering the flamegraph draws nothing, because the
+   tooltip is DOM. Hovering the time-series redraws only a one-call crosshair
+   canvas, correctly `changed`. Three Apply clicks with unchanged state caused
+   no redraw at all. This is a negative result for the tool and a good result
+   for the application.
+
+3. **`canvas-resize` blinds the tool on the canvas that matters most.** Every
+   flamegraph redraw reported `unclear`, with the reason `canvas-resize`. The
+   flamegraph sizes its canvas on each zoom, so the tool refuses to compare and
+   gives no verdict on an 883-call canvas. Any charting library that sizes a
+   canvas to its container hits this, which is most of them. **This is the most
+   valuable finding of the run, and it is about canvas-scan, not the
+   application.**
+
+4. **The first flamegraph paint cost 21.6 ms of canvas API self-time in one
+   frame.** The warm redraw of a larger flamegraph cost 2.3 ms for 883 calls.
+   The measurement is enqueue time, not GPU time, so this is a hint rather
+   than a conclusion.
+
+5. **`FlamegraphCanvasInner` creates a new canvas element per query.** The
+   retired canvas and its replacement appear as separate lifetimes. The 0.3.0
+   identity model keeps their histories separate, which is what it exists for.
+
+6. **`PlaceholderCanvas` issues 534 draw calls for a loading placeholder.**
+
+## Verdict
+
+The install path, the overlay, and attribution all work in a production
+Next.js application on React 18. The tool found no waste, because the
+application wastes nothing in the paths exercised.
+
+The run earns its keep through finding 3. `canvas-resize` is a self-inflicted
+blind spot: `reset()` already clears the modelled state without poisoning the
+window, and a resize does the same thing plus a dimension change. The fix is to
+model the dimensions instead of refusing to compare. That work follows this
+run.

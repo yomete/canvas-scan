@@ -600,8 +600,17 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     return context;
   };
 
+  const widthDescriptor = Object.getOwnPropertyDescriptor(
+    canvasProto,
+    'width',
+  );
+  const heightDescriptor = Object.getOwnPropertyDescriptor(
+    canvasProto,
+    'height',
+  );
   for (const name of ['width', 'height']) {
-    const descriptor = Object.getOwnPropertyDescriptor(canvasProto, name);
+    const descriptor =
+      name === 'width' ? widthDescriptor : heightDescriptor;
     if (!descriptor?.get || !descriptor.set) continue;
 
     const originalSet = descriptor.set;
@@ -614,8 +623,13 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         record.contentVersion++;
         record.contentDirty = false;
         refreshContentToken(record);
-        // resize resets context state the signature can't model
-        markUnknown(record.sig, 'canvas-resize');
+        const width = widthDescriptor?.get?.call(this);
+        const height = heightDescriptor?.get?.call(this);
+        if (typeof width === 'number' && typeof height === 'number') {
+          captureOp(record.sig, 'canvas-resize', [name, width, height]);
+        } else {
+          markUnknown(record.sig, 'canvas-resize');
+        }
         clearPersistentState(record);
         record.activeInWindow = true;
       },
