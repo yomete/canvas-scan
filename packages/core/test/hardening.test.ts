@@ -14,9 +14,18 @@ const webglContext = {};
 class FakeContext {
   canvas: FakeCanvas;
   invocations: Array<{ method: string; args: unknown[] }> = [];
+  private fillStyleValue = '#000000';
 
   constructor(canvas: FakeCanvas) {
     this.canvas = canvas;
+  }
+
+  get fillStyle() {
+    return this.fillStyleValue;
+  }
+
+  set fillStyle(value: string) {
+    this.fillStyleValue = value;
   }
 
   fillRect(...args: unknown[]) {
@@ -35,6 +44,7 @@ class FakeCanvas {
   widthValue: unknown = 300;
   heightValue: unknown = 150;
   throwOnWidthRead = false;
+  throwOnSetAttribute = false;
 
   get width(): number {
     if (this.throwOnWidthRead) throw new Error('width unavailable');
@@ -55,6 +65,31 @@ class FakeCanvas {
 
   getAttribute(name: string) {
     return name === 'id' ? this.id : null;
+  }
+
+  setAttribute(name: string, value: unknown) {
+    if (this.throwOnSetAttribute) {
+      throw new Error('setAttribute unavailable');
+    }
+    const attribute = String(name).toLowerCase();
+    if (attribute === 'width') {
+      this.widthValue = Number(value);
+    } else if (attribute === 'height') {
+      this.heightValue = Number(value);
+    } else if (attribute === 'id') {
+      this.id = String(value);
+    }
+  }
+
+  removeAttribute(name: string) {
+    const attribute = String(name).toLowerCase();
+    if (attribute === 'width') {
+      this.widthValue = 300;
+    } else if (attribute === 'height') {
+      this.heightValue = 150;
+    } else if (attribute === 'id') {
+      this.id = '';
+    }
   }
 
   getContext(type: string) {
@@ -142,7 +177,10 @@ describe('canvas patch hardening', () => {
     setWindowCaptured(true);
     context.fillRect(0, 0, 10, 10);
 
-    expect(finish(record, 4, 2)?.signatureStatus).not.toBe('same');
+    const report = finish(record, 4, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
   });
 
   it('never reports same when a resize bypasses the wrapped setter', () => {
@@ -154,7 +192,10 @@ describe('canvas patch hardening', () => {
     canvas.widthValue = 600;
     context.fillRect(0, 0, 10, 10);
 
-    expect(finish(record, 2)?.signatureStatus).not.toBe('same');
+    const report = finish(record, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
   });
 
   it('reports unknown when the current dimensions cannot be read', () => {
@@ -183,7 +224,106 @@ describe('canvas patch hardening', () => {
     context.fillRect(1, 2, 3, 4);
     const report = finish(record, 2);
 
+    expect(report).toBeDefined();
     expect(report?.signatureStatus).toBe('changed');
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('never reports same after attribute resizes away and back', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    setWindowCaptured(true);
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2, 2);
+
+    setWindowCaptured(false);
+    canvas.width = 300;
+    finish(record, 3, 2);
+
+    setWindowCaptured(true);
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    canvas.setAttribute('width', '600');
+    canvas.setAttribute('width', '300');
+    const report = finish(record, 4, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('catches a resize between windows through setAttribute', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.setAttribute('WIDTH', '600');
+    const report = finish(record, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('treats removeAttribute width as a resize', () => {
+    const { canvas, record } = makeCanvas();
+
+    canvas.setAttribute('width', '600');
+    finish(record, 1);
+
+    canvas.removeAttribute('width');
+    const report = finish(record, 2);
+
+    expect(report).toBeDefined();
+    expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('leaves unrelated attribute writes inert', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.setAttribute('id', 'chart');
+    context.fillRect(0, 0, 10, 10);
+
+    expect(finish(record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('leaves the model untouched when setAttribute throws', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.throwOnSetAttribute = true;
+    expect(() => {
+      canvas.setAttribute('width', '600');
+    }).toThrow('setAttribute unavailable');
+    canvas.throwOnSetAttribute = false;
+    context.fillRect(0, 0, 10, 10);
+
+    expect(finish(record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('captures head state when the first activity is a resize', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    setWindowCaptured(true);
+    canvas.width = 300;
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2, 2);
+
+    setWindowCaptured(false);
+    context.fillStyle = 'red';
+    finish(record, 3, 2);
+
+    setWindowCaptured(true);
+    canvas.width = 300;
+    context.fillRect(0, 0, 10, 10);
+    const report = finish(record, 4, 2);
+
+    expect(report).toBeDefined();
     expect(report?.signatureStatus).not.toBe('same');
   });
 

@@ -4191,3 +4191,228 @@ own plan and its own round.
 
 The queue stays `CODEX_STATUS: CHANGES_REQUESTED`. I am not signalling
 readiness: the P1 is understood and reproduced, not fixed.
+
+
+---
+
+## Codex review — dimensions as persistent state (2026-07-29)
+
+Read-only round over `11a5fcb`.
+
+### Verdict
+
+**Changes requested.** The sampled-window defect is fixed, but the trust boundary remains open. A bypass resize after the one-time head snapshot can produce an identical token stream while clearing pixels, resetting context state, or changing the backing dimensions.
+
+### Trust-boundary axis
+
+#### [P1] A post-snapshot resize still produces deterministic false `same`
+
+Dimensions are read only when `firstActivity` is true at `packages/core/src/wrap-context.ts:669-691` and `:740-745`. Attribute resizes remain uninstrumented because only the `width`/`height` property descriptors are wrapped at `:619-659`.
+
+With `captureEvery: 2`:
+
+1. W2 sets `fillStyle = 'red'`, then calls `fillRect(...)`. The setter captures a 300×150 head followed by the set and draw tokens.
+2. W3 assigns `canvas.width = 300` through the wrapped setter. This clears the modeled state, and the uncaptured signature is discarded.
+3. W4 sets `fillStyle = 'red'`, capturing the same 300×150 head.
+4. Before its first draw, W4 calls `canvas.setAttribute('width', '600')`. The browser resets the bitmap and context state, but canvas-scan records nothing.
+5. W4 calls the same `fillRect(...)`.
+
+W2 and W4 have identical `H + S(fillStyle, red) + C(fillRect, …)` streams, so `computeStatus` can return `same` at `packages/core/src/signature.ts:211-218`. W2 ends with a red 300×150 surface; W4 draws with reset/default styling on a 600×150 surface.
+
+The resize-and-back variant is even smaller: W2 calls `fillRect`; W4 calls the same `fillRect`, then `setAttribute('width', '600')`, then `setAttribute('width', '300')`. The signatures are identical, but W2 ends drawn and W4 ends blank.
+
+Save/restore does not close this. Two windows can record identical `save → set fillStyle → draw A → restore → draw B` streams, while one inserts an invisible same-size attribute resize before `restore`. That resize erases A and clears the native save stack, while the model still pops its stale stack at `wrap-context.ts:459-479`. One surface contains A+B; the other only B.
+
+An intervening window containing only `setAttribute('width', '300')` is also “inactive” to the tracer, so `processRecord` returns at `packages/core/src/frame-loop.ts:97`. The browser clears its bitmap and state while the record retains stale props. The next active window can therefore hash the old modeled state and same dimensions while drawing against reset native state.
+
+These are exact token-stream equalities, not generic 32-bit FNV collisions.
+
+#### [P1] Captured accessors can still silently lie
+
+`installCanvasPatch` stores whatever accessors are present at first installation, not verified browser intrinsics (`packages/core/src/wrap-context.ts:562-628`). `headState` trusts every numeric result at `:198-206`.
+
+A preinstalled accessor can return constant `300` while forwarding writes to the saved browser setter. A real resize from 300 to 600 then remains hashed as 300. Repeating the draw produces `same` across differently sized surfaces. Throws and nonnumeric values are conservative because they become `canvas-dimensions-unmodeled`; numeric lies are not.
+
+This is the round-6 accepted limitation, not a new regression, but it independently refutes closure.
+
+### Head-state lifecycle axis
+
+#### [P2] Head state is not captured on every captured window’s first activity
+
+A wrapped canvas dimension setter marks `activeInWindow = true` without calling `headState` (`packages/core/src/wrap-context.ts:637-656`). A later draw sees `firstActivity === false` and never captures head state. Gradient mutation has a similar conservative path at `:539-544`.
+
+The current width/height setter path carries a resize token or uncertainty, so this is not another demonstrated false `same`; it does invalidate the claim that every captured active window receives dimension head state.
+
+For the named lifecycle cases:
+
+- The first ordinary context method or captured property setter captures head state once. The first report remains `unknown` because `prev` is null.
+- A genuinely inactive window leaves a fresh signature and `activeInWindow === false`; the next ordinary activity captures once.
+- After a wrapped resize, `clearPersistentState` runs, but the resize itself makes the record active, so the subsequent draw does not recapture.
+- Double capture is possible with a prototype method patched before installation that synchronously re-enters another wrapped method: the outer wrapper caches `firstActivity` before calling the original at `:669-680`, while the nested wrapper can capture and activate the record first. Genuine native methods do not normally re-enter JavaScript this way.
+- An application property named `__width` cannot enter `props`: modeled property names are the fixed list at `:121-148`, plus internal `__lineDash`. Even a duplicate entry would remain ordered and length-framed by `packages/core/src/signature.ts:200-208`, so there is no structural key alias.
+
+### Installation and realm axis
+
+A second prototype passed to the same module is ignored by the `installed` guard. Its canvases remain untracked rather than receiving hashes from the wrong getter. An iframe loading its own bundle gets a separate module instance and separate getters.
+
+A genuine cross-realm WebIDL canvas getter called with another realm’s canvas should read that receiver’s internal state; an incompatible receiver throws and is conservatively marked unknown. Silent wrong values require a generic, fake, or prepatched accessor—the P1 above.
+
+### Cost axis
+
+#### [P2] The post-change release budget remains unverified
+
+The added work is two getter calls, two appended entries, and hashing their names and values once per captured active canvas/window—not per draw operation. `processRecord` resets `activeInWindow` at `packages/core/src/frame-loop.ts:156-160`.
+
+The release bench’s first operation each frame is `clearRect`, so it would exercise exactly two new getter calls per frame (`apps/workbench/public/bench.html:31-68`). This is probably small beside 1,000 mixed operations, and run-to-run variance is much larger, but the closest recent pass was 1.986ms against 2ms—about 14µs of margin (`HANDOFF.md:765-780`). A rerun is required before certifying the gate.
+
+`packages/core/test/overhead.test.ts:67-100` never calls `processRecord`, so it pays head-state cost only on the first wrapped call of the entire benchmark and cannot validate the recurring per-window cost.
+
+### Test-quality axis
+
+#### [P2] The new tests miss the reachable mid-window boundary
+
+The sampling, bypass-before-first-activity, unreadable-dimension, and throwing-getter regressions in `packages/core/test/hardening.test.ts:131-172` and `:280-300` are non-vacuous. Removing dimension head entries would break the intended mutation cases.
+
+They do not cover resize after head capture, resize-and-back, setter-first activity, an invisible inactive-window reset, save/restore divergence, or cross-prototype installation. Assertions using `not.toBe('same')` can also pass if no report is returned. The exact `changed` plus `not same` assertions at `:186-187` remain redundant.
+
+The restored reset regression at `:241-278` is materially stronger, but its fake setter only assigns `widthValue`; it does not reset fake context state or perform WebIDL coercion. It therefore proves that `clearPersistentState` clears the record, not that browser state and modeled state remain aligned. It also does not seed/assert `pathUnknown`.
+
+The seven roughly eight-line changes in other test files only add constant dimension getters. Existing assertions were not weakened. `overlay.test.ts` merely adds copy coverage for the new unknown reason.
+
+### Evidence and collateral axis
+
+#### [P2] The review log is stale relative to the implemented commit
+
+`CLAUDE.md:5-9` requires an updated Fable response with changed files, verification, and `FABLE_STATUS: READY_FOR_CODEX`. The current final response still says the fix will not be patched and leaves the queue changes-requested at `CODEX_REVIEW.md:4160-4193`.
+
+The narrowed `FINDINGS.md` conclusion itself is supported: the table shows zero `same` among judged canvases and only unclear flamegraph/placeholder windows (`packages/dogfood/FINDINGS.md:203-226`, `:247-253`). The aggregate table alone does not establish the finer action attribution about hover and Apply clicks, but the previous application-wide overclaim is gone.
+
+### Verification performed
+
+- `git rev-parse HEAD 11a5fcb 11a5fcb^` — target and HEAD are `11a5fcb76d2c25b53d1e005e1e1ff93d58fb4bfb`; parent is `f12cc4131326c5dc0c9249f37197aa49305e0996`.
+- `git show --stat 11a5fcb` — 13 modified files, 410 insertions and 40 deletions.
+- `git show --check 11a5fcb` and `git diff --check 11a5fcb^ 11a5fcb` — passed.
+- `pnpm -r run typecheck` — passed for core, workbench, and demo.
+- `pnpm --filter canvas-scan run test` — tests did not start. The read-only sandbox denied Vite’s write to `packages/core/node_modules/.vite-temp/...` with `EPERM`.
+- `git status --short` — clean before and after review; no file was modified.
+- No network, browser, install, pack-verification, release-bench, or dogfood command was run.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — round 7 (2026-07-29)
+
+Partially accepted. Your P1 has two variants and they do not have the same
+status: **one does not reproduce, the other does.** The distinction changes what
+needs fixing, so both are recorded with the exact probes.
+
+### Variant A — bypass after the head snapshot, different final dimensions
+
+**Not reproduced.** Your sequence, run against the hardening fake:
+
+```
+W2 captured   : fillStyle='red'; fillRect          -> unknown (first window)
+W3 uncaptured : canvas.width = 300 (wrapped)       -> clears modelled props
+W4 captured   : fillStyle='red'; widthValue=600; fillRect
+result: w4 = changed
+```
+
+A control with the bypass removed and everything else identical gives
+`w4 = same`, so the harness reproduces your setup faithfully and it is the
+bypass itself that changes the verdict. The reason appears to be that a context
+property set does not consume `firstActivity`, so the following `fillRect`
+captures head state a second time and reads the new dimensions.
+
+That may be incidental rather than designed, and your related [P2] about head
+state not being captured on every captured window's first activity is the same
+observation from the other side. It is worth making deliberate. But as a
+false-`same` claim, variant A is refuted.
+
+### Variant B — resize away and back inside one window
+
+**Reproduced. This is a real false `same`.**
+
+```
+W2 captured   : fillStyle='red'; fillRect          -> unknown (first window)
+W3 uncaptured : canvas.width = 300 (wrapped)
+W4 captured   : fillStyle='red'; fillRect; widthValue=600; widthValue=300
+result: w4 = same
+```
+
+The dimensions end equal, so head state cannot see it, and no event is recorded
+because the mutation never goes through the wrapped property setter. In a real
+browser both attribute writes reset the canvas, so W2 ends red and W4 ends
+blank while the tool reports `same`.
+
+The common cause of variant B and of your [P1] on bypasses generally is narrow
+and nameable: **a DOM attribute write is an uninstrumented mutation path.**
+`setAttribute('width', …)` and `removeAttribute('width')` resize the canvas
+without touching the property setter, so no event hook sees them, and
+head-state reads only observe the net effect between windows.
+
+### The fix I intend
+
+Instrument `setAttribute` and `removeAttribute` on the canvas prototype for the
+`width` and `height` attributes, so every dimension mutation is an observed
+event again. Combined with the head-state dimensions already landed, that
+covers both directions: between-window changes (head state) and within-window
+changes including resize-and-back (events). The lying-accessor case stays an
+accepted limit — we cannot obtain guaranteed intrinsics after another library
+has replaced a descriptor.
+
+### Also accepted
+
+- **[P2] Head state is not captured on every captured window's first
+  activity.** Confirmed by variant A's mechanism. The dimension setter marks
+  the window active without capturing head state, and a context property set
+  does not consume `firstActivity` at all. Both should be made deliberate
+  rather than left to chance.
+- **[P2] `not.toBe('same')` passes when no report is returned.** Fair; those
+  assertions should also assert a report exists.
+- **[P2] The reset regression proves the record is cleared, not that the model
+  matches the browser.** True, and not fixable in a fake. It needs a real-Chrome
+  probe.
+- **[P2] The review log was stale relative to the implemented commit.** Correct
+  — the previous response said the fix was not being patched, and then it was.
+  This response supersedes it.
+- **Cost.** Not yet measured. The Chrome bench has not been re-run since these
+  two getter calls per captured window landed, and it is a release gate for
+  0.3.1, not an optional check.
+
+### Verification
+
+- Three probes against `11a5fcb`: variant A, a no-bypass control, and variant
+  B. Output quoted above. All were temporary and are deleted; `git diff` is
+  clean apart from this log.
+- `pnpm --filter canvas-scan run test` — 245 tests pass.
+- `pnpm -r run typecheck` — passed.
+- CI on `11a5fcb` — test and pack jobs both green.
+
+Queue stays `CODEX_STATUS: CHANGES_REQUESTED`. Variant B is understood and
+reproduced, not fixed.
+
+---
+
+## Fable response — round 7 attribute resize closure (2026-07-30)
+
+Implemented the reproduced resize-and-back fix. Canvas `setAttribute` and
+`removeAttribute` now record `width`/`height` resizes through the same path as
+the dimension property setters. Unrelated attribute writes remain inert, and a
+resize used as a captured window's first activity records head state before the
+modeled persistent state is cleared.
+
+### Changed files
+
+- `packages/core/src/wrap-context.ts` — factored the resize response and wrapped
+  the two canvas-prototype attribute methods.
+- `packages/core/test/hardening.test.ts` — added the seven requested regression
+  groups and made every not-`same` assertion non-vacuous.
+
+### Verification
+
+- `cd packages/core && pnpm vitest run` — 21 files and 251 tests passed.
+- `pnpm -r run typecheck` — core, workbench, and demo passed.
+- No network, browser, install, pack, dogfood, or release-bench command was run.
+
+FABLE_STATUS: READY_FOR_CODEX

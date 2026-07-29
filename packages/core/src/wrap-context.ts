@@ -229,6 +229,53 @@ function clearPersistentState(record: CanvasRecord): void {
   record.stateStack.length = 0;
 }
 
+function recordResize(
+  record: CanvasRecord,
+  attribute: string,
+  canvas: any,
+): void {
+  const firstActivity = !record.activeInWindow;
+  const headEntries =
+    windowCaptured && firstActivity
+      ? headState(record)
+      : null;
+  record.contentVersion++;
+  record.contentDirty = false;
+  refreshContentToken(record);
+  if (headEntries) {
+    try {
+      captureHeadState(record.sig, headEntries.entries);
+      if (headEntries.matrixUnknown) {
+        markUnknown(record.sig, 'transform-unmodeled');
+      }
+      if (headEntries.clipUnknown) {
+        markUnknown(record.sig, 'clip-unmodeled');
+      }
+      if (headEntries.pathUnknown) {
+        markUnknown(record.sig, 'path-unmodeled');
+      }
+      if (headEntries.dimensionsUnknown) {
+        markUnknown(record.sig, 'canvas-dimensions-unmodeled');
+      }
+    } catch (error) {
+      kill(error);
+    }
+  }
+  try {
+    const width = nativeCanvasWidthGetter?.call(canvas);
+    const height = nativeCanvasHeightGetter?.call(canvas);
+    if (typeof width === 'number' && typeof height === 'number') {
+      captureOp(record.sig, 'canvas-resize', [attribute, width, height]);
+    } else {
+      markUnknown(record.sig, 'canvas-resize');
+    }
+  } catch {
+    markUnknown(record.sig, 'canvas-resize');
+  }
+  clearPersistentState(record);
+  record.activeInWindow = true;
+}
+
 function setProp(
   record: CanvasRecord,
   name: string,
@@ -568,6 +615,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   const contextProto =
     targets?.contextProto ?? CanvasRenderingContext2D.prototype;
   const originalGetContext = canvasProto.getContext;
+  const originalSetAttribute = canvasProto.setAttribute;
+  const originalRemoveAttribute = canvasProto.removeAttribute;
   nativeGetLineDash =
     typeof contextProto.getLineDash === 'function'
       ? contextProto.getLineDash
@@ -626,6 +675,41 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   );
   nativeCanvasWidthGetter = widthDescriptor?.get ?? null;
   nativeCanvasHeightGetter = heightDescriptor?.get ?? null;
+
+  if (typeof originalSetAttribute === 'function') {
+    canvasProto.setAttribute = function (
+      this: any,
+      name: unknown,
+      ...args: unknown[]
+    ) {
+      const result = originalSetAttribute.call(this, name, ...args);
+      const record = recordByCanvas.get(this);
+      if (!record || killed) return result;
+      const attribute = String(name).toLowerCase();
+      if (attribute === 'width' || attribute === 'height') {
+        recordResize(record, attribute, this);
+      }
+      return result;
+    };
+  }
+
+  if (typeof originalRemoveAttribute === 'function') {
+    canvasProto.removeAttribute = function (
+      this: any,
+      name: unknown,
+      ...args: unknown[]
+    ) {
+      const result = originalRemoveAttribute.call(this, name, ...args);
+      const record = recordByCanvas.get(this);
+      if (!record || killed) return result;
+      const attribute = String(name).toLowerCase();
+      if (attribute === 'width' || attribute === 'height') {
+        recordResize(record, attribute, this);
+      }
+      return result;
+    };
+  }
+
   for (const name of ['width', 'height']) {
     const descriptor =
       name === 'width' ? widthDescriptor : heightDescriptor;
@@ -638,22 +722,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         originalSet.call(this, value);
         const record = recordByCanvas.get(this);
         if (!record || killed) return;
-        record.contentVersion++;
-        record.contentDirty = false;
-        refreshContentToken(record);
-        try {
-          const width = widthDescriptor?.get?.call(this);
-          const height = heightDescriptor?.get?.call(this);
-          if (typeof width === 'number' && typeof height === 'number') {
-            captureOp(record.sig, 'canvas-resize', [name, width, height]);
-          } else {
-            markUnknown(record.sig, 'canvas-resize');
-          }
-        } catch {
-          markUnknown(record.sig, 'canvas-resize');
-        }
-        clearPersistentState(record);
-        record.activeInWindow = true;
+        recordResize(record, name, this);
       },
     });
   }
