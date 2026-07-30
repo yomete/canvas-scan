@@ -47,6 +47,7 @@ class FakeCanvas {
 installCanvasPatch({
   canvasProto: FakeCanvas.prototype,
   contextProto: WrappedContext.prototype,
+  attributeObserver: { observe() {} },
 });
 
 function run(context: { fillRect(): void }, opCount: number) {

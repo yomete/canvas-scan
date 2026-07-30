@@ -61,6 +61,7 @@ class FakeCanvas {
 installCanvasPatch({
   canvasProto: FakeCanvas.prototype,
   contextProto: FakeContext.prototype,
+  attributeObserver: { observe() {} },
 });
 
 function makeCanvas() {

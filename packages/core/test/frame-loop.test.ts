@@ -51,6 +51,9 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     pathUnknown: false,
     clipHash: 0x811c9dc5,
     clipUnknown: false,
+    pendingAttributeReset: false,
+    attributeObservationUnavailable: false,
+    attributeResetsAwaitingObserver: 0,
     stateStack: [],
     ...overrides,
   };

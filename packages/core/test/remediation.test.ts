@@ -115,6 +115,7 @@ class HTMLCanvasElement {
 installCanvasPatch({
   canvasProto: HTMLCanvasElement.prototype,
   contextProto: FakeContext.prototype,
+  attributeObserver: { observe() {} },
 });
 
 function makeCanvas(id = '') {

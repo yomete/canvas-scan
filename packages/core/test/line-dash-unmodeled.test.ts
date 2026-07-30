@@ -35,6 +35,7 @@ class FakeCanvas {
 installCanvasPatch({
   canvasProto: FakeCanvas.prototype,
   contextProto: FakeContext.prototype,
+  attributeObserver: { observe() {} },
 });
 
 describe('setLineDash without a native getLineDash', () => {

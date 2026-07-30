@@ -1,15 +1,53 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { processRecord } from '../src/frame-loop';
 import {
   getRecord,
   installCanvasPatch,
   isKilled,
+  markAttributeReset,
   records,
   setWindowCaptured,
 } from '../src/wrap-context';
 
 const fillRectResult = Symbol('fillRect result');
 const webglContext = {};
+const originalMutationObserverDescriptor =
+  Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver');
+
+class FakeMutationObserver {
+  static observations: Array<{
+    target: unknown;
+    options: MutationObserverInit;
+  }> = [];
+
+  constructor(_callback: MutationCallback) {}
+
+  observe(target: Node, options: MutationObserverInit) {
+    if ((target as unknown as FakeCanvas).throwOnObserve) {
+      throw new Error('observation unavailable');
+    }
+    FakeMutationObserver.observations.push({ target, options });
+  }
+
+  disconnect() {}
+
+  takeRecords(): MutationRecord[] {
+    return [];
+  }
+}
+
+Object.defineProperty(globalThis, 'MutationObserver', {
+  configurable: true,
+  writable: true,
+  value: FakeMutationObserver,
+});
 
 class FakeContext {
   canvas: FakeCanvas;
@@ -53,6 +91,7 @@ class FakeCanvas {
   heightValue: unknown = 150;
   throwOnWidthRead = false;
   throwOnSetAttribute = false;
+  throwOnObserve = false;
 
   get width(): number {
     if (this.throwOnWidthRead) throw new Error('width unavailable');
@@ -82,6 +121,10 @@ class FakeCanvas {
   }
 
   setAttribute(name: string, value: unknown) {
+    if (typeof name === 'symbol') {
+      // WebIDL DOMString conversion, as a browser does it.
+      throw new TypeError('Cannot convert a Symbol value to a string');
+    }
     if (this.throwOnSetAttribute) {
       throw new Error('setAttribute unavailable');
     }
@@ -151,6 +194,18 @@ afterEach(() => {
   setWindowCaptured(true);
 });
 
+afterAll(() => {
+  if (originalMutationObserverDescriptor) {
+    Object.defineProperty(
+      globalThis,
+      'MutationObserver',
+      originalMutationObserverDescriptor,
+    );
+  } else {
+    delete (globalThis as { MutationObserver?: unknown }).MutationObserver;
+  }
+});
+
 describe('canvas patch hardening', () => {
   it('treats duplicate installation as a no-op', () => {
     installCanvasPatch(targets);
@@ -182,6 +237,184 @@ describe('canvas patch hardening', () => {
     context.fillRect(1, 2, 3, 4);
 
     expect(finish(record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('refuses the next captured window after an attribute reset', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    markAttributeReset(canvas);
+    context.fillRect(0, 0, 10, 10);
+
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+  });
+
+  it('consumes an attribute reset exactly once', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    markAttributeReset(canvas);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)?.unknownReason).toBe(
+      'canvas-attribute-reset',
+    );
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)?.unknownReason).toBe('previous-window');
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)?.signatureStatus).toBe('same');
+  });
+
+  it('carries an uncaptured attribute reset to the next captured window', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2, 2);
+
+    setWindowCaptured(false);
+    markAttributeReset(canvas);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3, 2)).toBeUndefined();
+
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+  });
+
+  it('does not refuse ordinary identical windows without a reset', () => {
+    const { context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
+  });
+
+  it('does not refuse a later window for an observed property resize', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.width = 600;
+    markAttributeReset(canvas);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)?.unknownReason).not.toBe(
+      'canvas-attribute-reset',
+    );
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)?.unknownReason).not.toBe(
+      'canvas-attribute-reset',
+    );
+  });
+
+  it('observes width and height attributes when getContext registers a canvas', () => {
+    const canvas = new FakeCanvas();
+
+    canvas.getContext('2d');
+
+    expect(FakeMutationObserver.observations.at(-1)).toEqual({
+      target: canvas,
+      options: {
+        attributes: true,
+        attributeFilter: ['width', 'height'],
+      },
+    });
+  });
+
+  it('refuses windows when MutationObserver is unavailable', async () => {
+    const mutationObserverDescriptor =
+      Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver');
+    Object.defineProperty(globalThis, 'MutationObserver', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+    vi.resetModules();
+
+    try {
+      const freshWrap = await import('../src/wrap-context');
+      const freshFrameLoop = await import('../src/frame-loop');
+
+      class UnobservedContext {
+        fillRect() {}
+      }
+
+      class UnobservedCanvas {
+        private context: UnobservedContext | null = null;
+
+        get width() {
+          return 300;
+        }
+
+        set width(_value: number) {}
+
+        get height() {
+          return 150;
+        }
+
+        set height(_value: number) {}
+
+        getAttribute() {
+          return null;
+        }
+
+        getContext(type: string) {
+          if (type !== '2d') return null;
+          this.context ??= new UnobservedContext();
+          return this.context;
+        }
+      }
+
+      freshWrap.installCanvasPatch({
+        canvasProto: UnobservedCanvas.prototype,
+        contextProto: UnobservedContext.prototype,
+      });
+      const canvas = new UnobservedCanvas();
+      const context = canvas.getContext('2d')!;
+      const record = freshWrap.getRecord(canvas)!;
+      record.attribution = {
+        nearestReactOwner: 'Unobserved',
+        attributionKind: 'jsx-owner',
+      };
+
+      context.fillRect();
+      freshFrameLoop.processRecord(record, 1, 1);
+      context.fillRect();
+
+      expect(
+        freshFrameLoop.processRecord(record, 2, 1)?.report,
+      ).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-dimensions-unmodeled',
+      });
+    } finally {
+      if (mutationObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          'MutationObserver',
+          mutationObserverDescriptor,
+        );
+      }
+      vi.resetModules();
+    }
   });
 
   it('never reports same after a resize in an uncaptured window', () => {
@@ -231,105 +464,6 @@ describe('canvas patch hardening', () => {
     expect(finish(record, 2)).toMatchObject({
       signatureStatus: 'unknown',
       unknownReason: 'canvas-dimensions-unmodeled',
-    });
-  });
-
-  it('reports an out-of-band context reset as unknown', () => {
-    const { canvas, context, record } = makeCanvas();
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 1);
-
-    canvas.resetOutOfBand();
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-
-    expect(finish(record, 2)).toMatchObject({
-      signatureStatus: 'unknown',
-      unknownReason: 'canvas-reset-detected',
-    });
-  });
-
-  it('recovers after reporting an out-of-band context reset', () => {
-    const { canvas, context, record } = makeCanvas();
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 1);
-
-    canvas.resetOutOfBand();
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 2);
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    const recovered = finish(record, 3);
-
-    expect(recovered?.unknownReason).not.toBe(
-      'canvas-reset-detected',
-    );
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 4)?.signatureStatus).toBe('same');
-  });
-
-  it('does not infer divergence when the probed model state is empty', () => {
-    const { context, record } = makeCanvas();
-
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 1);
-
-    context.fillRect(0, 0, 10, 10);
-
-    expect(finish(record, 2)?.signatureStatus).toBe('same');
-  });
-
-  it('reports an unreadable state probe as unknown', () => {
-    const { context, record } = makeCanvas();
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 1);
-
-    context.throwOnFillStyleRead = true;
-    context.fillRect(0, 0, 10, 10);
-    context.throwOnFillStyleRead = false;
-
-    expect(finish(record, 2)).toMatchObject({
-      signatureStatus: 'unknown',
-      unknownReason: 'canvas-state-unmodeled',
-    });
-  });
-
-  it('does not report divergence for ordinary tracked mutation', () => {
-    const { context, record } = makeCanvas();
-
-    context.fillStyle = 'red';
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 1);
-
-    context.fillStyle = 'blue';
-    context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 2)).toMatchObject({
-      signatureStatus: 'changed',
-      unknownReason: null,
-    });
-
-    context.fillStyle = 'blue';
-    context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 3)).toMatchObject({
-      signatureStatus: 'changed',
-      unknownReason: null,
-    });
-
-    context.fillStyle = 'blue';
-    context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 4)).toMatchObject({
-      signatureStatus: 'same',
-      unknownReason: null,
     });
   });
 
@@ -456,6 +590,21 @@ describe('canvas patch hardening', () => {
     expect(reads).toBe(1);
     expect(report).toBeDefined();
     expect(report?.signatureStatus).not.toBe('same');
+  });
+
+  it('lets a symbol attribute name throw as the browser would', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    expect(() =>
+      canvas.setAttribute(Symbol('width') as unknown as string, '600'),
+    ).toThrow(TypeError);
+
+    // The failed call changed nothing, so the next window still compares.
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)?.signatureStatus).toBe('same');
   });
 
   it('leaves unrelated attribute writes inert', () => {

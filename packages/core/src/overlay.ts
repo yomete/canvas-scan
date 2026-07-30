@@ -311,10 +311,9 @@ const UNKNOWN_PHRASES = new Map([
   ['previous-window', 'the last frame it was compared with was unclear'],
   ['canvas-resize', 'the canvas was resized'],
   ['canvas-dimensions-unmodeled', 'the canvas size could not be read'],
-  ['canvas-state-unmodeled', 'the canvas state could not be read'],
   [
-    'canvas-reset-detected',
-    'the canvas was reset by something canvas-scan could not see',
+    'canvas-attribute-reset',
+    'the canvas was resized by a page attribute change',
   ],
   ['gradient-mutated', 'a gradient changed while drawing'],
   ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
