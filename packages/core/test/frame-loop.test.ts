@@ -51,9 +51,14 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     pathUnknown: false,
     clipHash: 0x811c9dc5,
     clipUnknown: false,
-    pendingAttributeReset: false,
+    resetPendingReason: null,
+    modelUntrusted: false,
+    resetVersion: 0,
+    continuityLost: false,
+    sourceResetVersions: new Map(),
     attributeObservationUnavailable: false,
-    attributeResetsAwaitingObserver: 0,
+    contextActivityInWindow: false,
+    exactResetDepth: 0,
     stateStack: [],
     ...overrides,
   };
@@ -228,6 +233,35 @@ describe('processRecord', () => {
     expect(record.lastStatus).toBe('changed');
   });
 
+  it('uses the first captured window after lost raster continuity as a clean baseline', () => {
+    const record = makeRecord({
+      continuityLost: true,
+      prev: { hash: 0x1234, unknown: false, windowIndex: 4 },
+    });
+
+    expect(processRecord(record, 6, 2)?.report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'uncaptured-raster',
+      comparisonGap: 2,
+    });
+    expect(record.continuityLost).toBe(false);
+
+    record.sig = {
+      hash: 0x1234,
+      unknown: false,
+      opCount: 3,
+      unknownReason: null,
+    };
+    record.rasterOps = 2;
+    record.activeInWindow = true;
+
+    expect(processRecord(record, 8, 2)?.report).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+      comparisonGap: 2,
+    });
+  });
+
   it('produces a sampled report on a captured sampling window', () => {
     const record = makeRecord();
 
@@ -353,6 +387,125 @@ describe('processRecord', () => {
       latestReports.delete(record.id);
       debug.mockRestore();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it('drains observer records before processing the affected animation-frame tick', async () => {
+    class TickMutationObserver {
+      static current: TickMutationObserver | null = null;
+      private readonly observed = new Set<unknown>();
+      private readonly records: MutationRecord[] = [];
+
+      constructor(_callback: MutationCallback) {
+        TickMutationObserver.current = this;
+      }
+
+      observe(target: unknown, _options: MutationObserverInit) {
+        this.observed.add(target);
+      }
+
+      disconnect() {}
+
+      takeRecords(): MutationRecord[] {
+        return this.records.splice(0);
+      }
+
+      static queue(target: unknown, attributeName: string): void {
+        const observer = TickMutationObserver.current;
+        if (!observer?.observed.has(target)) return;
+        observer.records.push({
+          type: 'attributes',
+          target: target as Node,
+          attributeName,
+        } as MutationRecord);
+      }
+    }
+
+    class TickContext {
+      fillRect(..._args: unknown[]) {}
+    }
+
+    class TickCanvas {
+      private context: TickContext | null = null;
+
+      get width() {
+        return 300;
+      }
+
+      get height() {
+        return 150;
+      }
+
+      getAttribute(_name: string) {
+        return null;
+      }
+
+      setAttributeNS(
+        _namespace: string | null,
+        name: string,
+        _value: unknown,
+      ) {
+        TickMutationObserver.queue(this, String(name).toLowerCase());
+      }
+
+      getContext(type: string) {
+        if (type !== '2d') return null;
+        this.context ??= new TickContext();
+        return this.context;
+      }
+    }
+
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('MutationObserver', TickMutationObserver);
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      },
+    });
+    vi.resetModules();
+    const freshWrap = await import('../src/wrap-context');
+    const freshFrameLoop = await import('../src/frame-loop');
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    let record: CanvasRecord | null = null;
+
+    try {
+      freshWrap.installCanvasPatch({
+        canvasProto: TickCanvas.prototype,
+        contextProto: TickContext.prototype,
+      });
+      const canvas = new TickCanvas();
+      const context = canvas.getContext('2d')!;
+      record = freshWrap.getRecord(canvas)!;
+      record.attribution = {
+        nearestReactOwner: 'Tick',
+        attributionKind: 'jsx-owner',
+      };
+      freshFrameLoop.startFrameLoop({});
+
+      context.fillRect();
+      callbacks.shift()!(0);
+
+      canvas.setAttributeNS(null, 'width', '300');
+      context.fillRect();
+      callbacks.shift()!(1);
+
+      expect(freshFrameLoop.latestReports.get(record.id)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-attribute-reset',
+      });
+
+      context.fillRect();
+      callbacks.shift()!(2);
+      expect(freshFrameLoop.latestReports.get(record.id)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-state-unmodeled',
+      });
+    } finally {
+      if (record) freshWrap.records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+      vi.resetModules();
     }
   });
 });

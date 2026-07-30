@@ -7,6 +7,7 @@ import type {
 } from './types';
 import type { CanvasRecord } from './wrap-context';
 import {
+  drainAttributeRecords,
   refreshContentToken,
   records,
   setWindowCaptured,
@@ -99,7 +100,31 @@ export function processRecord(
   let processed: ProcessedRecord | null = null;
 
   if (currentWindowIndex % captureEvery === 0) {
-    const signatureStatus = computeStatus(record.prev, record.sig);
+    const resetBarrier = record.resetPendingReason !== null;
+    let forcedUnknownReason: string | null = record.resetPendingReason;
+    if (!forcedUnknownReason && record.modelUntrusted) {
+      forcedUnknownReason = 'canvas-state-unmodeled';
+    }
+    if (!forcedUnknownReason) {
+      for (const [source, resetVersion] of record.sourceResetVersions) {
+        if (source.resetVersion !== resetVersion) {
+          forcedUnknownReason = 'canvas-source-reset';
+          break;
+        }
+      }
+    }
+    const computedStatus = computeStatus(record.prev, record.sig);
+    if (
+      !forcedUnknownReason &&
+      record.continuityLost &&
+      computedStatus !== 'unknown'
+    ) {
+      forcedUnknownReason = 'uncaptured-raster';
+    }
+    const signatureStatus =
+      forcedUnknownReason === null ? computedStatus : 'unknown';
+    const invalidatesBaseline =
+      resetBarrier || forcedUnknownReason === 'canvas-source-reset';
     const comparisonGap = record.prev
       ? currentWindowIndex - record.prev.windowIndex
       : null;
@@ -121,7 +146,8 @@ export function processRecord(
       signatureStatus,
       unknownReason:
         signatureStatus === 'unknown'
-          ? record.sig.unknownReason ??
+          ? forcedUnknownReason ??
+            record.sig.unknownReason ??
             (record.prev === null
               ? 'first-window'
               : record.prev.unknown
@@ -134,12 +160,25 @@ export function processRecord(
     const shouldLog =
       record.lastStatus === null || record.lastStatus !== signatureStatus;
     record.lastStatus = signatureStatus;
-    record.prev = {
-      hash: record.sig.hash,
-      unknown: record.sig.unknown,
-      windowIndex: currentWindowIndex,
-    };
+    record.prev = invalidatesBaseline
+      ? null
+      : {
+          hash: record.sig.hash,
+          unknown: record.sig.unknown,
+          windowIndex: currentWindowIndex,
+        };
     processed = { report, shouldLog };
+    record.resetPendingReason = null;
+    record.continuityLost = false;
+  } else if (record.rasterOps > 0) {
+    // Any raster in an uncaptured window breaks continuity, not just a reset.
+    // The skipped window's commands were never hashed, so we cannot know
+    // whether it drew the same thing. If it drew something else, the next
+    // captured redraw was NECESSARY, and calling it `same` would be a false
+    // review candidate. (Narrowing this to resets was tried and reverted: it
+    // reintroduced exactly that, caught by the captured-blue / uncaptured-red /
+    // captured-blue regression in sampling-contract.test.ts.)
+    record.continuityLost = true;
   }
 
   if (record.rasterOps > 0) {
@@ -157,6 +196,8 @@ export function processRecord(
   record.rasterOps = 0;
   record.selfTimeMs = 0;
   record.activeInWindow = false;
+  record.contextActivityInWindow = false;
+  record.sourceResetVersions.clear();
   return processed;
 }
 
@@ -167,6 +208,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
 
   const tick = () => {
     windowIndex++;
+    drainAttributeRecords();
 
     for (const record of records) {
       const processed = processRecord(record, windowIndex, captureEvery);

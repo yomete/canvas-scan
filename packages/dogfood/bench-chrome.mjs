@@ -11,8 +11,15 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../..');
 const sourceBundle = path.join(repoRoot, 'packages/core/dist/canvas-scan.iife.js');
 const workbenchBundle = path.join(repoRoot, 'apps/workbench/public/canvas-scan.iife.js');
-const baseUrlOverride = process.argv[2];
+const args = process.argv.slice(2);
+const positionalArgs = args.filter((arg) => !arg.startsWith('--'));
+const streamFlag = args.find((arg) => arg.startsWith('--stream='));
+const baseUrlOverride = positionalArgs[0];
 const baseUrl = baseUrlOverride ?? 'http://localhost:5199';
+const stream =
+  streamFlag?.slice('--stream='.length) ??
+  positionalArgs[1] ??
+  'mixed';
 const selfContained = baseUrlOverride == null;
 const opsLevels = [100, 1000, 10000];
 const modes = ['off', 'passthrough', 'full', 'countonly'];
@@ -132,6 +139,7 @@ const collectBlocks = async (browser) => {
           const url = new URL('/bench.html', baseUrl);
           url.searchParams.set('mode', mode);
           url.searchParams.set('ops', String(ops));
+          url.searchParams.set('stream', stream);
           await page.goto(url.href, { waitUntil: 'load' });
           const loaded = await page.evaluate(() => window.__CANVAS_SCAN__ != null);
           if ((mode === 'full' || mode === 'countonly') && !loaded) {
@@ -248,6 +256,7 @@ const result = {
   when: when.toISOString(),
   selfContained,
   baseUrl,
+  stream,
   git,
   bundleSha256,
   browserVersion,

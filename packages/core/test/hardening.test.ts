@@ -8,10 +8,10 @@ import {
 } from 'vitest';
 import { processRecord } from '../src/frame-loop';
 import {
+  drainAttributeRecords,
   getRecord,
   installCanvasPatch,
   isKilled,
-  markAttributeReset,
   records,
   setWindowCaptured,
 } from '../src/wrap-context';
@@ -22,12 +22,19 @@ const originalMutationObserverDescriptor =
   Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver');
 
 class FakeMutationObserver {
+  static current: FakeMutationObserver | null = null;
+  static throwOnTakeRecords = false;
   static observations: Array<{
     target: unknown;
     options: MutationObserverInit;
   }> = [];
+  private readonly callback: MutationCallback;
+  private readonly records: MutationRecord[] = [];
 
-  constructor(_callback: MutationCallback) {}
+  constructor(callback: MutationCallback) {
+    this.callback = callback;
+    FakeMutationObserver.current = this;
+  }
 
   observe(target: Node, options: MutationObserverInit) {
     if ((target as unknown as FakeCanvas).throwOnObserve) {
@@ -39,7 +46,43 @@ class FakeMutationObserver {
   disconnect() {}
 
   takeRecords(): MutationRecord[] {
-    return [];
+    if (FakeMutationObserver.throwOnTakeRecords) {
+      throw new Error('takeRecords unavailable');
+    }
+    return this.records.splice(0);
+  }
+
+  deliver(): void {
+    const records = this.takeRecords();
+    if (records.length > 0) {
+      this.callback(records, this as unknown as MutationObserver);
+    }
+  }
+
+  static queue(target: FakeCanvas, attributeName: string): void {
+    const observer = FakeMutationObserver.current;
+    if (!observer) return;
+    const observation = FakeMutationObserver.observations.find(
+      entry => entry.target === target,
+    );
+    if (
+      !observation ||
+      (observation.options.attributeFilter &&
+        !observation.options.attributeFilter.includes(attributeName))
+    ) {
+      return;
+    }
+    observer.records.push({
+      type: 'attributes',
+      target: target as unknown as Node,
+      attributeName,
+    } as MutationRecord);
+  }
+
+  static reset(): void {
+    FakeMutationObserver.throwOnTakeRecords = false;
+    FakeMutationObserver.observations = [];
+    FakeMutationObserver.current?.takeRecords();
   }
 }
 
@@ -54,6 +97,7 @@ class FakeContext {
   invocations: Array<{ method: string; args: unknown[] }> = [];
   private fillStyleValue = '#000000';
   throwOnFillStyleRead = false;
+  throwOnNextFillRect = false;
 
   constructor(canvas: FakeCanvas) {
     this.canvas = canvas;
@@ -71,12 +115,20 @@ class FakeContext {
   }
 
   fillRect(...args: unknown[]) {
+    if (this.throwOnNextFillRect) {
+      this.throwOnNextFillRect = false;
+      throw new Error('fillRect failed');
+    }
     this.invocations.push({ method: 'fillRect', args });
     return fillRectResult;
   }
 
   translate(...args: unknown[]) {
     this.invocations.push({ method: 'translate', args });
+  }
+
+  reset() {
+    this.canvas.resetOutOfBand();
   }
 
   resetOutOfBand() {
@@ -92,6 +144,7 @@ class FakeCanvas {
   throwOnWidthRead = false;
   throwOnSetAttribute = false;
   throwOnObserve = false;
+  afterReset: (() => void) | null = null;
 
   get width(): number {
     if (this.throwOnWidthRead) throw new Error('width unavailable');
@@ -100,6 +153,8 @@ class FakeCanvas {
 
   set width(value: number) {
     this.widthValue = value;
+    this.resetOutOfBand();
+    FakeMutationObserver.queue(this, 'width');
   }
 
   get height(): number {
@@ -108,6 +163,8 @@ class FakeCanvas {
 
   set height(value: number) {
     this.heightValue = value;
+    this.resetOutOfBand();
+    FakeMutationObserver.queue(this, 'height');
   }
 
   getAttribute(name: string) {
@@ -132,10 +189,28 @@ class FakeCanvas {
     this.present.add(attribute);
     if (attribute === 'width') {
       this.widthValue = Number(value);
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'width');
     } else if (attribute === 'height') {
       this.heightValue = Number(value);
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'height');
     } else if (attribute === 'id') {
       this.id = String(value);
+    }
+  }
+
+  setAttributeNS(_namespace: string | null, name: string, value: unknown) {
+    const attribute = String(name).toLowerCase();
+    this.present.add(attribute);
+    if (attribute === 'width') {
+      this.widthValue = Number(value);
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'width');
+    } else if (attribute === 'height') {
+      this.heightValue = Number(value);
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'height');
     }
   }
 
@@ -145,8 +220,12 @@ class FakeCanvas {
     if (!this.present.delete(attribute)) return;
     if (attribute === 'width') {
       this.widthValue = 300;
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'width');
     } else if (attribute === 'height') {
       this.heightValue = 150;
+      this.resetOutOfBand();
+      FakeMutationObserver.queue(this, 'height');
     } else if (attribute === 'id') {
       this.id = '';
     }
@@ -154,6 +233,7 @@ class FakeCanvas {
 
   resetOutOfBand() {
     this.context?.resetOutOfBand();
+    this.afterReset?.();
   }
 
   getContext(type: string) {
@@ -192,6 +272,7 @@ function finish(
 
 afterEach(() => {
   setWindowCaptured(true);
+  FakeMutationObserver.reset();
 });
 
 afterAll(() => {
@@ -226,27 +307,128 @@ describe('canvas patch hardening', () => {
     expect(isKilled()).toBe(false);
   });
 
-  it('reports same when dimensions and command streams match', () => {
+  it('reports every same-value resize-and-draw window as reset', () => {
     const { canvas, context, record } = makeCanvas();
 
-    canvas.width = canvas.width;
-    context.fillRect(1, 2, 3, 4);
-    finish(record, 1);
-
-    canvas.width = canvas.width;
-    context.fillRect(1, 2, 3, 4);
-
-    expect(finish(record, 2)?.signatureStatus).toBe('same');
+    for (let index = 1; index <= 3; index++) {
+      canvas.width = canvas.width;
+      context.fillRect(1, 2, 3, 4);
+      expect(finish(record, index)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-reset',
+      });
+    }
   });
 
-  it('refuses the next captured window after an attribute reset', () => {
+  it('does not baseline commands captured before a same-window reset', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    canvas.width = canvas.width;
+    expect(finish(record, 1)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
+  });
+
+  it.each([
+    [
+      'width property',
+      ({ canvas }: ReturnType<typeof makeCanvas>) => {
+        canvas.width = canvas.width;
+      },
+    ],
+    [
+      'setAttribute',
+      ({ canvas }: ReturnType<typeof makeCanvas>) => {
+        canvas.setAttribute('width', String(canvas.width));
+      },
+    ],
+    [
+      'removeAttribute',
+      ({ canvas }: ReturnType<typeof makeCanvas>) => {
+        canvas.present.add('width');
+        canvas.removeAttribute('width');
+      },
+    ],
+    [
+      'context reset',
+      ({ context }: ReturnType<typeof makeCanvas>) => {
+        context.reset();
+      },
+    ],
+  ])(
+    'keeps the model untrusted when context activity reenters %s',
+    (_name, runReset) => {
+      const fixture = makeCanvas();
+      fixture.canvas.afterReset = () => {
+        fixture.context.translate(10, 0);
+      };
+      runReset(fixture);
+      fixture.canvas.afterReset = null;
+      fixture.context.fillRect(0, 0, 10, 10);
+      expect(finish(fixture.record, 1)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-reset',
+      });
+
+      fixture.context.fillRect(0, 0, 10, 10);
+      expect(finish(fixture.record, 2)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-state-unmodeled',
+      });
+    },
+  );
+
+  it('propagates context activity through nested exact resets', () => {
+    const { canvas, context, record } = makeCanvas();
+    let nested = false;
+    canvas.afterReset = () => {
+      if (!nested) {
+        nested = true;
+        canvas.height = canvas.height;
+      } else {
+        context.translate(10, 0);
+      }
+    };
+
+    canvas.width = canvas.width;
+    canvas.afterReset = null;
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 1)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-state-unmodeled',
+    });
+    expect(record.exactResetDepth).toBe(0);
+  });
+
+  it('reports an observer-only attribute reset in the affected window', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
     finish(record, 1);
 
-    markAttributeReset(canvas);
+    canvas.setAttributeNS(null, 'width', '300');
     context.fillRect(0, 0, 10, 10);
+    drainAttributeRecords();
 
     expect(finish(record, 2)).toMatchObject({
       signatureStatus: 'unknown',
@@ -254,26 +436,122 @@ describe('canvas patch hardening', () => {
     });
   });
 
-  it('consumes an attribute reset exactly once', () => {
+  it('does not double-advance and keeps an overlapped model untrusted', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
     finish(record, 1);
 
-    markAttributeReset(canvas);
+    const beforeResetVersion = record.resetVersion;
+    canvas.setAttributeNS(null, 'width', '300');
     context.fillRect(0, 0, 10, 10);
+    drainAttributeRecords();
     expect(finish(record, 2)?.unknownReason).toBe(
       'canvas-attribute-reset',
     );
+    expect(record.resetVersion).toBe(beforeResetVersion + 1);
+
+    // A callback after takeRecords() has drained the queue must see nothing.
+    FakeMutationObserver.current?.deliver();
+    expect(record.resetVersion).toBe(beforeResetVersion + 1);
 
     context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 3)?.unknownReason).toBe('previous-window');
+    expect(finish(record, 3)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-state-unmodeled',
+    });
+
+    canvas.width = canvas.width;
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
 
     context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 4)?.signatureStatus).toBe('same');
+    expect(finish(record, 5)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 6)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
   });
 
-  it('carries an uncaptured attribute reset to the next captured window', () => {
+  it('handles callback delivery and takeRecords delivery equivalently', () => {
+    const drained = makeCanvas();
+    const delivered = makeCanvas();
+
+    drained.context.fillRect(0, 0, 10, 10);
+    delivered.context.fillRect(0, 0, 10, 10);
+    finish(drained.record, 1);
+    finish(delivered.record, 1);
+
+    delivered.canvas.setAttributeNS(null, 'width', '300');
+    FakeMutationObserver.current?.deliver();
+    drained.canvas.setAttributeNS(null, 'width', '300');
+    drainAttributeRecords();
+
+    drained.context.fillRect(0, 0, 10, 10);
+    delivered.context.fillRect(0, 0, 10, 10);
+    expect(finish(drained.record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+    expect(finish(delivered.record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+  });
+
+  it('keeps a delivered reset barrier after the first draw throws', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.setAttributeNS(null, 'width', '300');
+    FakeMutationObserver.current?.deliver();
+    context.throwOnNextFillRect = true;
+    expect(() => context.fillRect(0, 0, 10, 10)).toThrow(
+      'fillRect failed',
+    );
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+  });
+
+  it('does not blanket-poison an unrelated healthy canvas', () => {
+    const reset = makeCanvas();
+    const healthy = makeCanvas();
+
+    reset.context.fillRect(0, 0, 10, 10);
+    healthy.context.fillRect(0, 0, 10, 10);
+    finish(reset.record, 1);
+    finish(healthy.record, 1);
+
+    reset.canvas.setAttributeNS(null, 'width', '300');
+    reset.context.fillRect(0, 0, 10, 10);
+    healthy.context.fillRect(0, 0, 10, 10);
+    drainAttributeRecords();
+
+    expect(finish(reset.record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
+    expect(finish(healthy.record, 2)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
+  });
+
+  it('carries an uncaptured observer reset to the next captured window', () => {
     const { canvas, context, record } = makeCanvas();
 
     setWindowCaptured(true);
@@ -281,8 +559,9 @@ describe('canvas patch hardening', () => {
     finish(record, 2, 2);
 
     setWindowCaptured(false);
-    markAttributeReset(canvas);
+    canvas.setAttributeNS(null, 'width', '300');
     context.fillRect(0, 0, 10, 10);
+    drainAttributeRecords();
     expect(finish(record, 3, 2)).toBeUndefined();
 
     setWindowCaptured(true);
@@ -306,23 +585,34 @@ describe('canvas patch hardening', () => {
     });
   });
 
-  it('does not refuse a later window for an observed property resize', () => {
+  it('drains a property reset record without poisoning a later healthy window', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
     finish(record, 1);
 
+    const beforeResetVersion = record.resetVersion;
     canvas.width = 600;
-    markAttributeReset(canvas);
+    expect(record.resetVersion).toBe(beforeResetVersion + 1);
+    drainAttributeRecords();
+    expect(record.resetVersion).toBe(beforeResetVersion + 1);
     context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 2)?.unknownReason).not.toBe(
-      'canvas-attribute-reset',
-    );
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
 
     context.fillRect(0, 0, 10, 10);
-    expect(finish(record, 3)?.unknownReason).not.toBe(
-      'canvas-attribute-reset',
-    );
+    expect(finish(record, 3)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
   });
 
   it('observes width and height attributes when getContext registers a canvas', () => {
@@ -417,7 +707,7 @@ describe('canvas patch hardening', () => {
     }
   });
 
-  it('never reports same after a resize in an uncaptured window', () => {
+  it('reports an uncaptured synchronous reset at the next captured window', () => {
     const { canvas, context, record } = makeCanvas();
 
     setWindowCaptured(true);
@@ -433,11 +723,13 @@ describe('canvas patch hardening', () => {
 
     const report = finish(record, 4, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
-  it('never reports same when a resize bypasses the wrapped setter', () => {
+  it('reports changed when live dimensions bypass the wrapped setter', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
@@ -448,8 +740,10 @@ describe('canvas patch hardening', () => {
 
     const report = finish(record, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'changed',
+      unknownReason: null,
+    });
   });
 
   it('reports unknown when the current dimensions cannot be read', () => {
@@ -467,7 +761,7 @@ describe('canvas patch hardening', () => {
     });
   });
 
-  it('never reports same when a resize changes the dimensions', () => {
+  it('reports a changed-dimension property reset as unknown', () => {
     const { canvas, context, record } = makeCanvas();
 
     canvas.width = 100;
@@ -478,12 +772,13 @@ describe('canvas patch hardening', () => {
     context.fillRect(1, 2, 3, 4);
     const report = finish(record, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).toBe('changed');
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
-  it('never reports same after attribute resizes away and back', () => {
+  it('reports observer-only resizes away and back as unknown', () => {
     const { canvas, context, record } = makeCanvas();
 
     setWindowCaptured(true);
@@ -492,21 +787,24 @@ describe('canvas patch hardening', () => {
     finish(record, 2, 2);
 
     setWindowCaptured(false);
-    canvas.width = 300;
+    canvas.setAttributeNS(null, 'width', '600');
+    drainAttributeRecords();
     finish(record, 3, 2);
 
     setWindowCaptured(true);
     context.fillStyle = 'red';
     context.fillRect(0, 0, 10, 10);
-    canvas.setAttribute('width', '600');
-    canvas.setAttribute('width', '300');
+    canvas.setAttributeNS(null, 'width', '300');
+    drainAttributeRecords();
     const report = finish(record, 4, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-attribute-reset',
+    });
   });
 
-  it('catches a resize between windows through setAttribute', () => {
+  it('reports a direct attribute reset even without a draw', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
@@ -515,11 +813,14 @@ describe('canvas patch hardening', () => {
     canvas.setAttribute('WIDTH', '600');
     const report = finish(record, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+      rasterOperationCount: 0,
+    });
   });
 
-  it('treats removeAttribute width as a resize', () => {
+  it('treats removal of a present width attribute as a reset', () => {
     const { canvas, record } = makeCanvas();
 
     canvas.setAttribute('width', '600');
@@ -528,8 +829,10 @@ describe('canvas patch hardening', () => {
     canvas.removeAttribute('width');
     const report = finish(record, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
   it('ignores removal of a dimension attribute that is not there', () => {
@@ -553,7 +856,7 @@ describe('canvas patch hardening', () => {
     expect(finish(record, 3)?.signatureStatus).toBe('same');
   });
 
-  it('still treats removal of a present dimension attribute as a resize', () => {
+  it('still treats removal of a present dimension attribute as a reset', () => {
     const { canvas, context, record } = makeCanvas();
 
     canvas.setAttribute('width', '600');
@@ -564,8 +867,10 @@ describe('canvas patch hardening', () => {
     context.fillRect(0, 0, 10, 10);
     const report = finish(record, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
   it('converts the attribute name once so coercion cannot hide a resize', () => {
@@ -588,8 +893,10 @@ describe('canvas patch hardening', () => {
     const report = finish(record, 2);
 
     expect(reads).toBe(1);
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
   it('lets a symbol attribute name throw as the browser would', () => {
@@ -635,7 +942,7 @@ describe('canvas patch hardening', () => {
     expect(finish(record, 2)?.signatureStatus).toBe('same');
   });
 
-  it('captures head state when the first activity is a resize', () => {
+  it('keeps the reset barrier when the first activity is a resize', () => {
     const { canvas, context, record } = makeCanvas();
 
     setWindowCaptured(true);
@@ -652,11 +959,13 @@ describe('canvas patch hardening', () => {
     context.fillRect(0, 0, 10, 10);
     const report = finish(record, 4, 2);
 
-    expect(report).toBeDefined();
-    expect(report?.signatureStatus).not.toBe('same');
+    expect(report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
-  it('distinguishes width and height resizes with identical dimensions', () => {
+  it('reports both width and height resets with identical dimensions', () => {
     const canvas = new FakeCanvas();
     canvas.width = 200;
     canvas.height = 200;
@@ -669,41 +978,58 @@ describe('canvas patch hardening', () => {
 
     canvas.width = 200;
     context.fillRect(1, 2, 3, 4);
-    finish(record, 1);
+    const widthReport = finish(record, 1);
 
     canvas.height = 200;
     context.fillRect(1, 2, 3, 4);
+    const heightReport = finish(record, 2);
 
-    expect(finish(record, 2)?.signatureStatus).toBe('changed');
+    expect(widthReport).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+    expect(heightReport).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
-  it('distinguishes resize position within the command stream', () => {
+  it('keeps the reset barrier regardless of its command-stream position', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(1, 2, 3, 4);
     canvas.width = 200;
-    finish(record, 1);
+    const resetAfterDraw = finish(record, 1);
 
     canvas.width = 200;
     context.fillRect(1, 2, 3, 4);
+    const resetBeforeDraw = finish(record, 2);
 
-    expect(finish(record, 2)?.signatureStatus).toBe('changed');
+    expect(resetAfterDraw).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+    expect(resetBeforeDraw).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
-  it('keeps resize windows comparable without canvas-resize uncertainty', () => {
+  it('does not compare repeated reset-only windows', () => {
     const { canvas, record } = makeCanvas();
 
     canvas.width = 200;
 
-    expect(record.sig.unknown).toBe(false);
-    expect(record.sig.unknownReason).toBeNull();
-    finish(record, 1);
+    expect(finish(record, 1)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
 
     canvas.width = 200;
 
     expect(finish(record, 2)).toMatchObject({
-      signatureStatus: 'same',
-      unknownReason: null,
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
     });
   });
 
@@ -743,7 +1069,29 @@ describe('canvas patch hardening', () => {
     setWindowCaptured(true);
     context.fillRect(1, 2, 3, 4);
 
-    expect(finish(record, 4, 2)?.signatureStatus).toBe('same');
+    expect(finish(record, 4, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+
+    setWindowCaptured(false);
+    context.fillRect(1, 2, 3, 4);
+    finish(record, 5, 2);
+    setWindowCaptured(true);
+    context.fillRect(1, 2, 3, 4);
+    expect(finish(record, 6, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+
+    setWindowCaptured(false);
+    finish(record, 7, 2);
+    setWindowCaptured(true);
+    context.fillRect(1, 2, 3, 4);
+    expect(finish(record, 8, 2)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+    });
   });
 
   it('resets the transform when a resize dimension getter throws', () => {
@@ -765,7 +1113,10 @@ describe('canvas patch hardening', () => {
     setWindowCaptured(true);
     context.fillRect(1, 2, 3, 4);
 
-    expect(finish(record, 4, 2)?.signatureStatus).toBe('same');
+    expect(finish(record, 4, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
   });
 
   it('passes resize through for an unregistered canvas', () => {
@@ -783,5 +1134,23 @@ describe('canvas patch hardening', () => {
 
     expect(canvas.getContext('webgl')).toBe(webglContext);
     expect(getRecord(canvas)).toBeUndefined();
+  });
+
+  it('fails closed when the observer queue cannot be drained', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 1);
+
+    canvas.setAttributeNS(null, 'width', '300');
+    context.fillRect(0, 0, 10, 10);
+    FakeMutationObserver.throwOnTakeRecords = true;
+    expect(() => drainAttributeRecords()).not.toThrow();
+    FakeMutationObserver.throwOnTakeRecords = false;
+
+    expect(finish(record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-dimensions-unmodeled',
+    });
   });
 });

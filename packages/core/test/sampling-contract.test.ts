@@ -30,6 +30,7 @@ class FakeContext {
   moveTo(..._args: unknown[]) {}
   lineTo(..._args: unknown[]) {}
   fill(..._args: unknown[]) {}
+  reset() {}
 
   createLinearGradient(..._args: unknown[]) {
     return new CanvasGradient();
@@ -38,13 +39,23 @@ class FakeContext {
 
 class FakeCanvas {
   private context: FakeContext | null = null;
+  private widthValue = 300;
+  private heightValue = 150;
 
   get width() {
-    return 300;
+    return this.widthValue;
+  }
+
+  set width(value: number) {
+    this.widthValue = value;
   }
 
   get height() {
-    return 150;
+    return this.heightValue;
+  }
+
+  set height(value: number) {
+    this.heightValue = value;
   }
 
   getAttribute(_name: string) {
@@ -61,7 +72,7 @@ class FakeCanvas {
 installCanvasPatch({
   canvasProto: FakeCanvas.prototype,
   contextProto: FakeContext.prototype,
-  attributeObserver: { observe() {} },
+  attributeObserver: { observe() {}, takeRecords: () => [] },
 });
 
 function makeCanvas() {
@@ -72,7 +83,7 @@ function makeCanvas() {
     nearestReactOwner: 'Fake',
     attributionKind: 'jsx-owner',
   };
-  return { context, record };
+  return { canvas, context, record };
 }
 
 function finish(
@@ -87,7 +98,7 @@ beforeEach(() => {
 });
 
 describe('sampling contract', () => {
-  it('reports same across continuous captureEvery 2 draws with a baseline transform', () => {
+  it('refuses comparison across a continuous uncaptured raster window', () => {
     const { context, record } = makeCanvas();
 
     setWindowCaptured(false);
@@ -104,8 +115,8 @@ describe('sampling contract', () => {
     context.fillRect(0, 0, 10, 10);
 
     expect(finish(record, 4)).toMatchObject({
-      signatureStatus: 'same',
-      unknownReason: null,
+      signatureStatus: 'unknown',
+      unknownReason: 'uncaptured-raster',
       comparisonGap: 2,
     });
   });
@@ -122,6 +133,78 @@ describe('sampling contract', () => {
 
     expect(finish(record, 4)).toMatchObject({
       signatureStatus: 'same',
+      comparisonGap: 2,
+    });
+  });
+
+  it('does not compare across an uncaptured same-value reset', () => {
+    const { canvas, context, record } = makeCanvas();
+
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2);
+
+    setWindowCaptured(false);
+    canvas.width = canvas.width;
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)).toBeUndefined();
+
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-reset',
+    });
+
+    setWindowCaptured(false);
+    expect(finish(record, 5)).toBeUndefined();
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 6)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+      comparisonGap: null,
+    });
+
+    setWindowCaptured(false);
+    expect(finish(record, 7)).toBeUndefined();
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 8)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
+      comparisonGap: 2,
+    });
+  });
+
+  it('does not compare captured blue across uncaptured red raster activity', () => {
+    const { context, record } = makeCanvas();
+
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    finish(record, 2);
+
+    setWindowCaptured(false);
+    context.fillStyle = 'red';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 3)).toBeUndefined();
+
+    setWindowCaptured(true);
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 4)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'uncaptured-raster',
+    });
+
+    setWindowCaptured(false);
+    context.fillStyle = 'red';
+    expect(finish(record, 5)).toBeUndefined();
+    setWindowCaptured(true);
+    context.fillStyle = 'blue';
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 6)).toMatchObject({
+      signatureStatus: 'same',
+      unknownReason: null,
       comparisonGap: 2,
     });
   });
@@ -240,8 +323,7 @@ describe('sampling contract', () => {
     });
 
     setWindowCaptured(false);
-    context.fillRect(0, 0, 10, 10);
-    finish(record, 7);
+    expect(finish(record, 7)).toBeUndefined();
     setWindowCaptured(true);
     context.fillRect(0, 0, 10, 10);
     expect(finish(record, 8)).toMatchObject({

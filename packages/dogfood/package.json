@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bench:chrome": "node bench-chrome.mjs",
+    "bench:chrome": "pnpm run bench:chrome:mixed && pnpm run bench:chrome:tracked",
+    "bench:chrome:mixed": "node bench-chrome.mjs",
+    "bench:chrome:tracked": "node bench-chrome.mjs --stream=tracked-source",
     "collect": "node collect.mjs"
   },
   "devDependencies": {

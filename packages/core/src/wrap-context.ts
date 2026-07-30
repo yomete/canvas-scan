@@ -20,8 +20,11 @@ export interface PatchTargets {
   contextProto: any;
   attributeObserver?: {
     observe(target: any, options: MutationObserverInit): void;
+    takeRecords?(): MutationRecord[];
   } | null;
 }
+
+type ResetReason = 'canvas-reset' | 'canvas-attribute-reset';
 
 export interface CanvasRecord {
   canvas: any;
@@ -48,9 +51,14 @@ export interface CanvasRecord {
   pathUnknown: boolean;
   clipHash: number;
   clipUnknown: boolean;
-  pendingAttributeReset: boolean;
+  resetPendingReason: ResetReason | null;
+  modelUntrusted: boolean;
+  resetVersion: number;
+  continuityLost: boolean;
+  sourceResetVersions: Map<CanvasRecord, number>;
   attributeObservationUnavailable: boolean;
-  attributeResetsAwaitingObserver: number;
+  contextActivityInWindow: boolean;
+  exactResetDepth: number;
   stateStack: Array<{
     matrix: CanvasRecord['matrix'];
     matrixUnknown: boolean;
@@ -170,6 +178,7 @@ let nativeGetLineDash: ((this: any) => unknown) | null = null;
 let nativeCanvasWidthGetter: ((this: any) => unknown) | null = null;
 let nativeCanvasHeightGetter: ((this: any) => unknown) | null = null;
 let attributeObserverUnavailable = false;
+let takeAttributeRecords: (() => MutationRecord[]) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
@@ -202,8 +211,6 @@ function headState(record: CanvasRecord) {
   entries.push(['__matrix', record.matrix.map(quantize)]);
   entries.push(['__path', record.pathHash]);
   entries.push(['__clip', record.clipHash]);
-  const attributeReset = record.pendingAttributeReset;
-  record.pendingAttributeReset = false;
   let dimensionsUnknown =
     attributeObserverUnavailable ||
     record.attributeObservationUnavailable;
@@ -225,7 +232,6 @@ function headState(record: CanvasRecord) {
     clipUnknown: record.clipUnknown,
     pathUnknown: record.pathUnknown,
     dimensionsUnknown,
-    attributeReset,
   };
 }
 
@@ -241,57 +247,51 @@ function clearPersistentState(record: CanvasRecord): void {
   record.stateStack.length = 0;
 }
 
-function recordResize(
+function recordExactReset(
   record: CanvasRecord,
-  attribute: string,
-  canvas: any,
+  reason: ResetReason,
+  reentrantActivity: boolean,
 ): void {
-  if (!record.attributeObservationUnavailable) {
-    record.attributeResetsAwaitingObserver++;
-  }
-  const firstActivity = !record.activeInWindow;
-  const headEntries =
-    windowCaptured && firstActivity
-      ? headState(record)
-      : null;
+  record.exactResetDepth--;
   record.contentVersion++;
+  record.resetVersion++;
   record.contentDirty = false;
   refreshContentToken(record);
-  if (headEntries) {
-    try {
-      captureHeadState(record.sig, headEntries.entries);
-      if (headEntries.matrixUnknown) {
-        markUnknown(record.sig, 'transform-unmodeled');
-      }
-      if (headEntries.clipUnknown) {
-        markUnknown(record.sig, 'clip-unmodeled');
-      }
-      if (headEntries.pathUnknown) {
-        markUnknown(record.sig, 'path-unmodeled');
-      }
-      if (headEntries.dimensionsUnknown) {
-        markUnknown(record.sig, 'canvas-dimensions-unmodeled');
-      }
-      if (headEntries.attributeReset) {
-        markUnknown(record.sig, 'canvas-attribute-reset');
-        clearPersistentState(record);
-      }
-    } catch (error) {
-      kill(error);
-    }
-  }
-  try {
-    const width = nativeCanvasWidthGetter?.call(canvas);
-    const height = nativeCanvasHeightGetter?.call(canvas);
-    if (typeof width === 'number' && typeof height === 'number') {
-      captureOp(record.sig, 'canvas-resize', [attribute, width, height]);
-    } else {
-      markUnknown(record.sig, 'canvas-resize');
-    }
-  } catch {
-    markUnknown(record.sig, 'canvas-resize');
-  }
   clearPersistentState(record);
+  record.modelUntrusted = reentrantActivity;
+  record.resetPendingReason ??= reason;
+  record.activeInWindow = true;
+  record.contextActivityInWindow =
+    record.exactResetDepth > 0 && reentrantActivity;
+}
+
+function beginExactReset(record: CanvasRecord): boolean {
+  const previousActivity = record.contextActivityInWindow;
+  record.contextActivityInWindow = false;
+  record.exactResetDepth++;
+  return previousActivity;
+}
+
+function restoreActivityAfterFailedReset(
+  record: CanvasRecord,
+  previousActivity: boolean,
+): void {
+  record.exactResetDepth--;
+  record.contextActivityInWindow ||= previousActivity;
+}
+
+function recordLateAttributeReset(record: CanvasRecord): void {
+  const activityMayHaveOverlapped = record.contextActivityInWindow === true;
+  record.contentVersion++;
+  record.resetVersion++;
+  if (!activityMayHaveOverlapped && !record.modelUntrusted) {
+    record.contentDirty = false;
+    clearPersistentState(record);
+  } else {
+    record.modelUntrusted = true;
+  }
+  refreshContentToken(record);
+  record.resetPendingReason ??= 'canvas-attribute-reset';
   record.activeInWindow = true;
 }
 
@@ -564,11 +564,6 @@ function updateMethodState(
       '__lineDash',
       Array.isArray(native) ? native : { unmodeledDash: true },
     );
-  } else if (name === 'reset') {
-    clearPersistentState(record);
-    record.contentVersion++;
-    record.contentDirty = false;
-    refreshContentToken(record);
   }
 }
 
@@ -607,6 +602,7 @@ function trackGradient(gradient: any, creator: string, args: unknown[]) {
             // Dependents stay registered after reassignment; a false unknown is conservative-safe.
             markUnknown(record.sig, 'gradient-mutated');
             record.activeInWindow = true;
+            record.contextActivityInWindow = true;
           }
         }
       } catch (error) {
@@ -624,11 +620,81 @@ export function getRecord(canvas: unknown): CanvasRecord | undefined {
 export function markAttributeReset(canvas: unknown): void {
   const record = recordByCanvas.get(canvas as object);
   if (!record) return;
-  if (record.attributeResetsAwaitingObserver > 0) {
-    record.attributeResetsAwaitingObserver--;
+  recordLateAttributeReset(record);
+}
+
+function isDimensionalAttributeRecord(
+  entry: MutationRecord,
+): boolean {
+  return (
+    entry.attributeName === 'width' ||
+    entry.attributeName === 'height'
+  );
+}
+
+function applyAttributeRecords(
+  entries: MutationRecord[],
+  suppressedTarget?: unknown,
+  suppressedAttribute?: string,
+): void {
+  let suppressedIndex = -1;
+  if (suppressedTarget !== undefined && suppressedAttribute !== undefined) {
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      if (
+        entry.target === suppressedTarget &&
+        entry.attributeName === suppressedAttribute
+      ) {
+        suppressedIndex = index;
+        break;
+      }
+    }
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (index !== suppressedIndex && isDimensionalAttributeRecord(entry)) {
+      markAttributeReset(entry.target);
+    }
+  }
+}
+
+function markAttributeDrainUnavailable(): void {
+  attributeObserverUnavailable = true;
+  for (const record of records) {
+    if (record.activeInWindow) {
+      markUnknown(record.sig, 'canvas-dimensions-unmodeled');
+    }
+  }
+}
+
+function drainAttributeRecordsForExactReset(
+  canvas: unknown,
+  attribute: string,
+): void {
+  if (!takeAttributeRecords) {
+    markAttributeDrainUnavailable();
     return;
   }
-  record.pendingAttributeReset = true;
+  try {
+    applyAttributeRecords(
+      takeAttributeRecords(),
+      canvas,
+      attribute,
+    );
+  } catch {
+    markAttributeDrainUnavailable();
+  }
+}
+
+export function drainAttributeRecords(): void {
+  if (!takeAttributeRecords) {
+    markAttributeDrainUnavailable();
+    return;
+  }
+  try {
+    applyAttributeRecords(takeAttributeRecords());
+  } catch {
+    markAttributeDrainUnavailable();
+  }
 }
 
 export function isKilled(): boolean {
@@ -652,19 +718,28 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       ? contextProto.getLineDash
       : null;
   // The DOM reports every width/height attribute mutation, regardless of
-  // which API made it. Delivery is one microtask late, so the next captured
-  // window is refused instead of guessing where the reset happened.
+  // which API made it. takeRecords() moves late delivery to the comparison
+  // boundary so the affected window is refused.
   const attributeObserver =
     targets?.attributeObserver !== undefined
       ? targets.attributeObserver
       : typeof MutationObserver === 'function'
         ? new MutationObserver((entries) => {
-            for (const entry of entries) {
-              markAttributeReset(entry.target);
-            }
+            applyAttributeRecords(entries);
           })
         : null;
-  attributeObserverUnavailable = attributeObserver === null;
+  const observeAttributes =
+    attributeObserver &&
+    typeof attributeObserver.observe === 'function'
+      ? attributeObserver.observe.bind(attributeObserver)
+      : null;
+  takeAttributeRecords =
+    attributeObserver &&
+    typeof attributeObserver.takeRecords === 'function'
+      ? attributeObserver.takeRecords.bind(attributeObserver)
+      : null;
+  attributeObserverUnavailable =
+    observeAttributes === null || takeAttributeRecords === null;
 
   canvasProto.getContext = function (this: any, ...args: unknown[]) {
     const context = originalGetContext.apply(this, args);
@@ -697,9 +772,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         pathUnknown: false,
         clipHash: 0x811c9dc5,
         clipUnknown: false,
-        pendingAttributeReset: false,
+        resetPendingReason: null,
+        modelUntrusted: false,
+        resetVersion: 0,
+        continuityLost: false,
+        sourceResetVersions: new Map(),
         attributeObservationUnavailable: attributeObserverUnavailable,
-        attributeResetsAwaitingObserver: 0,
+        contextActivityInWindow: false,
+        exactResetDepth: 0,
         stateStack: [],
       };
       computeMatrixHash(record);
@@ -708,13 +788,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       records.add(record);
       recordByCanvas.set(this, record);
       recordByContext.set(context, record);
-      if (attributeObserver) {
+      if (observeAttributes) {
         try {
-          attributeObserver.observe(this, {
+          observeAttributes(this, {
             attributes: true,
             attributeFilter: ['width', 'height'],
           });
-          record.attributeObservationUnavailable = false;
+          record.attributeObservationUnavailable =
+            takeAttributeRecords === null;
         } catch {
           record.attributeObservationUnavailable = true;
         }
@@ -750,12 +831,30 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       // independent conversions let a stateful toString resize the canvas
       // while telling us it touched some other attribute.
       const raw = String(name);
-      const result = originalSetAttribute.call(this, raw, ...args);
       const record = recordByCanvas.get(this);
-      if (!record || killed) return result;
       const attribute = raw.toLowerCase();
-      if (attribute === 'width' || attribute === 'height') {
-        recordResize(record, attribute, this);
+      const dimensional = attribute === 'width' || attribute === 'height';
+      const previousActivity =
+        record && !killed && dimensional
+          ? beginExactReset(record)
+          : null;
+      let result;
+      try {
+        result = originalSetAttribute.call(this, raw, ...args);
+      } catch (error) {
+        if (record && previousActivity !== null) {
+          restoreActivityAfterFailedReset(record, previousActivity);
+        }
+        throw error;
+      }
+      if (!record || killed) return result;
+      if (dimensional) {
+        drainAttributeRecordsForExactReset(this, attribute);
+        recordExactReset(
+          record,
+          'canvas-reset',
+          record.contextActivityInWindow,
+        );
       }
       return result;
     };
@@ -787,10 +886,27 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           wasPresent = true;
         }
       }
-      const result = originalRemoveAttribute.call(this, raw, ...args);
+      const previousActivity =
+        record && !killed && dimensional && wasPresent
+          ? beginExactReset(record)
+          : null;
+      let result;
+      try {
+        result = originalRemoveAttribute.call(this, raw, ...args);
+      } catch (error) {
+        if (record && previousActivity !== null) {
+          restoreActivityAfterFailedReset(record, previousActivity);
+        }
+        throw error;
+      }
       if (!record || killed) return result;
       if (dimensional && wasPresent) {
-        recordResize(record, attribute, this);
+        drainAttributeRecordsForExactReset(this, attribute);
+        recordExactReset(
+          record,
+          'canvas-reset',
+          record.contextActivityInWindow,
+        );
       }
       return result;
     };
@@ -805,10 +921,26 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     Object.defineProperty(canvasProto, name, {
       ...descriptor,
       set(this: any, value: unknown) {
-        originalSet.call(this, value);
         const record = recordByCanvas.get(this);
+        const previousActivity =
+          record && !killed
+            ? beginExactReset(record)
+            : null;
+        try {
+          originalSet.call(this, value);
+        } catch (error) {
+          if (record && previousActivity !== null) {
+            restoreActivityAfterFailedReset(record, previousActivity);
+          }
+          throw error;
+        }
         if (!record || killed) return;
-        recordResize(record, name, this);
+        drainAttributeRecordsForExactReset(this, name);
+        recordExactReset(
+          record,
+          'canvas-reset',
+          record.contextActivityInWindow,
+        );
       },
     });
   }
@@ -823,7 +955,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
 
       const firstActivity = !record.activeInWindow;
       const headEntries =
-        windowCaptured && firstActivity
+        name !== 'reset' && windowCaptured && firstActivity
           ? headState(record)
           : null;
       // Uncaptured windows discard selfTimeMs at reset, so skip the two
@@ -834,14 +966,36 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       // mutation happens after the call returns. Canvas calls are
       // synchronous, so a later same-window consumer still sees the dirty
       // token before it can read this source.
-      const result = original.apply(this, args);
+      const previousActivity =
+        name === 'reset'
+          ? beginExactReset(record)
+          : null;
+      let result;
+      try {
+        result = original.apply(this, args);
+      } catch (error) {
+        if (previousActivity !== null) {
+          restoreActivityAfterFailedReset(record, previousActivity);
+        }
+        throw error;
+      }
       if (timed) record.selfTimeMs += performance.now() - start;
-      record.activeInWindow = true;
-      if (RASTER_OPS.has(name)) {
-        record.rasterOps++;
-        if (!record.contentDirty) {
-          record.contentDirty = true;
-          refreshContentToken(record);
+      if (name === 'reset') {
+        drainAttributeRecords();
+        recordExactReset(
+          record,
+          'canvas-reset',
+          record.contextActivityInWindow,
+        );
+      } else {
+        record.activeInWindow = true;
+        record.contextActivityInWindow = true;
+        if (RASTER_OPS.has(name)) {
+          record.rasterOps++;
+          if (!record.contentDirty) {
+            record.contentDirty = true;
+            refreshContentToken(record);
+          }
         }
       }
       try {
@@ -859,15 +1013,32 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           if (headEntries.dimensionsUnknown) {
             markUnknown(record.sig, 'canvas-dimensions-unmodeled');
           }
-          if (headEntries.attributeReset) {
-            markUnknown(record.sig, 'canvas-attribute-reset');
-            clearPersistentState(record);
-          }
         }
-        updateMethodState(record, name, args, this);
-        if (windowCaptured) {
+        if (name !== 'reset') {
+          updateMethodState(record, name, args, this);
+        }
+        if (windowCaptured && name !== 'reset') {
           if (name === 'clip' && record.clipUnknown) {
             markUnknown(record.sig, 'clip-unmodeled');
+          }
+          if (name === 'drawImage') {
+            const source = args[0];
+            if (
+              (typeof source === 'object' && source !== null) ||
+              typeof source === 'function'
+            ) {
+              const sourceRecord = recordByCanvas.get(source as object);
+              if (sourceRecord) {
+                if (!record.sourceResetVersions.has(sourceRecord)) {
+                  record.sourceResetVersions.set(
+                    sourceRecord,
+                    sourceRecord.resetPendingReason === null
+                      ? sourceRecord.resetVersion
+                      : sourceRecord.resetVersion - 1,
+                  );
+                }
+              }
+            }
           }
           captureOp(record.sig, name, args);
         }
@@ -904,6 +1075,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         originalSet.call(this, value);
         if (!record || killed) return;
         record.activeInWindow = true;
+        record.contextActivityInWindow = true;
         if (headEntries) {
           try {
             captureHeadState(record.sig, headEntries.entries);
@@ -918,10 +1090,6 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             }
             if (headEntries.dimensionsUnknown) {
               markUnknown(record.sig, 'canvas-dimensions-unmodeled');
-            }
-            if (headEntries.attributeReset) {
-              markUnknown(record.sig, 'canvas-attribute-reset');
-              clearPersistentState(record);
             }
           } catch (error) {
             kill(error);

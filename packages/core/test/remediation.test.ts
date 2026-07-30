@@ -115,7 +115,7 @@ class HTMLCanvasElement {
 installCanvasPatch({
   canvasProto: HTMLCanvasElement.prototype,
   contextProto: FakeContext.prototype,
-  attributeObserver: { observe() {} },
+  attributeObserver: { observe() {}, takeRecords: () => [] },
 });
 
 function makeCanvas(id = '') {
@@ -379,6 +379,19 @@ describe('classifier-trust remediation', () => {
   });
 
   describe('6. identity, reset, and clip uncertainty', () => {
+    it('reports every reset-and-draw window as a reset barrier', () => {
+      const { context, record } = makeCanvas();
+
+      for (let index = 1; index <= 3; index++) {
+        context.reset();
+        context.fillRect(0, 0, 10, 10);
+        expect(finish(record, index)).toMatchObject({
+          signatureStatus: 'unknown',
+          unknownReason: 'canvas-reset',
+        });
+      }
+    });
+
     it('uses internal identity for duplicate DOM ids and remains stable', () => {
       const firstSource = makeCanvas('duplicate');
       const secondSource = makeCanvas('duplicate');
@@ -404,7 +417,7 @@ describe('classifier-trust remediation', () => {
       expect(finish(secondConsumer.record, 2)?.signatureStatus).toBe('same');
     });
 
-    it('changes a consumer token on reset and then reaches same again', () => {
+    it('refuses a reset source token and then reaches same again', () => {
       const source = makeCanvas();
       const consumer = makeCanvas();
 
@@ -415,11 +428,25 @@ describe('classifier-trust remediation', () => {
 
       source.context.reset();
       consumer.context.drawImage(source.canvas, 0, 0);
-      expect(finish(consumer.record, 2)?.signatureStatus).toBe('changed');
-      finish(source.record, 2);
+      expect(finish(consumer.record, 2)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-source-reset',
+      });
+      expect(finish(source.record, 2)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-reset',
+      });
 
       consumer.context.drawImage(source.canvas, 0, 0);
-      expect(finish(consumer.record, 3)?.signatureStatus).toBe('same');
+      expect(finish(consumer.record, 3)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'first-window',
+      });
+      consumer.context.drawImage(source.canvas, 0, 0);
+      expect(finish(consumer.record, 4)).toMatchObject({
+        signatureStatus: 'same',
+        unknownReason: null,
+      });
     });
 
     it('keeps an untracked clip unknown across a skipped window until reset', () => {
@@ -449,7 +476,7 @@ describe('classifier-trust remediation', () => {
       context.fillRect(0, 0, 10, 10);
       expect(finish(record, 6, 2)).toMatchObject({
         signatureStatus: 'unknown',
-        unknownReason: 'previous-window',
+        unknownReason: 'canvas-reset',
       });
 
       setWindowCaptured(false);
@@ -457,6 +484,15 @@ describe('classifier-trust remediation', () => {
       setWindowCaptured(true);
       context.fillRect(0, 0, 10, 10);
       expect(finish(record, 8, 2)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'first-window',
+      });
+
+      setWindowCaptured(false);
+      expect(finish(record, 9, 2)).toBeUndefined();
+      setWindowCaptured(true);
+      context.fillRect(0, 0, 10, 10);
+      expect(finish(record, 10, 2)).toMatchObject({
         signatureStatus: 'same',
         unknownReason: null,
       });

@@ -159,13 +159,17 @@ so the tool cannot instrument itself.
   physical draws it observes.
 - OffscreenCanvas transfers and worker-owned canvases are not observable.
 - CanvasPattern arguments poison the window to `unknown`.
-- **Resizing a canvas is not yet handled correctly.** Setting `width` or
-  `height` clears the canvas, so the redraw that follows is required, not
-  avoidable. The tool can still report such a frame as `same` and count it as a
-  review candidate. A canvas that resizes on every frame — a common charting
-  pattern — is affected. Treat `same` on a canvas that resizes as unreliable.
-- A canvas reset performed by something other than `reset()`, an attribute
-  write, or the `width`/`height` properties is not observable.
+- A window containing `reset()` or a `width`/`height` reset reports `unknown`.
+  A chart that resets its canvas every frame therefore never receives a
+  `same` verdict.
+- Attribute reset paths that bypass the wrapped common APIs are detected at
+  the observer boundary. If drawing and state changes overlap that late
+  detection, the canvas remains `unknown` until a directly observed reset
+  establishes trusted default state again.
+- When sampling skips a window that performs raster work, the next captured
+  comparison reports `unknown`. Idle skipped windows remain comparable.
+- Native reset APIs captured before canvas-scan installs are outside the
+  observable boundary.
 - Full capture adds <2ms mean / <3ms p95, and count-only adds <0.75ms mean /
   <2ms p95, per 1,000 mixed bench iterations at the 1,000-op level, verified
   by `pnpm --filter dogfood run bench:chrome`.

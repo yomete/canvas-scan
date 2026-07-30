@@ -17,11 +17,12 @@
 <canvas id="bench" width="800" height="600"></canvas>
 <script>
   const ops = Number(new URLSearchParams(location.search).get('ops') ?? 1000);
+  const stream = new URLSearchParams(location.search).get('stream') ?? 'mixed';
   // Evidence mode: a do-nothing wrapper around every method the bench uses,
   // no canvas-scan at all — the floor cost ANY prototype-wrapping tool pays.
   if (new URLSearchParams(location.search).get('mode') === 'passthrough') {
     const proto = CanvasRenderingContext2D.prototype;
-    for (const m of ['clearRect', 'fillRect', 'strokeRect', 'beginPath', 'arc', 'fill', 'moveTo', 'lineTo', 'closePath', 'stroke']) {
+    for (const m of ['clearRect', 'fillRect', 'strokeRect', 'drawImage', 'beginPath', 'arc', 'fill', 'moveTo', 'lineTo', 'closePath', 'stroke']) {
       const orig = proto[m];
       proto[m] = function (...a) {
         return orig.apply(this, a);
@@ -31,6 +32,15 @@
   const FRAMES = 240;
   const WARMUP = 30;
   const ctx = document.getElementById('bench').getContext('2d');
+  let source = null;
+  if (stream === 'tracked-source') {
+    source = document.createElement('canvas');
+    source.width = 40;
+    source.height = 30;
+    const sourceCtx = source.getContext('2d');
+    sourceCtx.fillStyle = '#3b82f6';
+    sourceCtx.fillRect(0, 0, source.width, source.height);
+  }
   const frames = [];
   let n = 0;
   function frame() {
@@ -45,7 +55,11 @@
       const y = (i * 13) % 560;
       const kind = i & 3;
       if (kind === 0) {
-        ctx.fillRect(x, y, 40, 30);
+        if (stream === 'tracked-source') {
+          ctx.drawImage(source, x, y);
+        } else {
+          ctx.fillRect(x, y, 40, 30);
+        }
       } else if (kind === 1) {
         ctx.beginPath();
         ctx.arc(x + 20, y + 15, 12, 0, 6.283185);

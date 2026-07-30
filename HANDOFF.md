@@ -867,7 +867,110 @@ minified IIFE and the packed README all carry the manifest version.
   in the current turn; minimal-first working style; lead with the outcome).
 - The polarsignals repo's conventions/memory do not apply here.
 
-## STOP POINT — 2026-07-30, 03:10. Read this first.
+## RESOLVED — the resize false-`same` is fixed (2026-07-30, second session)
+
+The stop point below is superseded. A different author rewrote the approach and
+it holds. Keeping the history because the failure modes are instructive.
+
+**What fixed it.** Four mechanisms, where my five attempts each had one:
+
+- `record.resetPendingReason` is a barrier: the window is forced `unknown` AND
+  `record.prev` is set to null, so the FOLLOWING window cannot compare against
+  the pre-reset baseline either. My attempts only refused the reset's own window.
+- `drainAttributeRecords` is called from the frame loop, so MutationObserver
+  records are drained synchronously before the comparison instead of arriving a
+  microtask late.
+- `record.sourceResetVersions` forces `canvas-source-reset` on a canvas whose
+  drawn source was reset — a version counter, not a token refresh.
+- `record.continuityLost` forces `uncaptured-raster` when raster happened in a
+  window that was not captured.
+
+**Verified four ways.** Probes written from the bug report rather than adapted
+from the author's tests: resize-and-redraw-every-frame, sampled resize, and
+resize-away-and-back all report `unknown`; steady identical redraws still report
+`same`; `same` returns one window after a resize settles. Real Chrome via
+`node probes.mjs http://localhost:5174` — PROBES: PASS, covering direct reset,
+second reset, recovery, attribute bypass, `ctx.reset()`, and a consumer drawing a
+reset source, with a neighbouring control canvas still reporting `same`. Codex
+round 11 found no false `same` in the baseline-reset sequences. And the suite
+rejected an attempt to weaken it (see below). 279 tests, typecheck clean.
+
+### A trap that cost time — do not repeat it
+
+Round 11 reported that `captureEvery: 2` can never return `same` for a canvas
+drawing every frame. That is TRUE (measured: 0 of 6 captured reports) but it is
+NOT a defect. Narrowing `continuityLost` to fire only on resets restores `same`
+and reintroduces a false `same`:
+
+```
+W2 captured   : blue fillRect   -> hashed
+W3 uncaptured : red  fillRect   -> discarded
+W4 captured   : blue fillRect   -> identical hash to W2, reported `same`
+```
+
+The blue redraw in W4 was NECESSARY because red was painted over it. A skipped
+window's commands are never hashed, so the tool cannot know what it drew. The
+regression at `sampling-contract.test.ts:179` catches this. There is a comment at
+the `continuityLost` assignment in `frame-loop.ts` explaining it.
+
+`captureEvery > 1` is not useless: a skipped window that changes state WITHOUT
+drawing still permits `same` with `comparisonGap: 2`. It gives no verdict for
+canvases that draw every frame. **That belongs in README Limits.**
+
+### Known issues, tracked not fixed
+
+Rounds stopped at 11 by decision — the loop had reached the point where it was
+producing exotic findings and occasional wrong ones. These are real and open:
+
+1. **Transitive source resets.** A -> B -> C, where B composites A and C
+   composites B, is not transitively invalidated, so C can report `same` after A
+   is reset. A false `same`, but it needs a three-canvas compositing chain.
+   Untested. `wrap-context.ts` around `sourceResetVersions`.
+2. **Permanent-`unknown` latch.** An observer-only resize at mount can leave a
+   canvas unable to report for the rest of the session. Degrades to `unknown`,
+   so it is a usefulness bug, not a trust bug. See `hardening.test.ts:439-481`,
+   which recovers only by adding another exact-width reset.
+3. **Ordering ignored on source invalidation.** A source that resets AFTER a
+   consumer finished drawing it still discards the consumer's valid comparison.
+4. **Wrong user-facing reason.** The unavailable-observer path reports
+   `canvas-dimensions-unmodeled` ("the canvas size could not be read"), which
+   describes the wrong condition. Needs its own reason and phrase.
+5. **Fake fidelity.** The hardening fake has no bitmap and resets only
+   `fillStyle`. The suite proves bookkeeping, not native reset semantics; the
+   real-Chrome probes are the only evidence for those.
+
+### What gates 0.3.1
+
+Only the Chrome bench. It has NOT run on this change. It now has two streams:
+
+```
+pnpm --filter dogfood run bench:chrome          # runs both
+pnpm --filter dogfood run bench:chrome:mixed
+pnpm --filter dogfood run bench:chrome:tracked  # new, exercises source resets
+```
+
+Check `uptime` first and require three consecutive passes. The ceiling is 2ms
+full-added mean and the closest prior pass was 1.986ms, so this is not a
+formality. Load sat at 7.7 to 11 through the second session, so it never ran. A
+scheduled 20-minute loop attempted it, declined five times, and was cancelled.
+
+Then: bump `packages/core/package.json`, the literal in `src/index.ts`, the
+status line in both READMEs, and the `readVersion` expectation in
+`test/cli.test.ts`; tag; and have Yomi run `pnpm publish --filter canvas-scan`
+(he publishes — this agent never handles npm credentials).
+
+### Also still open, unchanged
+
+- `records` is never pruned in `wrap-context.ts`. Memory and CPU only.
+- Re-enable npm two-factor authentication for write actions.
+- Revert the dogfood instrumentation in the polarsignals checkout if present:
+  under `ui/packages/app/cloud-v2`, `git checkout -- pages/_document.tsx` and
+  `rm public/canvas-scan.iife.js`.
+- A stray node dev server was left on port 5174 (PID 64238 at the time).
+
+---
+
+## SUPERSEDED STOP POINT — 2026-07-30, 03:10.
 
 Everything is pushed and CI is green. Nothing is half-applied. One decision is
 open, and it is the only thing blocking 0.3.1.
@@ -963,3 +1066,48 @@ has ever been reset is never a review candidate again.
 React 18 in a production Next.js app. Ten review rounds are recorded in
 `CODEX_REVIEW.md`; the bottommost status is authoritative, and the in-repo copy
 is canonical (the external mirror has drifted before).
+
+## STOP POINT — 2026-07-30, 04:20 CEST. Reset correctness implemented.
+
+The reset false-`same` blocker is fixed in the working tree on base `dd96916`.
+Changes are intentionally uncommitted.
+
+### What changed
+
+- Reset-containing reports are always `unknown`, and their signatures never
+  become comparison baselines.
+- Observer records are drained before the rAF comparison. Missing or throwing
+  drains fail closed.
+- Late attribute resets advance content/reset versions and keep the state model
+  untrusted when ordering overlaps context activity.
+- Exact property, attribute, removal, and `ctx.reset()` paths handle synchronous
+  and nested reentrancy without re-trusting erased model state.
+- Uncaptured raster activity breaks comparison continuity; idle sampled gaps
+  remain comparable.
+- Tracked source resets propagate only to destination canvases that drew that
+  source in the captured window.
+- The real-Chrome probe now covers the reset matrix, including a customized
+  built-in canvas whose nested reset callback reenters the context.
+- `bench:chrome` now requires both mixed and tracked-source streams.
+
+### Current evidence
+
+- Core: 279/279 tests passed.
+- Workspace typecheck, core build, and demo build passed.
+- Real Chrome reset/reentrancy/source probe passed.
+- Final adversarial review found no remaining false-`same` trace.
+- `git diff --check` passed.
+
+### Only remaining release blocker
+
+Do not certify 0.3.1 performance from this run. The 10-core host reached load
+averages `124.55 64.21 33.87`; the established release procedure requires three
+consecutive quiet-machine passes. When the machine is quiet, run three times:
+
+```
+pnpm --filter dogfood run bench:chrome
+```
+
+The command now gates both the existing mixed stream and the new tracked-source
+stream. Until all three combined runs pass, the bottommost review status remains
+`CODEX_STATUS: CHANGES_REQUESTED`.

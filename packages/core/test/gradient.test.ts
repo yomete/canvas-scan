@@ -60,7 +60,7 @@ class FakeCanvas {
 installCanvasPatch({
   canvasProto: FakeCanvas.prototype,
   contextProto: FakeContext.prototype,
-  attributeObserver: { observe() {} },
+  attributeObserver: { observe() {}, takeRecords: () => [] },
 });
 
 function gradientWindow(secondColor: string) {

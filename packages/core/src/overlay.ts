@@ -309,11 +309,24 @@ const EXPLAINER =
 const UNKNOWN_PHRASES = new Map([
   ['first-window', 'first frame seen — nothing to compare yet'],
   ['previous-window', 'the last frame it was compared with was unclear'],
+  ['canvas-reset', 'the canvas was reset'],
   ['canvas-resize', 'the canvas was resized'],
   ['canvas-dimensions-unmodeled', 'the canvas size could not be read'],
   [
     'canvas-attribute-reset',
     'the canvas was resized by a page attribute change',
+  ],
+  [
+    'canvas-state-unmodeled',
+    'canvas state changed around a reset detected too late to place',
+  ],
+  [
+    'canvas-source-reset',
+    'a source canvas was reset while this canvas was drawing it',
+  ],
+  [
+    'uncaptured-raster',
+    'drawing happened in a frame canvas-scan did not capture',
   ],
   ['gradient-mutated', 'a gradient changed while drawing'],
   ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
