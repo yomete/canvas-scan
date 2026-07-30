@@ -508,6 +508,171 @@ describe('processRecord', () => {
       vi.resetModules();
     }
   });
+
+  it('processes every canvas before a synchronous report callback can reset a later canvas', async () => {
+    class ReentrantMutationObserver {
+      static current: ReentrantMutationObserver | null = null;
+      private readonly observed = new Set<unknown>();
+      private readonly records: MutationRecord[] = [];
+
+      constructor(_callback: MutationCallback) {
+        ReentrantMutationObserver.current = this;
+      }
+
+      observe(target: unknown, _options: MutationObserverInit) {
+        this.observed.add(target);
+      }
+
+      disconnect() {}
+
+      takeRecords(): MutationRecord[] {
+        return this.records.splice(0);
+      }
+
+      static queue(target: unknown, attributeName: string): void {
+        const observer = ReentrantMutationObserver.current;
+        if (!observer?.observed.has(target)) return;
+        observer.records.push({
+          type: 'attributes',
+          target: target as Node,
+          attributeName,
+        } as MutationRecord);
+      }
+    }
+
+    class ReentrantContext {
+      readonly paintedRects = new Set<string>();
+
+      fillRect(...args: unknown[]) {
+        this.paintedRects.add(args.join(','));
+      }
+
+      resetBitmap() {
+        this.paintedRects.clear();
+      }
+    }
+
+    class ReentrantCanvas {
+      private context: ReentrantContext | null = null;
+
+      get width() {
+        return 300;
+      }
+
+      get height() {
+        return 150;
+      }
+
+      getAttribute(_name: string) {
+        return null;
+      }
+
+      setAttributeNS(
+        _namespace: string | null,
+        name: string,
+        _value: unknown,
+      ) {
+        this.context?.resetBitmap();
+        ReentrantMutationObserver.queue(this, String(name).toLowerCase());
+      }
+
+      getContext(type: string) {
+        if (type !== '2d') return null;
+        this.context ??= new ReentrantContext();
+        return this.context;
+      }
+    }
+
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('MutationObserver', ReentrantMutationObserver);
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      },
+    });
+    vi.resetModules();
+    const freshWrap = await import('../src/wrap-context');
+    const freshFrameLoop = await import('../src/frame-loop');
+    let earlierCanvas: ReentrantCanvas | null = null;
+    let laterCanvas: ReentrantCanvas | null = null;
+    let earlierContext: ReentrantContext | null = null;
+    let laterContext: ReentrantContext | null = null;
+    let earlierRecord: CanvasRecord | null = null;
+    let laterRecord: CanvasRecord | null = null;
+    let callbackArmed = false;
+    let callbackRuns = 0;
+    let debug: { mockRestore(): void } | null = null;
+
+    try {
+      freshWrap.installCanvasPatch({
+        canvasProto: ReentrantCanvas.prototype,
+        contextProto: ReentrantContext.prototype,
+      });
+      earlierCanvas = new ReentrantCanvas();
+      laterCanvas = new ReentrantCanvas();
+      earlierContext = earlierCanvas.getContext('2d')!;
+      laterContext = laterCanvas.getContext('2d')!;
+      earlierRecord = freshWrap.getRecord(earlierCanvas)!;
+      laterRecord = freshWrap.getRecord(laterCanvas)!;
+      earlierRecord.attribution = {
+        nearestReactOwner: 'Earlier',
+        attributionKind: 'jsx-owner',
+      };
+      laterRecord.attribution = {
+        nearestReactOwner: 'Later',
+        attributionKind: 'jsx-owner',
+      };
+      expect([...freshWrap.records]).toEqual([earlierRecord, laterRecord]);
+      debug = vi
+        .spyOn(console, 'debug')
+        .mockImplementation((...args: unknown[]) => {
+          const report = args[1] as DrawBatchReport | undefined;
+          if (
+            callbackArmed &&
+            callbackRuns === 0 &&
+            report?.canvasId === earlierRecord?.id
+          ) {
+            callbackRuns++;
+            laterCanvas!.setAttributeNS(null, 'width', '300');
+            laterContext!.fillRect(20, 0, 10, 10);
+          }
+        });
+      freshFrameLoop.startFrameLoop({});
+
+      earlierContext.fillRect(0, 0, 10, 10);
+      laterContext.fillRect(0, 0, 10, 10);
+      laterContext.fillRect(20, 0, 10, 10);
+      callbacks.shift()!(0);
+      expect(laterContext.paintedRects).toEqual(
+        new Set(['0,0,10,10', '20,0,10,10']),
+      );
+
+      callbackArmed = true;
+      earlierContext.fillRect(0, 0, 10, 10);
+      laterContext.fillRect(0, 0, 10, 10);
+      callbacks.shift()!(1);
+
+      expect(callbackRuns).toBe(1);
+      expect(laterContext.paintedRects).toEqual(new Set(['20,0,10,10']));
+      expect(freshFrameLoop.latestReports.get(laterRecord.id)).toMatchObject({
+        signatureStatus: 'changed',
+        unknownReason: null,
+      });
+
+      callbacks.shift()!(2);
+      expect(freshFrameLoop.latestReports.get(laterRecord.id)).toMatchObject({
+        signatureStatus: 'unknown',
+        unknownReason: 'canvas-attribute-reset',
+      });
+    } finally {
+      if (earlierRecord) freshWrap.records.delete(earlierRecord);
+      if (laterRecord) freshWrap.records.delete(laterRecord);
+      debug?.mockRestore();
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
 });
 
 describe('report subscribers', () => {

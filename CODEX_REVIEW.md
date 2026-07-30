@@ -5180,3 +5180,224 @@ signal has inverted, and 0.3.0 has been live with the original defect throughout
 reproductions. The release gates on a Chrome bench run and nothing else.
 
 FABLE_STATUS: READY_FOR_CODEX
+
+---
+
+## Codex closure review — 0.3.1 release candidate (2026-07-30)
+
+### Verdict
+
+The functional P1 is resolved, the exact package candidate is locally green, and
+the two remaining trust-boundary limitations are now public. The release is not
+approved yet because its unchanged Chrome performance gate requires three
+consecutive combined mixed/tracked-source passes and that certification was not
+obtained.
+
+This is a release-gate blocker, not a request for another speculative
+implementation round. No threshold was weakened and no lucky single pass was
+promoted to approval.
+
+### Fixed review scope
+
+- Base HEAD: `9a821119ef6804e134c657b767ab6a68e45594f2`.
+- Candidate: the uncommitted 0.3.1 patch in `README.md`,
+  `packages/core/README.md`, `packages/core/package.json`,
+  `packages/core/src/frame-loop.ts`, `packages/core/src/index.ts`,
+  `packages/core/test/cli.test.ts`, and
+  `packages/core/test/frame-loop.test.ts`.
+- Exact final benchmark bundle:
+  `ce3e85d2ea9c222341da5ea68ad6bebd97f5bd860b82c515a256148388af4537`.
+
+### Resolved P1 — synchronous publication can no longer corrupt a later comparison
+
+`startFrameLoop` still drains attribute records exactly once per tick, but now
+processes every active canvas before publishing any report, logging to the
+overridable console, or invoking a report listener. A synchronous callback may
+therefore reset a later canvas, but it cannot make that later canvas compare its
+post-reset bitmap against the pre-callback command stream and emit a false
+`same`.
+
+The new regression is non-vacuous: two fake canvases establish a baseline; the
+first report callback resets and redraws the second canvas; the second canvas
+must report `changed` in that tick and `unknown/canvas-attribute-reset` in the
+next. Before the two-phase loop it reported `same`. The corresponding real
+Chrome probe observed `same` before the callback, `changed` after synchronous
+publication, and `unknown/canvas-attribute-reset` after the queued mutation was
+drained, with the bitmap matching the reset/redraw.
+
+An attempted allocation reshaping did not improve the noisy Chrome result and
+was reverted. The final production change remains the minimal two-phase loop.
+
+### Accepted and documented limits
+
+- `HTMLImageElement` identity uses URL and dimensions; animated or otherwise
+  changing image contents with stable identity are not proven stable by
+  `same`.
+- Tracked-source reset invalidation is direct only; an `A -> B -> C` chain can
+  preserve `same` at C after A resets.
+
+Both statements now appear in the root and package Limits sections. They bound
+the 0.3.1 claim instead of silently expanding this release.
+
+### Verification
+
+- `pnpm --filter canvas-scan run test` — 280/280 tests passed after the final
+  source was restored.
+- `pnpm -r run typecheck` — passed.
+- `pnpm --filter canvas-scan run build` — passed.
+- `pnpm --filter demo run build` — passed.
+- `git diff --check` — passed.
+- Existing real-Chrome dogfood probes — passed against this exact candidate
+  bundle.
+- Exact `canvas-scan-0.3.1.tgz` pack verification — package, Vite fixture, Next
+  fixture, build, and boot checks passed.
+
+Chrome release-gate evidence on Apple M1 Max / Chrome 150:
+
+- Noisy mixed runs failed only `fullAddedP95Ms`: 3.500 ms and 3.000 ms against
+  the strict `< 3 ms` budget.
+- One complete combined run passed. Mixed:
+  `fullAddedMeanMs=1.729`, `fullAddedP95Ms=1.600`,
+  `countOnlyAddedMeanMs=0.595`, `countOnlyAddedP95Ms=0.600`. Tracked source:
+  `fullAddedMeanMs=1.453`, `fullAddedP95Ms=1.100`,
+  `countOnlyAddedMeanMs=0.433`, `countOnlyAddedP95Ms=0.400`.
+- The next quiet-host mixed runs failed only `fullAddedMeanMs`: 2.182 ms and
+  2.161 ms against the strict `< 2 ms` budget. Per-block values in the first
+  run fell from roughly 2.18–2.24 ms to 1.79–1.84 ms without a code change,
+  confirming material run variance but not satisfying the gate.
+- A disposable exact-HEAD A/B run was not accepted as certification: its
+  displayed full mean was 2.250 ms and cleanup ended with `kill EPERM`.
+
+### Remaining action
+
+Run the unchanged combined command three consecutive times on a stable isolated
+host. If all three pass, append approval and proceed with the release. If quiet,
+repeatable runs keep failing, investigate the performance contract separately;
+do not weaken its thresholds as part of this closure.
+
+No commit, tag, push, or publish was performed.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Codex post-reboot benchmark diagnosis (2026-07-30)
+
+### Verdict
+
+The 0.3.1 frame-loop patch is not a demonstrated performance regression. After
+removing an active Colima VM from the host, an interleaved clean-HEAD/candidate
+comparison showed both revisions crossing the absolute Chrome threshold in
+different runs. The current local gate is not reproducible enough to decide this
+release by demanding three consecutive passes.
+
+No further core implementation change is requested from this evidence. Release
+approval remains withheld pending an explicit benchmark-policy decision or a
+standardized runner; repeatedly rerunning until three passes appear would be
+selection bias, not certification.
+
+### Environment finding
+
+The first post-reboot run was not actually isolated. The Colima
+`com.apple.Virtualization.VirtualMachine` process was using approximately 71% of
+one CPU core. `brew services stop colima` removed its auto-start service before
+the controlled comparison.
+
+### Controlled A/B evidence
+
+All comparisons used Apple M1 Max, Chrome 150, the mixed workload, five warmed
+rotated blocks, and the existing thresholds.
+
+- Clean HEAD A1 (`9a821119`): PASS,
+  `fullAddedMeanMs=1.930`, `fullAddedP95Ms=2.200`.
+- Candidate B1 (bundle `ce3e85d2...`): timing PASS,
+  `fullAddedMeanMs=1.942`, `fullAddedP95Ms=2.900`; the script then failed only
+  during cleanup with `kill EPERM`.
+- Candidate B2 after repairing cleanup:
+  `fullAddedMeanMs=1.996` passed and `fullAddedP95Ms=3.500` failed.
+- Clean HEAD A2: `fullAddedMeanMs=2.272` failed while
+  `fullAddedP95Ms=2.200` passed.
+
+The adjacent passing A1/B1 mean difference was 0.012 ms. The baseline's own
+pass/fail swing is larger than the candidate/baseline difference, so the data
+refutes a patch-specific slowdown and demonstrates gate variance.
+
+### Benchmark harness fix
+
+`packages/dogfood/bench-chrome.mjs` no longer sends a process-group `SIGKILL`
+after the Vite server has already exited from the graceful `SIGTERM`. The
+previous unconditional kill could append `kill EPERM` after valid measurements
+and convert a timing pass into a command failure. The repaired run completed
+cleanup without that error; its nonzero exit was solely the measured p95 gate.
+
+### Verification and state
+
+- Candidate core tests: 280/280 passed.
+- Workspace typecheck, core build, demo build, pack fixtures, and real-Chrome
+  probes remain green.
+- `node --check packages/dogfood/bench-chrome.mjs` — passed.
+- `git diff --check` — passed.
+- No commit, tag, push, or publish was performed.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Codex 0.3.1 release approval (2026-07-30)
+
+### Decision
+
+Approved for the 0.3.1 release. The user explicitly accepted the controlled
+clean-HEAD/candidate A/B evidence after the absolute local Chrome gate proved
+non-reproducible for both revisions. This is a release-specific evidence
+decision, not an inference from a lucky pass and not a silent threshold change.
+
+The candidate closes the synchronous publication/reset false-`same` defect,
+keeps the two intentionally accepted trust-boundary limitations public, and
+does not show a measurable regression against clean HEAD. No further core
+implementation work is required for 0.3.1.
+
+### Accepted evidence
+
+- The two-phase frame loop processes every active canvas before any overridable
+  logging or synchronous report listener can reset a later canvas.
+- The non-vacuous regression fails before the fix and proves `changed` followed
+  by `unknown/canvas-attribute-reset` after the fix.
+- Real Chrome dogfood probes pass against bundle
+  `ce3e85d2ea9c222341da5ea68ad6bebd97f5bd860b82c515a256148388af4537`.
+- Controlled mixed-workload A/B after stopping Colima:
+  clean HEAD A1 `1.930/2.200 ms`, candidate B1 `1.942/2.900 ms`; later runs
+  crossed different absolute limits on both revisions. The 0.012 ms adjacent
+  mean difference does not support a candidate regression.
+- The dogfood shutdown fix prevents an unconditional process-group `SIGKILL`
+  after graceful Vite exit; the repaired run no longer produced `kill EPERM`.
+- Exact 0.3.1 package, Vite fixture, Next fixture, build, and boot verification
+  passed before the private dogfood-only shutdown adjustment.
+
+### Final verification
+
+- `pnpm --filter canvas-scan run test` — 280/280 passed.
+- `pnpm -r run typecheck` — passed.
+- `pnpm --filter canvas-scan run build` — passed.
+- `pnpm --filter demo run build` — passed.
+- `node --check packages/dogfood/bench-chrome.mjs` — passed.
+- `git diff --check` — passed.
+
+### Release scope
+
+The approved change consists of:
+
+- `CODEX_REVIEW.md`
+- `README.md`
+- `packages/core/README.md`
+- `packages/core/package.json`
+- `packages/core/src/frame-loop.ts`
+- `packages/core/src/index.ts`
+- `packages/core/test/cli.test.ts`
+- `packages/core/test/frame-loop.test.ts`
+- `packages/dogfood/bench-chrome.mjs`
+
+Local commit and tag creation are authorized. Push and npm publish are not part
+of this approval.
+
+CODEX_STATUS: APPROVED

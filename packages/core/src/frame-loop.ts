@@ -210,9 +210,13 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     windowIndex++;
     drainAttributeRecords();
 
+    const processedRecords: Array<[CanvasRecord, ProcessedRecord]> = [];
     for (const record of records) {
       const processed = processRecord(record, windowIndex, captureEvery);
-      if (!processed) continue;
+      if (processed) processedRecords.push([record, processed]);
+    }
+
+    for (const [record, processed] of processedRecords) {
       latestReports.set(processed.report.canvasId, processed.report);
       const history = histories.get(record.id) ?? [];
       history.push(processed.report);

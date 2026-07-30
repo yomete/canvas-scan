@@ -87,12 +87,13 @@ const stopServer = async (server) => {
     if (error.code !== 'ESRCH') throw error;
     return;
   }
-  if (server.exitCode == null) {
+  if (server.exitCode == null && server.signalCode == null) {
     await Promise.race([
       once(server, 'exit'),
       new Promise((resolve) => setTimeout(resolve, 5000)),
     ]);
   }
+  if (server.exitCode != null || server.signalCode != null) return;
   try {
     process.kill(-server.pid, 'SIGKILL');
   } catch (error) {

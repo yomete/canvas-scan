@@ -17,7 +17,7 @@ source location, resolved on demand through your dev sourcemaps.
 
 ## Status
 
-`canvas-scan@0.3.0` is on npm. The core is tested against
+`canvas-scan@0.3.1` is the current release candidate. The core is tested against
 react-konva and chart.js on real library internals — see
 [packages/dogfood/FINDINGS.md](packages/dogfood/FINDINGS.md).
 
@@ -158,9 +158,15 @@ so the tool cannot instrument itself.
   physical draws it observes.
 - OffscreenCanvas transfers and worker-owned canvases are not observable.
 - CanvasPattern arguments poison the window to `unknown`.
+- The `HTMLImageElement` token uses URL and dimensions. Animated images, or
+  otherwise changing image contents behind stable URL and dimensions, are not
+  proven stable by a `same` verdict.
 - A window containing `reset()` or a `width`/`height` reset reports `unknown`.
   A chart that resets its canvas every frame therefore never receives a
   `same` verdict.
+- Comparisons are command-stream based, and tracked source-canvas reset
+  invalidation follows direct `drawImage()` dependencies only. In a deeper
+  A → B → C compositing chain, resetting A can preserve a `same` verdict for C.
 - Attribute reset paths that bypass the wrapped common APIs are detected at
   the observer boundary. If drawing and state changes overlap that late
   detection, the canvas remains `unknown` until a directly observed reset
