@@ -158,10 +158,13 @@ so the tool cannot instrument itself.
   physical draws it observes.
 - OffscreenCanvas transfers and worker-owned canvases are not observable.
 - CanvasPattern arguments poison the window to `unknown`.
-- An attribute-driven resize is detected one window late, so the window in
-  which it happened is reported as unclear rather than compared.
-- A canvas reset performed by something other than an attribute or the
-  `width`/`height` properties is not observable.
+- **Resizing a canvas is not yet handled correctly.** Setting `width` or
+  `height` clears the canvas, so the redraw that follows is required, not
+  avoidable. The tool can still report such a frame as `same` and count it as a
+  review candidate. A canvas that resizes on every frame — a common charting
+  pattern — is affected. Treat `same` on a canvas that resizes as unreliable.
+- A canvas reset performed by something other than `reset()`, an attribute
+  write, or the `width`/`height` properties is not observable.
 - Full capture adds <2ms mean / <3ms p95, and count-only adds <0.75ms mean /
   <2ms p95, per 1,000 mixed bench iterations at the 1,000-op level, verified
   by `pnpm --filter dogfood run bench:chrome`.

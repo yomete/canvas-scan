@@ -866,3 +866,100 @@ minified IIFE and the packed README all carry the manifest version.
 - Yomi's global CLAUDE.md auto-loads (commit/push only with explicit approval
   in the current turn; minimal-first working style; lead with the outcome).
 - The polarsignals repo's conventions/memory do not apply here.
+
+## STOP POINT — 2026-07-30, 03:10. Read this first.
+
+Everything is pushed and CI is green. Nothing is half-applied. One decision is
+open, and it is the only thing blocking 0.3.1.
+
+### The open bug, in one paragraph
+
+Setting `canvas.width` or `height` clears the canvas, so the redraw that follows
+is REQUIRED, not avoidable. canvas-scan can still report that frame as `same`
+and count it as a review candidate. Verified on `main`:
+
+```
+canvas.width = 300; fillRect(...)  -> window 1: unknown
+canvas.width = 300; fillRect(...)  -> window 2: same   <- wrong
+canvas.width = 300; fillRect(...)  -> window 3: same   <- wrong
+```
+
+That is the common charting pattern (size the canvas, then draw, every frame),
+so it is not exotic. Both READMEs now warn about it under Limits.
+
+### Five attempts, and why each failed
+
+1. **Model the resize as a signature token.** Lost whenever the window was
+   discarded under sampling, and invisible to `setAttribute`.
+2. **Dimensions as persistent head state.** Fixed sampling; still blind to a
+   resize away and back inside one window.
+3. **Instrument `setAttribute`/`removeAttribute`.** Closed those two paths; the
+   list of remaining DOM paths (`setAttributeNS`, `Attr.value`, `toggleAttribute`,
+   `NamedNodeMap`, `Element.prototype.setAttribute.call`) has no end.
+4. **Probe live `fillStyle` and compare with the model.** REVERTED. Real Chrome
+   normalises: `'red'` reads back `'#ff0000'`, so every app writing colour names
+   would have had healthy canvases reported as reset on every window. Also too
+   narrow — clip and save-stack state cannot be read back at all, so no probe of
+   that shape can ever be complete.
+5. **`MutationObserver` on width/height** (current state). The DOM guarantee is
+   sound and verified — five mutation APIs produced five records in real Chrome,
+   including a same-value property set. But round 10 found five P1s: the
+   duplicate-swallowing counter loses a resize that happened in an uncaptured
+   window; observer delivery is a microtask, which lands AFTER our rAF tick, so
+   the refusal applies to the following window while the affected one already
+   emitted `same`; `markAttributeReset` does not advance the tracked-canvas
+   content token, so a canvas drawing a reset source hashes the stale token; the
+   flag is consumed before the native call succeeds; and the resize-and-redraw
+   pattern above still reports `same`.
+
+### The rule I believe is correct, and did not get to implement
+
+**A window containing a reset is not comparable — report `unknown`.**
+
+A redraw after a reset is by definition not avoidable, so `same` can never be
+right for that window. One rule closes the sampled case, the same-value case,
+and the resize-and-redraw pattern, and it REPLACES machinery rather than adding
+to it. Two supporting changes make it sound:
+
+- Drain the observer with `takeRecords()` inside canvas-scan's own rAF tick, so
+  late delivery becomes synchronous with the comparison instead of one window
+  behind.
+- Have the observer path do the same `contentVersion` / `refreshContentToken`
+  work the property path already does.
+
+**Known cost, decide deliberately:** a chart that resizes every frame will
+report `unknown` forever, so the tool says nothing about it. That is honest — we
+cannot tell whether that redraw was avoidable — but it reduces coverage on
+exactly the apps this tool targets. The cruder alternative is that a canvas which
+has ever been reset is never a review candidate again.
+
+### Three ways forward
+
+1. Implement "reset ⇒ unknown" plus the two supporting changes, then round 11.
+2. Take the cruder never-`same`-after-reset rule. Less coverage, trivially
+   correct.
+3. Ship 0.3.1 with the README warning as-is and revisit later. 0.3.0 has been
+   live with this bug since it shipped.
+
+### Also open, unrelated to the above
+
+- **`records` is never pruned** in `wrap-context.ts`. Detached canvases are
+  retained and every frame scans every canvas ever created. Memory and CPU only —
+  it cannot produce a wrong answer, which is why it keeps being deferred.
+- **The Chrome release bench has not run since `11a5fcb`** and gates 0.3.1. It
+  needs a quiet machine: check `uptime` first and require three consecutive
+  passes. A scheduled loop attempted this and declined five times at load 7.7 to
+  11, then was cancelled. The last certified numbers were 1.588 / 1.663 / 1.986 ms
+  against a 2 ms ceiling — 0.014 ms of margin, so this is not a formality.
+- **Re-enable npm two-factor authentication for write actions.** It was disabled
+  to publish 0.1.0 from a non-interactive shell.
+- **Revert the dogfood instrumentation** in the polarsignals checkout if it is
+  still there: `git checkout -- pages/_document.tsx && rm public/canvas-scan.iife.js`
+  under `ui/packages/app/cloud-v2`.
+
+### What is NOT a problem
+
+0.3.0 is published, installs cleanly, and works. Attribution is validated on
+React 18 in a production Next.js app. Ten review rounds are recorded in
+`CODEX_REVIEW.md`; the bottommost status is authoritative, and the in-repo copy
+is canonical (the external mirror has drifted before).
