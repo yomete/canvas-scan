@@ -17,7 +17,7 @@ source location, resolved on demand through your dev sourcemaps.
 
 ## Status
 
-`canvas-scan@0.3.1` is the current release candidate. The core is tested against
+`canvas-scan@0.3.1` is on npm. The core is tested against
 react-konva and chart.js on real library internals — see
 [packages/dogfood/FINDINGS.md](packages/dogfood/FINDINGS.md).
 
