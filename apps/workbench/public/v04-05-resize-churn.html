@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Canvas resize churn probe</title>
+<script src="/canvas-scan.iife.js"></script>
+<button id="interact">Run interaction</button>
+<button id="setup">One setup reset</button>
+<button id="outside">Reset outside drawing</button>
+<canvas id="seeded-canvas" width="240" height="120"></canvas>
+<canvas id="outside-canvas" width="40" height="20"></canvas>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode') || 'bad';
+  const seeded = document.querySelector('#seeded-canvas');
+  const context = seeded.getContext('2d');
+  const outside = document.querySelector('#outside-canvas');
+  const outsideContext = outside.getContext('2d');
+  const scene = [12, 28, 44];
+  const checksum = scene.reduce((sum, value) => sum + value, 0);
+  let frameCount = 0;
+  let interactions = 0;
+  let resizeCount = 0;
+  let setupRuns = 0;
+  let outsideStage = 0;
+  let pending = false;
+  const draw = () => { context.fillStyle = '#2563eb'; context.fillRect(scene[0], scene[1], scene[2], scene[2]); };
+  const resize = () => {
+    if (mode === 'fixed') {
+      if (seeded.width !== 240) seeded.width = 240;
+      if (seeded.height !== 120) seeded.height = 120;
+      if (seeded.getAttribute('width') !== '240') seeded.setAttribute('width', '240');
+      return;
+    }
+    seeded.width = seeded.width;
+    seeded.height = seeded.height;
+    seeded.setAttribute('width', String(seeded.width));
+    context.reset();
+  };
+  const tick = () => {
+    frameCount++;
+    if (pending) { resize(); resizeCount++; draw(); }
+    window.__RESIZE_CHURN_PROBE__ = { mode, frameCount, checksum, interactions, resizeCount, setupRuns, outsideStage };
+    requestAnimationFrame(tick);
+  };
+  document.querySelector('#interact').onclick = () => { interactions++; pending = true; };
+  document.querySelector('#setup').onclick = () => { seeded.width = seeded.width; draw(); setupRuns++; };
+  document.querySelector('#outside').onclick = () => {
+    outside.width = outside.width;
+    outsideStage = 1;
+    requestAnimationFrame(() => {
+      outside.height = outside.height;
+      outsideStage = 2;
+      requestAnimationFrame(() => {
+        outsideContext.fillRect(0, 0, 1, 1);
+        outsideStage = 3;
+      });
+    });
+  };
+  draw();
+  requestAnimationFrame(tick);
+</script>

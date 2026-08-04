@@ -3,6 +3,7 @@ import { computeStatus, newWindowSignature } from './signature';
 import type {
   CanvasScanOptions,
   DrawBatchReport,
+  RecordedResetEvent,
   SourceLocation,
 } from './types';
 import type { CanvasRecord } from './wrap-context';
@@ -13,6 +14,7 @@ import {
   refreshContentToken,
   records,
   setWindowCaptured,
+  takeResetEvents,
 } from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
@@ -34,6 +36,7 @@ export type ReportListener = (
 ) => void;
 
 const reportListeners = new Set<ReportListener>();
+const resetEventListeners = new Set<(event: RecordedResetEvent) => void>();
 
 let windowIndex = 0;
 
@@ -101,6 +104,15 @@ export function emitReport(
       console.warn('[canvas-scan] report listener removed after error', error);
     }
   }
+}
+
+export function subscribeToResetEvents(listener: (event: RecordedResetEvent) => void): () => void {
+  resetEventListeners.add(listener);
+  return () => resetEventListeners.delete(listener);
+}
+
+export function emitResetEvent(event: RecordedResetEvent): void {
+  for (const listener of resetEventListeners) listener({ ...event });
 }
 
 export interface ProcessedRecord {
@@ -189,15 +201,17 @@ export function processRecord(
     processed = { report, shouldLog };
     record.resetPendingReason = null;
     record.continuityLost = false;
-  } else if (record.rasterOps > 0) {
-    // Any raster in an uncaptured window breaks continuity, not just a reset.
-    // The skipped window's commands were never hashed, so we cannot know
-    // whether it drew the same thing. If it drew something else, the next
-    // captured redraw was NECESSARY, and calling it `same` would be a false
-    // review candidate. (Narrowing this to resets was tried and reverted: it
-    // reintroduced exactly that, caught by the captured-blue / uncaptured-red /
-    // captured-blue regression in sampling-contract.test.ts.)
-    record.continuityLost = true;
+  } else {
+    if (record.rasterOps > 0) {
+      // Any raster in an uncaptured window breaks continuity, not just a reset.
+      // The skipped window's commands were never hashed, so we cannot know
+      // whether it drew the same thing. If it drew something else, the next
+      // captured redraw was NECESSARY, and calling it `same` would be a false
+      // review candidate. (Narrowing this to resets was tried and reverted: it
+      // reintroduced exactly that, caught by the captured-blue / uncaptured-red /
+      // captured-blue regression in sampling-contract.test.ts.)
+      record.continuityLost = true;
+    }
   }
 
   if (record.rasterOps > 0) {
@@ -221,6 +235,32 @@ export function processRecord(
   return processed;
 }
 
+export function processRecordWithResetEvents(
+  record: CanvasRecord,
+  currentWindowIndex: number,
+  captureEvery: number,
+  publishedResetEvents: RecordedResetEvent[],
+): ProcessedRecord | null {
+  if (!record.activeInWindow) return null;
+  const pendingResetEvents = takeResetEvents(record);
+  const rasterOperationCount = record.rasterOps;
+  const unknownReason = record.resetPendingReason;
+  const processed = processRecord(record, currentWindowIndex, captureEvery);
+  if (!pendingResetEvents?.length) return processed;
+  const report = processed?.report;
+  publishedResetEvents.push(...pendingResetEvents.map(event => ({
+    ...event,
+    canvasId: record.id,
+    windowIndex: currentWindowIndex,
+    timestampMs: 0,
+    rasterOperationCount,
+    activeRasterOverlap: rasterOperationCount > 0,
+    commandStatus: report?.signatureStatus ?? 'unknown',
+    unknownReason: report?.unknownReason ?? unknownReason,
+  })));
+  return processed;
+}
+
 export function startFrameLoop(options: CanvasScanOptions): void {
   const raf = window.requestAnimationFrame.bind(window);
   const captureEvery = options.captureEvery ?? 1;
@@ -231,9 +271,18 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     drainAttributeRecords();
 
     const processedRecords: Array<[CanvasRecord, ProcessedRecord]> = [];
-    for (const record of records) {
-      const processed = processRecord(record, windowIndex, captureEvery);
-      if (processed) processedRecords.push([record, processed]);
+    if (resetEventListeners.size === 0) {
+      for (const record of records) {
+        const processed = processRecord(record, windowIndex, captureEvery);
+        if (processed) processedRecords.push([record, processed]);
+      }
+    } else {
+      const processedResetEvents: RecordedResetEvent[] = [];
+      for (const record of records) {
+        const processed = processRecordWithResetEvents(record, windowIndex, captureEvery, processedResetEvents);
+        if (processed) processedRecords.push([record, processed]);
+      }
+      for (const event of processedResetEvents) emitResetEvent({ ...event, timestampMs });
     }
 
     for (const [record, processed] of processedRecords) {
@@ -262,7 +311,6 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
       emitReport(copyReport(processed.report), record.canvas, { windowIndex, timestampMs });
     }
-
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
     if (windowIndex % 120 === 0) {

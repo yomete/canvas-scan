@@ -9,7 +9,8 @@
     "collect": "node collect.mjs",
     "probe:recording": "node recording-probe.mjs",
     "probe:burst-heavy": "node burst-heavy-probe.mjs",
-    "probe:continuous-repeated": "node v04-04-continuous-probe.mjs"
+    "probe:continuous-repeated": "node v04-04-continuous-probe.mjs",
+    "probe:resize-churn": "node v04-05-resize-churn-probe.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

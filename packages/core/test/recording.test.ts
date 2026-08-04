@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { emitReport, getCurrentWindowIndex } from '../src/frame-loop';
+import { emitReport, emitResetEvent, getCurrentWindowIndex } from '../src/frame-loop';
 import { getLastSession, getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
-import { records, type CanvasRecord } from '../src/wrap-context';
+import { getResetEvents, records, type CanvasRecord } from '../src/wrap-context';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/v04-02-session-v1.json', import.meta.url), 'utf8'));
 const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureStatus'] = 'same', overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({
@@ -62,9 +62,40 @@ describe('recording', () => {
     expect(second.windows.map(window => window.canvasId)).toEqual(['two']);
   });
 
+  it('keeps reset-only events and deep-copies them from stopped sessions', () => {
+    startRecording();
+    const firstWindowIndex = getCurrentWindowIndex() + 1;
+    publish(makeReport('reset', 'unknown', { rasterOperationCount: 2, unknownReason: 'canvas-reset' }), firstWindowIndex);
+    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'width-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'height-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const stopped = stopRecording()!;
+    stopped.resetEvents[0].width = 1;
+    const finding = stopped.findings.find(item => item.type === 'resize-churn');
+    if (!finding || finding.type !== 'resize-churn') throw new Error('missing resize finding');
+    finding.resetEvents[0].width = 1;
+    finding.affectedEpisodeIds[0] = 'changed';
+    finding.commandStatuses.unknown = 99;
+    finding.unknownReasons['canvas-reset'] = 99;
+    const stored = getLastSession()!;
+    expect(stored.resetEvents[0].width).toBe(300);
+    const storedFinding = stored.findings.find(item => item.type === 'resize-churn');
+    expect(storedFinding?.resetEvents[0].width).toBe(300);
+    expect(storedFinding?.affectedEpisodeIds[0]).not.toBe('changed');
+    expect(storedFinding?.commandStatuses.unknown).toBe(1);
+    expect(storedFinding?.unknownReasons['canvas-reset']).toBe(1);
+  });
+
+  it('does not carry reset evidence from outside recording or before a same-window start', () => {
+    const nextWindowIndex = getCurrentWindowIndex() + 1;
+    emitResetEvent({ canvasId: 'outside', windowIndex: nextWindowIndex, timestampMs: 5, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    startRecording();
+    emitResetEvent({ canvasId: 'inside', windowIndex: nextWindowIndex, timestampMs: 10, source: 'height-setter', width: 10, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    expect(stopRecording()!.resetEvents.map(event => event.canvasId)).toEqual(['inside']);
+  });
+
   it('subtracts pre-start totals from the first partial window only', () => {
     const canvas = {};
-    const record = { canvas, rasterOps: 3, selfTimeMs: 1.25 } as CanvasRecord;
+    const record = { canvas, id: 'partial', rasterOps: 3, selfTimeMs: 1.25 } as CanvasRecord;
     records.add(record);
     try {
       const startWindowIndex = getCurrentWindowIndex();
@@ -80,12 +111,87 @@ describe('recording', () => {
     }
   });
 
+  it('does not count pre-start raster work as active reset overlap', () => {
+    const canvas = {};
+    const record = { canvas, id: 'partial-reset', rasterOps: 3, selfTimeMs: 1.25 } as CanvasRecord;
+    records.add(record);
+    try {
+      const firstWindowIndex = getCurrentWindowIndex() + 1;
+      startRecording();
+      for (const source of ['width-setter', 'height-setter'] as const) emitResetEvent({ canvasId: 'partial-reset', windowIndex: firstWindowIndex, timestampMs: 10, source, width: 300, height: 150, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+      emitReport(makeReport('partial-reset', 'unknown', { rasterOperationCount: 3, canvasApiSelfTimeMs: 1.25, unknownReason: 'canvas-reset' }), canvas, { windowIndex: firstWindowIndex, timestampMs: 10 });
+      const session = stopRecording()!;
+      expect(session.windows[0].rasterOperationCount).toBe(0);
+      expect(session.resetEvents).toMatchObject([
+        { rasterOperationCount: 0, activeRasterOverlap: false },
+        { rasterOperationCount: 0, activeRasterOverlap: false },
+      ]);
+      expect(session.findings.some(finding => finding.type === 'resize-churn')).toBe(false);
+    } finally {
+      records.delete(record);
+    }
+  });
+
   it('keeps FIFO published metadata and evicts whole reports at 10000', () => {
     startRecording(); for (let index = 1; index <= 10001; index++) publish(makeReport('one'), index);
     const session = stopRecording()!;
     expect(session.windows).toHaveLength(10000); expect(session.windows[0].windowIndex).toBe(2);
     expect(session.windows.at(-1)?.timestampMs).toBe(1000100);
     expect(session.droppedEntryCounts.canvasWindowReports).toBe(1);
+  });
+
+  it('keeps 10000 reset events in FIFO order and counts the removed event', () => {
+    startRecording();
+    const windowIndex = getCurrentWindowIndex() + 1;
+    for (let index = 0; index <= 10000; index++) emitResetEvent({ canvasId: 'reset-fifo', windowIndex, timestampMs: index, source: 'width-setter', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const session = stopRecording()!;
+    expect(session.resetEvents).toHaveLength(10000);
+    expect(session.resetEvents[0].width).toBe(1);
+    expect(session.droppedEntryCounts.resetEvents).toBe(1);
+    expect(session.collectionLimits.maxResetEvents).toBe(10000);
+  });
+
+  it('counts reset events removed with an evicted canvas lifetime', () => {
+    startRecording();
+    const windowIndex = getCurrentWindowIndex() + 1;
+    for (let index = 0; index <= 128; index++) emitResetEvent({ canvasId: `reset-${index}`, windowIndex, timestampMs: index, source: 'width-setter', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const session = stopRecording()!;
+    expect(session.resetEvents.map(event => event.canvasId)).not.toContain('reset-0');
+    expect(session.droppedEntryCounts).toMatchObject({ canvasLifetimes: 1, resetEvents: 1 });
+  });
+
+  it('keeps reset-event FIFO replacement within 128 canvas lifetimes', () => {
+    startRecording();
+    const windowIndex = getCurrentWindowIndex() + 1;
+    const emit = (canvasId: string, timestampMs: number) => emitResetEvent({ canvasId, windowIndex, timestampMs, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emit('single', 0);
+    for (let index = 1; index < 10000; index++) emit(`retained-${index % 127}`, index);
+    emit('single', 10000);
+    emit('new', 10001);
+    const session = stopRecording()!;
+    expect(new Set(session.resetEvents.map(event => event.canvasId)).size).toBe(128);
+    expect(session.droppedEntryCounts.canvasLifetimes).toBe(1);
+  });
+
+  it('flushes post-start pending resets and removes pre-start raster work', () => {
+    const canvas = {};
+    const record = { canvas, id: 'pending', rasterOps: 3, selfTimeMs: 0, resetPendingReason: 'canvas-reset' } as CanvasRecord;
+    records.add(record);
+    try {
+      startRecording();
+      record.rasterOps = 5;
+      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+      getResetEvents(record).push({ source: 'height-setter', width: 300, height: 150 });
+      const session = stopRecording()!;
+      expect(session.resetEvents).toMatchObject([
+        { canvasId: 'pending', rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' },
+        { canvasId: 'pending', rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' },
+      ]);
+      expect(new Set(session.resetEvents.map(event => event.timestampMs))).toHaveLength(1);
+      expect(record.resetPendingReason).toBe('canvas-reset');
+    } finally {
+      records.delete(record);
+    }
   });
 
   it('keeps a valid session when a canvas loses its only window to report eviction', () => {
@@ -159,7 +265,7 @@ describe('recording', () => {
     expect(canvasA).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 3, canvasApiSelfTimeMs: 2, maxWindowSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 } } });
     expect(session.episodes).toHaveLength(1);
     expect(session.episodes[0]).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 6, canvasApiSelfTimeMs: 4, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 }, stroke: { count: 1, canvasApiSelfTimeMs: 2 } } });
-    expect(session.episodes[0].canvases.find(canvas => canvas.canvasId === 'a')).toEqual({ canvasId: 'a', activeWindowCount: 2, rasterOperationCount: 3, canvasApiSelfTimeMs: 2, maxWindowSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 } } });
+    expect(session.episodes[0].canvases.find(canvas => canvas.canvasId === 'a')).toEqual({ canvasId: 'a', activeWindowCount: 2, rasterOperationCount: 3, canvasApiSelfTimeMs: 2, maxWindowSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 } }, resetEventCount: 0 });
   });
 
   it('ranks canvases by total, maximum window, raster operations, and stable id', () => {

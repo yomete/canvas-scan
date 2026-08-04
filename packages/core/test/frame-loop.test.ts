@@ -5,16 +5,21 @@ import {
   getHistory,
   latestReports,
   processRecord,
+  processRecordWithResetEvents,
   setSourceLocation,
   startFrameLoop,
+  subscribeToResetEvents,
   subscribeToReports,
 } from '../src/frame-loop';
 import { getReports } from '../src/index';
+import { getLastSession, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 import {
   getMethodEvidence,
+  getResetEvents,
   records,
   setMethodEvidenceCollectionEnabled,
+  setResetEventCollectionEnabled,
   type CanvasRecord,
 } from '../src/wrap-context';
 
@@ -128,6 +133,53 @@ describe('processRecord', () => {
       expect(getMethodEvidence(record).stroke).toEqual({ count: 1, canvasApiSelfTimeMs: 0.5 });
     } finally {
       setMethodEvidenceCollectionEnabled(false);
+    }
+  });
+
+  it('stamps captured and reset-only evidence without borrowing raster work from another window', () => {
+    const record = makeRecord({ resetPendingReason: 'canvas-reset' });
+    const events: import('../src/types').RecordedResetEvent[] = [];
+    setResetEventCollectionEnabled(true);
+    try {
+      getResetEvents(record).push({ source: 'width-setter', width: 320, height: 150 });
+      processRecordWithResetEvents(record, 4, 1, events);
+      expect(events).toEqual([{
+        canvasId: 'test-canvas', windowIndex: 4, timestampMs: 0,
+        source: 'width-setter', width: 320, height: 150,
+        rasterOperationCount: 2, activeRasterOverlap: true,
+        commandStatus: 'unknown', unknownReason: 'canvas-reset',
+      }]);
+
+      record.activeInWindow = true;
+      record.rasterOps = 0;
+      record.resetPendingReason = 'canvas-reset';
+      getResetEvents(record).push({ source: 'height-setter', width: 320, height: 180 });
+      processRecordWithResetEvents(record, 5, 1, events);
+      record.activeInWindow = true;
+      record.rasterOps = 3;
+      processRecordWithResetEvents(record, 6, 1, events);
+      expect(events[1]).toMatchObject({
+        windowIndex: 5, rasterOperationCount: 0, activeRasterOverlap: false,
+      });
+    } finally {
+      setResetEventCollectionEnabled(false);
+    }
+  });
+
+  it('keeps reset evidence from an uncaptured window while preserving the reset barrier', () => {
+    const record = makeRecord({ rasterOps: 0, resetPendingReason: 'canvas-reset' });
+    const events: import('../src/types').RecordedResetEvent[] = [];
+    setResetEventCollectionEnabled(true);
+    try {
+      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+      expect(processRecordWithResetEvents(record, 3, 2, events)).toBeNull();
+      expect(events[0]).toMatchObject({
+        windowIndex: 3, activeRasterOverlap: false,
+        commandStatus: 'unknown', unknownReason: 'canvas-reset',
+      });
+      expect(record.resetPendingReason).toBe('canvas-reset');
+    } finally {
+      setResetEventCollectionEnabled(false);
     }
   });
 
@@ -777,6 +829,57 @@ describe('published metadata', () => {
       expect(first).toEqual({ windowIndex: first.windowIndex, timestampMs: 456.75 });
       expect(second).toEqual({ windowIndex: first.windowIndex + 1, timestampMs: 789.25 });
     } finally { unsubscribe(); records.delete(record); latestReports.delete(record.id); debug.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it('uses the animation timestamp for reset evidence', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({ id: 'reset-metadata', resetPendingReason: 'canvas-reset' });
+    const listener = vi.fn();
+    const unsubscribe = subscribeToResetEvents(listener);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+    setResetEventCollectionEnabled(true);
+    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(456.75);
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+        canvasId: 'reset-metadata', timestampMs: 456.75,
+        rasterOperationCount: 2, activeRasterOverlap: true,
+      }));
+    } finally {
+      unsubscribe();
+      setResetEventCollectionEnabled(false);
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('publishes reset evidence before a synchronous report listener stops recording', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({ id: 'stop-order', resetPendingReason: 'canvas-reset' });
+    const stopOnReport = () => stopRecording();
+    const unsubscribe = subscribeToReports(stopOnReport);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+    startRecording();
+    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(10);
+      expect(stopRecording()).toBeUndefined();
+      expect(getLastSession()?.resetEvents).toMatchObject([{ canvasId: 'stop-order', timestampMs: 10 }]);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      resetRecordingForTests();
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

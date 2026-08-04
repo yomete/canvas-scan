@@ -8,7 +8,7 @@ const { resolveSourceOutcome } = vi.hoisted(() => ({
 
 vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
-import { emitReport, latestReports } from '../src/frame-loop';
+import { emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
 import { getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
@@ -247,6 +247,56 @@ describe('overlay toolbar', () => {
 });
 
 describe('overlay flyout', () => {
+  it('shows reset-churn evidence and opens the connected canvas', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'resize-seeded', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3, canvasApiSelfTimeMs: 2 }), canvas, { windowIndex: 101, timestampMs: 10 });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'context-reset', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="resize-seeded"]')!;
+    expect(card.textContent).toContain('Reset churn · review candidate');
+    expect(card.textContent).toContain('2 active resets of 2 observed resets');
+    expect(card.textContent).toContain('width-setter (240×120)');
+    expect(card.textContent).toContain('context-reset (240×120)');
+    expect(card.textContent).toContain('Affected episodes:');
+    expect(card.textContent).toContain('Command statuses: same 0, changed 0, unknown 1');
+    expect(card.textContent).toContain('Unknown reasons: canvas-reset 1');
+    expect(card.textContent).toContain('does not show that resets made the application slow');
+    expect(card.textContent).not.toMatch(/caused|wasted|avoidable|render time|GPU time|pixel/i);
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector('.outline[data-canvas-id="resize-seeded"]')?.classList).toContain('locate');
+    card.click();
+    refreshOverlay();
+    expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
+  });
+
+  it('keeps detached reset-churn evidence without a locate outline', () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    startRecording();
+    emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 101, timestampMs: 10 });
+    for (const source of ['width-setter', 'height-setter'] as const) {
+      emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source, width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    }
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-resize"]')!;
+    expect(card.textContent).toContain('Reset churn');
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector('.outline[data-canvas-id="detached-resize"]')).toBeNull();
+  });
+
   it('shows completed repeated-work evidence and opens the seeded canvas', () => {
     mountOverlay();
     const canvas = makeCanvas();

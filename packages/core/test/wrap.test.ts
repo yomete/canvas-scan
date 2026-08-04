@@ -2,10 +2,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   getRecord,
   getMethodEvidence,
+  getResetEvents,
   installCanvasPatch,
   isKilled,
   records,
   setMethodEvidenceCollectionEnabled,
+  setResetEventCollectionEnabled,
   setWindowCaptured,
 } from '../src/wrap-context';
 
@@ -94,6 +96,16 @@ beforeAll(() => setMethodEvidenceCollectionEnabled(true));
 afterAll(() => setMethodEvidenceCollectionEnabled(false));
 
 describe('canvas context wrapping', () => {
+  it('collects successful context reset evidence only while enabled', () => {
+    const record = getRecord(canvas)!;
+    setResetEventCollectionEnabled(false);
+    context.reset();
+    expect(getResetEvents(record)).toEqual([]);
+    setResetEventCollectionEnabled(true);
+    context.reset();
+    expect(getResetEvents(record)).toEqual([{ source: 'context-reset', width: 300, height: 150 }]);
+    setResetEventCollectionEnabled(false);
+  });
   it('preserves context identity and registers the canvas once', () => {
     expect(canvas.getContext('2d')).toBe(context);
     expect(canvas.getContext('2d')).toBe(context);

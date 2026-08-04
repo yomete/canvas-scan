@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { processRecord } from '../src/frame-loop';
+import { processRecord, processRecordWithResetEvents } from '../src/frame-loop';
 import {
   getRecord,
+  getResetEvents,
   installCanvasPatch,
   setMethodEvidenceCollectionEnabled,
+  setResetEventCollectionEnabled,
   setWindowCaptured,
 } from '../src/wrap-context';
 import type { CanvasRecord } from '../src/wrap-context';
@@ -96,12 +98,43 @@ function finish(
 
 beforeEach(() => {
   setMethodEvidenceCollectionEnabled(true);
+  setResetEventCollectionEnabled(true);
   setWindowCaptured(true);
 });
 
-afterEach(() => setMethodEvidenceCollectionEnabled(false));
+afterEach(() => {
+  setMethodEvidenceCollectionEnabled(false);
+  setResetEventCollectionEnabled(false);
+});
 
 describe('sampling contract', () => {
+  it('classifies raster work on either side of a reset only in the same window', () => {
+    const { canvas, context, record } = makeCanvas();
+    const events: import('../src/types').RecordedResetEvent[] = [];
+
+    context.fillRect(0, 0, 1, 1);
+    canvas.width = canvas.width;
+    expect(processRecordWithResetEvents(record, 2, 2, events)?.report).toMatchObject({
+      signatureStatus: 'unknown', unknownReason: 'canvas-reset',
+    });
+
+    canvas.height = canvas.height;
+    context.fillRect(0, 0, 1, 1);
+    processRecordWithResetEvents(record, 4, 2, events);
+
+    canvas.width = canvas.width;
+    processRecordWithResetEvents(record, 6, 2, events);
+    context.fillRect(0, 0, 1, 1);
+    processRecordWithResetEvents(record, 8, 2, events);
+
+    expect(events.map(event => ({ source: event.source, windowIndex: event.windowIndex, active: event.activeRasterOverlap }))).toEqual([
+      { source: 'width-setter', windowIndex: 2, active: true },
+      { source: 'height-setter', windowIndex: 4, active: true },
+      { source: 'width-setter', windowIndex: 6, active: false },
+    ]);
+    expect(getResetEvents(record)).toEqual([]);
+  });
+
   it('uses two clock reads when captured and none when uncaptured', () => {
     const { context } = makeCanvas();
     const clock = vi.spyOn(performance, 'now').mockReturnValue(1);

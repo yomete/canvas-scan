@@ -10,9 +10,11 @@ import { processRecord } from '../src/frame-loop';
 import {
   drainAttributeRecords,
   getRecord,
+  getResetEvents,
   installCanvasPatch,
   isKilled,
   records,
+  setResetEventCollectionEnabled,
   setWindowCaptured,
 } from '../src/wrap-context';
 
@@ -98,6 +100,7 @@ class FakeContext {
   private fillStyleValue = '#000000';
   throwOnFillStyleRead = false;
   throwOnNextFillRect = false;
+  resetError: unknown = null;
 
   constructor(canvas: FakeCanvas) {
     this.canvas = canvas;
@@ -128,6 +131,7 @@ class FakeContext {
   }
 
   reset() {
+    if (this.resetError) throw this.resetError;
     this.canvas.resetOutOfBand();
   }
 
@@ -142,7 +146,11 @@ class FakeCanvas {
   widthValue: unknown = 300;
   heightValue: unknown = 150;
   throwOnWidthRead = false;
+  widthSetError: unknown = null;
+  heightSetError: unknown = null;
   throwOnSetAttribute = false;
+  setAttributeError: unknown = null;
+  removeAttributeError: unknown = null;
   throwOnObserve = false;
   afterReset: (() => void) | null = null;
 
@@ -152,6 +160,7 @@ class FakeCanvas {
   }
 
   set width(value: number) {
+    if (this.widthSetError) throw this.widthSetError;
     this.widthValue = value;
     this.resetOutOfBand();
     FakeMutationObserver.queue(this, 'width');
@@ -162,6 +171,7 @@ class FakeCanvas {
   }
 
   set height(value: number) {
+    if (this.heightSetError) throw this.heightSetError;
     this.heightValue = value;
     this.resetOutOfBand();
     FakeMutationObserver.queue(this, 'height');
@@ -178,6 +188,7 @@ class FakeCanvas {
   }
 
   setAttribute(name: string, value: unknown) {
+    if (this.setAttributeError) throw this.setAttributeError;
     if (typeof name === 'symbol') {
       // WebIDL DOMString conversion, as a browser does it.
       throw new TypeError('Cannot convert a Symbol value to a string');
@@ -216,6 +227,7 @@ class FakeCanvas {
 
   // A browser resets nothing when the attribute is not there.
   removeAttribute(name: string) {
+    if (this.removeAttributeError) throw this.removeAttributeError;
     const attribute = String(name).toLowerCase();
     if (!this.present.delete(attribute)) return;
     if (attribute === 'width') {
@@ -271,6 +283,7 @@ function finish(
 }
 
 afterEach(() => {
+  setResetEventCollectionEnabled(false);
   setWindowCaptured(true);
   FakeMutationObserver.reset();
 });
@@ -288,6 +301,61 @@ afterAll(() => {
 });
 
 describe('canvas patch hardening', () => {
+  it('records each successful native reset once with its source and resulting dimensions', () => {
+    const { canvas, context, record } = makeCanvas();
+    setResetEventCollectionEnabled(true);
+
+    canvas.width = canvas.width;
+    canvas.height = 160;
+    canvas.setAttribute('width', '320');
+    canvas.present.add('height');
+    canvas.removeAttribute('height');
+    canvas.setAttributeNS(null, 'width', '330');
+    drainAttributeRecords();
+    context.reset();
+
+    expect(getResetEvents(record)).toEqual([
+      { source: 'width-setter', width: 300, height: 150 },
+      { source: 'height-setter', width: 300, height: 160 },
+      { source: 'width-attribute', width: 320, height: 160 },
+      { source: 'height-attribute', width: 320, height: 150 },
+      { source: 'width-attribute', width: 330, height: 150 },
+      { source: 'context-reset', width: 330, height: 150 },
+    ]);
+    records.delete(record);
+  });
+
+  it('does not record failed resets and preserves each native error object', () => {
+    const { canvas, context, record } = makeCanvas();
+    setResetEventCollectionEnabled(true);
+    const cases: Array<[unknown, () => void, () => void]> = [
+      [new Error('width failed'), () => { canvas.width = 1; }, () => { canvas.widthSetError = null; }],
+      [new Error('height failed'), () => { canvas.height = 1; }, () => { canvas.heightSetError = null; }],
+      [new Error('setAttribute failed'), () => { canvas.setAttribute('width', '1'); }, () => { canvas.setAttributeError = null; }],
+      [new Error('removeAttribute failed'), () => { canvas.removeAttribute('width'); }, () => { canvas.removeAttributeError = null; }],
+      [new Error('reset failed'), () => { context.reset(); }, () => { context.resetError = null; }],
+    ];
+    canvas.present.add('width');
+
+    for (const [error, call, clear] of cases) {
+      if ((error as Error).message === 'width failed') canvas.widthSetError = error;
+      if ((error as Error).message === 'height failed') canvas.heightSetError = error;
+      if ((error as Error).message === 'setAttribute failed') canvas.setAttributeError = error;
+      if ((error as Error).message === 'removeAttribute failed') canvas.removeAttributeError = error;
+      if ((error as Error).message === 'reset failed') context.resetError = error;
+      let thrown: unknown;
+      try { call(); } catch (caught) { thrown = caught; }
+      expect(thrown).toBe(error);
+      clear();
+    }
+
+    expect(getResetEvents(record)).toEqual([]);
+    canvas.present.delete('width');
+    canvas.removeAttribute('width');
+    expect(getResetEvents(record)).toEqual([]);
+    records.delete(record);
+  });
+
   it('treats duplicate installation as a no-op', () => {
     installCanvasPatch(targets);
     const canvas = new FakeCanvas();

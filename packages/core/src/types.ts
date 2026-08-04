@@ -49,6 +49,21 @@ export interface RecordedCanvasWindow extends DrawBatchReport {
   timestampMs: number;
 }
 
+export type CanvasResetSource = 'width-setter' | 'height-setter' | 'width-attribute' | 'height-attribute' | 'context-reset';
+
+export interface RecordedResetEvent {
+  canvasId: string;
+  windowIndex: number;
+  timestampMs: number;
+  source: CanvasResetSource;
+  width: number | null;
+  height: number | null;
+  rasterOperationCount: number;
+  activeRasterOverlap: boolean;
+  commandStatus: SignatureStatus;
+  unknownReason: string | null;
+}
+
 export interface RecordedCanvasSummary {
   canvasId: string;
   nearestReactOwner: string | null;
@@ -70,6 +85,7 @@ export interface RecordedEpisodeCanvasSummary {
   canvasApiSelfTimeMs: number;
   maxWindowSelfTimeMs: number;
   methodEvidence: Record<string, CanvasMethodEvidence>;
+  resetEventCount: number;
 }
 
 export interface RecordedDrawEpisode {
@@ -83,6 +99,7 @@ export interface RecordedDrawEpisode {
   canvasApiSelfTimeMs: number;
   methodEvidence: Record<string, CanvasMethodEvidence>;
   canvases: RecordedEpisodeCanvasSummary[];
+  resetEventCount: number;
 }
 
 export interface HeavyCanvasWorkFinding {
@@ -120,7 +137,23 @@ export interface RepeatedDrawWorkFinding {
   nextCheck: string;
 }
 
-export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding;
+export interface ResizeChurnFinding {
+  type: 'resize-churn';
+  evidenceLevel: 'candidate';
+  canvasId: string;
+  observedResetCount: number;
+  activeResetCount: number;
+  resetEvents: Array<Pick<RecordedResetEvent, 'source' | 'width' | 'height' | 'windowIndex' | 'timestampMs'>>;
+  affectedEpisodeIds: string[];
+  commandStatuses: { same: number; changed: number; unknown: number };
+  unknownReasons: Record<string, number>;
+  canvasApiSelfTimeMs: number;
+  rasterOperationCount: number;
+  claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
+  nextCheck: string;
+}
+
+export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding | ResizeChurnFinding;
 
 export interface InvestigationSessionV1 {
   schemaVersion: 1;
@@ -133,12 +166,14 @@ export interface InvestigationSessionV1 {
   browserFeatures: { monotonicTime: boolean };
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
+  resetEvents: RecordedResetEvent[];
   episodes: RecordedDrawEpisode[];
   findings: InvestigationFinding[];
   collectionLimits: {
     maxDurationMs: 30000;
     maxCanvasWindowReports: 10000;
     maxCanvasLifetimes: 128;
+    maxResetEvents: 10000;
   };
-  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number };
+  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number };
 }

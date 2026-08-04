@@ -12,6 +12,7 @@ import {
 import type {
   AttributionKind,
   CanvasMethodEvidence,
+  CanvasResetSource,
   SignatureStatus,
 } from './types';
 import type { WindowSignature } from './signature';
@@ -181,6 +182,8 @@ let killed = false;
 let nextCanvasSerial = 1;
 let windowCaptured = true;
 let methodEvidenceByRecord: Map<CanvasRecord, Record<string, CanvasMethodEvidence>> | null = null;
+type PendingResetEvent = { source: CanvasResetSource; width: number | null; height: number | null };
+let resetEventsByRecord: Map<CanvasRecord, PendingResetEvent[]> | null = null;
 // Captured at install time: instance-level shadowing of getLineDash must
 // never be invoked by the tracer (a Chrome probe showed a shadowed getter
 // returning [] while native state was [5, 5]).
@@ -196,6 +199,38 @@ export function setWindowCaptured(captured: boolean): void {
 
 export function setMethodEvidenceCollectionEnabled(enabled: boolean): void {
   methodEvidenceByRecord = enabled ? new Map() : null;
+}
+
+export function setResetEventCollectionEnabled(enabled: boolean): void {
+  resetEventsByRecord = enabled ? new Map() : null;
+}
+
+export function getResetEvents(record: CanvasRecord): PendingResetEvent[] {
+  const events = resetEventsByRecord?.get(record) ?? [];
+  resetEventsByRecord?.set(record, events);
+  return events;
+}
+
+export function takeResetEvents(record: CanvasRecord): PendingResetEvent[] | null {
+  if (!resetEventsByRecord) return null;
+  const events = resetEventsByRecord.get(record) ?? [];
+  resetEventsByRecord.delete(record);
+  return events;
+}
+
+function recordResetEvent(record: CanvasRecord, source: CanvasResetSource): void {
+  if (!resetEventsByRecord) return;
+  let width: number | null = null;
+  let height: number | null = null;
+  try {
+    const nextWidth = nativeCanvasWidthGetter?.call(record.canvas);
+    width = typeof nextWidth === 'number' ? nextWidth : null;
+  } catch {}
+  try {
+    const nextHeight = nativeCanvasHeightGetter?.call(record.canvas);
+    height = typeof nextHeight === 'number' ? nextHeight : null;
+  } catch {}
+  getResetEvents(record).push({ source, width, height });
 }
 
 export function getMethodEvidence(record: CanvasRecord): Record<string, CanvasMethodEvidence> {
@@ -290,6 +325,7 @@ function recordExactReset(
   record: CanvasRecord,
   reason: ResetReason,
   reentrantActivity: boolean,
+  source: CanvasResetSource,
 ): void {
   record.exactResetDepth--;
   record.contentVersion++;
@@ -302,6 +338,7 @@ function recordExactReset(
   record.activeInWindow = true;
   record.contextActivityInWindow =
     record.exactResetDepth > 0 && reentrantActivity;
+  recordResetEvent(record, source);
 }
 
 function beginExactReset(record: CanvasRecord): boolean {
@@ -319,7 +356,7 @@ function restoreActivityAfterFailedReset(
   record.contextActivityInWindow ||= previousActivity;
 }
 
-function recordLateAttributeReset(record: CanvasRecord): void {
+function recordLateAttributeReset(record: CanvasRecord, source: CanvasResetSource): void {
   const activityMayHaveOverlapped = record.contextActivityInWindow === true;
   record.contentVersion++;
   record.resetVersion++;
@@ -332,6 +369,7 @@ function recordLateAttributeReset(record: CanvasRecord): void {
   refreshContentToken(record);
   record.resetPendingReason ??= 'canvas-attribute-reset';
   record.activeInWindow = true;
+  recordResetEvent(record, source);
 }
 
 function setProp(
@@ -658,10 +696,10 @@ export function getRecord(canvas: unknown): CanvasRecord | undefined {
   return recordByCanvas.get(canvas as object);
 }
 
-export function markAttributeReset(canvas: unknown): void {
+export function markAttributeReset(canvas: unknown, source: CanvasResetSource): void {
   const record = recordByCanvas.get(canvas as object);
   if (!record) return;
-  recordLateAttributeReset(record);
+  recordLateAttributeReset(record, source);
 }
 
 function isDimensionalAttributeRecord(
@@ -693,7 +731,7 @@ function applyAttributeRecords(
   }
   for (const [index, entry] of entries.entries()) {
     if (index !== suppressedIndex && isDimensionalAttributeRecord(entry)) {
-      markAttributeReset(entry.target);
+      markAttributeReset(entry.target, entry.attributeName === 'width' ? 'width-attribute' : 'height-attribute');
     }
   }
 }
@@ -895,6 +933,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           record,
           'canvas-reset',
           record.contextActivityInWindow,
+          attribute === 'width' ? 'width-attribute' : 'height-attribute',
         );
       }
       return result;
@@ -947,6 +986,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           record,
           'canvas-reset',
           record.contextActivityInWindow,
+          attribute === 'width' ? 'width-attribute' : 'height-attribute',
         );
       }
       return result;
@@ -981,6 +1021,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           record,
           'canvas-reset',
           record.contextActivityInWindow,
+          name === 'width' ? 'width-setter' : 'height-setter',
         );
       },
     });
@@ -1040,6 +1081,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           record,
           'canvas-reset',
           record.contextActivityInWindow,
+          'context-reset',
         );
       } else {
         record.activeInWindow = true;

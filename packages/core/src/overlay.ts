@@ -18,6 +18,7 @@ import type {
   CanvasScanOptions,
   DrawBatchReport,
   RepeatedDrawWorkFinding,
+  ResizeChurnFinding,
   SourceLocation,
 } from './types';
 
@@ -831,6 +832,38 @@ function appendRepeatedFinding(finding: RepeatedDrawWorkFinding): void {
   flyout.append(card);
 }
 
+function appendResizeChurnFinding(finding: ResizeChurnFinding): void {
+  if (!flyout) return;
+  const card = document.createElement('button');
+  card.className = 'repeated-finding';
+  card.type = 'button';
+  card.dataset.canvasId = finding.canvasId;
+  const title = document.createElement('div');
+  title.className = 'repeated-finding-title';
+  title.textContent = `${stats.get(finding.canvasId)?.owner ?? finding.canvasId} · Reset churn · review candidate`;
+  card.append(title);
+  const lines = [
+    `${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`,
+    `Resets: ${finding.resetEvents.map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ')}`,
+    `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`,
+    `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`,
+    `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`,
+    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
+    `Raster operations: ${finding.rasterOperationCount}`,
+    finding.claimBoundary.observation,
+    finding.claimBoundary.explanation,
+    finding.claimBoundary.nonEstablishedFacts,
+    finding.nextCheck,
+  ];
+  for (const text of lines) {
+    const line = document.createElement('div');
+    line.className = 'repeated-finding-line';
+    line.textContent = text;
+    card.append(line);
+  }
+  flyout.append(card);
+}
+
 function renderFlyout(): void {
   if (!flyout) return;
   flyout.hidden = !flyoutOpen || collapsed || selectedCanvasId !== null;
@@ -875,6 +908,8 @@ function renderFlyout(): void {
   flyout.querySelectorAll('.repeated-finding').forEach(card => card.remove());
   const repeatedFindings = getLastSession()?.findings.filter((finding): finding is RepeatedDrawWorkFinding => finding.type === 'repeated-draw-work') ?? [];
   for (const finding of repeatedFindings) appendRepeatedFinding(finding);
+  const resizeFindings = getLastSession()?.findings.filter((finding): finding is ResizeChurnFinding => finding.type === 'resize-churn') ?? [];
+  for (const finding of resizeFindings) appendResizeChurnFinding(finding);
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     let row = flyoutRows.get(canvasId);
     if (!row) {
