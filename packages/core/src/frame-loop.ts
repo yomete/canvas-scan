@@ -20,7 +20,16 @@ const histories = new Map<string, DrawBatchReport[]>();
 const lastReportedWindows = new Map<string, number>();
 const sourceLocations = new Map<string, SourceLocation | null>();
 
-export type ReportListener = (report: DrawBatchReport, canvas: unknown) => void;
+export interface PublishedWindowMetadata {
+  windowIndex: number;
+  timestampMs: number;
+}
+
+export type ReportListener = (
+  report: DrawBatchReport,
+  canvas: unknown,
+  metadata?: PublishedWindowMetadata,
+) => void;
 
 const reportListeners = new Set<ReportListener>();
 
@@ -74,10 +83,12 @@ export function subscribeToReports(listener: ReportListener): () => void {
 export function emitReport(
   report: DrawBatchReport,
   canvas: unknown,
+  metadata?: PublishedWindowMetadata,
 ): void {
   for (const listener of reportListeners) {
     try {
-      listener(report, canvas);
+      if (metadata === undefined) listener(report, canvas);
+      else listener(report, canvas, metadata);
     } catch (error) {
       reportListeners.delete(listener);
       console.warn('[canvas-scan] report listener removed after error', error);
@@ -206,7 +217,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
   const captureEvery = options.captureEvery ?? 1;
   setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
-  const tick = () => {
+  const tick = (timestampMs: number) => {
     windowIndex++;
     drainAttributeRecords();
 
@@ -240,7 +251,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
         }
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
-      emitReport(processed.report, record.canvas);
+      emitReport(processed.report, record.canvas, { windowIndex, timestampMs });
     }
 
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);

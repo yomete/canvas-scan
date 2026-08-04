@@ -737,6 +737,24 @@ describe('report subscribers', () => {
   });
 });
 
+describe('published metadata', () => {
+  it('uses the animation callback timestamp and stable window index', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({ id: 'metadata' }); records.add(record);
+    const listener = vi.fn(); const unsubscribe = subscribeToReports(listener);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      startFrameLoop({}); callbacks.shift()!(456.75);
+      record.activeInWindow = true; callbacks.shift()!(789.25);
+      const first = listener.mock.calls[0][2]; const second = listener.mock.calls[1][2];
+      expect(Number.isInteger(first.windowIndex)).toBe(true);
+      expect(first).toEqual({ windowIndex: first.windowIndex, timestampMs: 456.75 });
+      expect(second).toEqual({ windowIndex: first.windowIndex + 1, timestampMs: 789.25 });
+    } finally { unsubscribe(); records.delete(record); latestReports.delete(record.id); debug.mockRestore(); vi.unstubAllGlobals(); }
+  });
+});
+
 describe('report history', () => {
   it('caps each canvas history at 120 reports', () => {
     const callbacks: FrameRequestCallback[] = [];

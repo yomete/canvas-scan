@@ -5,6 +5,12 @@ import {
   setSourceLocation,
   subscribeToReports,
 } from './frame-loop';
+import {
+  getRecordingState,
+  startRecording,
+  stopRecording,
+  subscribeToRecordingState,
+} from './recording';
 import { resolveSourceOutcome } from './symbolicate';
 import type {
   AttributionKind,
@@ -64,6 +70,8 @@ let dock: HTMLDivElement | null = null;
 let toolbar: HTMLDivElement | null = null;
 let inspectButton: HTMLButtonElement | null = null;
 let countsButton: HTMLButtonElement | null = null;
+let recordButton: HTMLButtonElement | null = null;
+let stopRecordingButton: HTMLButtonElement | null = null;
 let canvasCount: HTMLSpanElement | null = null;
 let candidateCount: HTMLSpanElement | null = null;
 let flyout: HTMLDivElement | null = null;
@@ -81,6 +89,7 @@ let dirty = false;
 let flyoutRevision = 0;
 let renderedFlyoutRevision = -1;
 let unsubscribe: (() => void) | null = null;
+let unsubscribeRecording: (() => void) | null = null;
 let dragStart: { pointerX: number; pointerY: number; x: number; y: number } | null =
   null;
 let dragX = 0;
@@ -128,6 +137,8 @@ button { font: inherit; }
   cursor: pointer;
 }
 .control:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+.control:disabled { cursor: default; opacity: 0.45; }
+.record.active { background: #ef4444; color: #fff; }
 .inspect {
   display: grid;
   place-items: center;
@@ -948,6 +959,15 @@ function refresh(): void {
   renderPopover();
 }
 
+function renderRecordingState(): void {
+  if (!recordButton || !stopRecordingButton) return;
+  const recording = getRecordingState() === 'recording';
+  recordButton.disabled = recording;
+  stopRecordingButton.disabled = !recording;
+  recordButton.classList.toggle('active', recording);
+  recordButton.setAttribute('aria-pressed', String(recording));
+}
+
 function commit(): void {
   commitAnimationFrame = null;
   if (!dirty) return;
@@ -1158,6 +1178,20 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     markDirty();
   });
 
+  recordButton = document.createElement('button');
+  recordButton.className = 'control record';
+  recordButton.type = 'button';
+  recordButton.setAttribute('aria-label', 'Record investigation');
+  recordButton.textContent = 'Record';
+  recordButton.addEventListener('click', startRecording);
+
+  stopRecordingButton = document.createElement('button');
+  stopRecordingButton.className = 'control stop-recording';
+  stopRecordingButton.type = 'button';
+  stopRecordingButton.setAttribute('aria-label', 'Stop recording');
+  stopRecordingButton.textContent = 'Stop';
+  stopRecordingButton.addEventListener('click', stopRecording);
+
   const collapseButton = document.createElement('button');
   collapseButton.className = 'control collapse';
   collapseButton.type = 'button';
@@ -1184,6 +1218,8 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   toolbar.append(
     inspectButton,
     countsButton,
+    recordButton,
+    stopRecordingButton,
     collapseButton,
     collapsedDot,
   );
@@ -1238,6 +1274,8 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   (document.body ?? document.documentElement).append(host);
   document.addEventListener('keydown', handleKeydown);
   unsubscribe = subscribeToReports(handleReport);
+  unsubscribeRecording = subscribeToRecordingState(renderRecordingState);
+  renderRecordingState();
   refreshInterval = window.setInterval(() => {
     if (inspectMode || outlines.size > 0) dirty = true;
     if (dirty) scheduleCommit();
@@ -1253,6 +1291,8 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
 export function unmountOverlay(): void {
   unsubscribe?.();
   unsubscribe = null;
+  unsubscribeRecording?.();
+  unsubscribeRecording = null;
   if (refreshInterval !== null) window.clearInterval(refreshInterval);
   refreshInterval = null;
   if (survivalInterval !== null) window.clearInterval(survivalInterval);
@@ -1279,6 +1319,8 @@ export function unmountOverlay(): void {
   toolbar = null;
   inspectButton = null;
   countsButton = null;
+  recordButton = null;
+  stopRecordingButton = null;
   canvasCount = null;
   candidateCount = null;
   flyout = null;

@@ -6,7 +6,8 @@
     "bench:chrome": "pnpm run bench:chrome:mixed && pnpm run bench:chrome:tracked",
     "bench:chrome:mixed": "node bench-chrome.mjs",
     "bench:chrome:tracked": "node bench-chrome.mjs --stream=tracked-source",
-    "collect": "node collect.mjs"
+    "collect": "node collect.mjs",
+    "probe:recording": "node recording-probe.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

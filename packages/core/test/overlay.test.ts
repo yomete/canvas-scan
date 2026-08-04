@@ -10,6 +10,7 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
 import { emitReport, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
+import { getRecordingState, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 function makeReport(
@@ -83,6 +84,38 @@ afterEach(() => {
 });
 
 describe('overlay toolbar', () => {
+  it('uses the shared recording controls', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    const record = root.querySelector<HTMLButtonElement>('.record')!;
+    const stop = root.querySelector<HTMLButtonElement>('.stop-recording')!;
+    expect(record.disabled).toBe(false);
+    expect(stop.disabled).toBe(true);
+    record.click();
+    expect(getRecordingState()).toBe('recording');
+    expect(record.classList).toContain('active');
+    expect(stop.disabled).toBe(false);
+    stop.click();
+    expect(getRecordingState()).toBe('complete');
+    stopRecording();
+  });
+  it('keeps recording controls synchronized through both APIs and hydration', () => {
+    mountOverlay();
+    let root = getShadowRoot();
+    const record = root.querySelector<HTMLButtonElement>('.record')!;
+    const stop = root.querySelector<HTMLButtonElement>('.stop-recording')!;
+    expect(record.getAttribute('aria-label')).toBe('Record investigation');
+    expect(stop.getAttribute('aria-label')).toBe('Stop recording');
+    expect(record.disabled).toBe(false); expect(stop.disabled).toBe(true);
+    startRecording(); expect(stop.disabled).toBe(false); stop.click();
+    record.click(); expect(getRecordingState()).toBe('recording');
+    document.body.replaceChildren(); vi.advanceTimersByTime(1000);
+    root = getShadowRoot(); expect(root.querySelector<HTMLButtonElement>('.stop-recording')?.disabled).toBe(false);
+    stopRecording(); expect(root.querySelector<HTMLButtonElement>('.record')?.disabled).toBe(false);
+    root.querySelector<HTMLButtonElement>('.record')!.click();
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    expect(getRecordingState()).toBe('complete');
+  });
   it('keeps the dock above the delegated outlines layer', () => {
     mountOverlay();
     refreshOverlay();
