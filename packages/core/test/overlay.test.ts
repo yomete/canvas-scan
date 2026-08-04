@@ -27,6 +27,7 @@ function makeReport(
     unknownReason: null,
     sampled: false,
     comparisonGap: 1,
+    methodEvidence: {},
     ...overrides,
   };
 }

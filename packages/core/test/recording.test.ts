@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { emitReport } from '../src/frame-loop';
+import { emitReport, getCurrentWindowIndex } from '../src/frame-loop';
 import { getLastSession, getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
+import { records, type CanvasRecord } from '../src/wrap-context';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/v04-02-session-v1.json', import.meta.url), 'utf8'));
 const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureStatus'] = 'same', overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({
@@ -12,7 +13,7 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
   sourceLocation: canvasId === 'canvas-a' ? { file: '/src/Chart.tsx', line: 4, column: 2 } : null,
   rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, signatureStatus: status,
   unknownReason: status === 'unknown' ? 'first-window' : null, sampled: false,
-  comparisonGap: status === 'unknown' ? null : 1, ...overrides,
+  comparisonGap: status === 'unknown' ? null : 1, methodEvidence: {}, ...overrides,
 });
 const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: index, timestampMs: index * 100 });
 
@@ -61,6 +62,24 @@ describe('recording', () => {
     expect(second.windows.map(window => window.canvasId)).toEqual(['two']);
   });
 
+  it('subtracts pre-start totals from the first partial window only', () => {
+    const canvas = {};
+    const record = { canvas, rasterOps: 3, selfTimeMs: 1.25 } as CanvasRecord;
+    records.add(record);
+    try {
+      const startWindowIndex = getCurrentWindowIndex();
+      startRecording();
+      emitReport(makeReport('partial', 'same', { rasterOperationCount: 5, canvasApiSelfTimeMs: 2, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 0.75 } } }), canvas, { windowIndex: startWindowIndex + 1, timestampMs: 10 });
+      emitReport(makeReport('partial', 'same', { rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, methodEvidence: { fillRect: { count: 1, canvasApiSelfTimeMs: 0.5 } } }), canvas, { windowIndex: startWindowIndex + 2, timestampMs: 20 });
+      expect(stopRecording()!.windows.map(window => ({ rasterOperationCount: window.rasterOperationCount, canvasApiSelfTimeMs: window.canvasApiSelfTimeMs, methodEvidence: window.methodEvidence }))).toEqual([
+        { rasterOperationCount: 2, canvasApiSelfTimeMs: 0.75, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 0.75 } } },
+        { rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, methodEvidence: { fillRect: { count: 1, canvasApiSelfTimeMs: 0.5 } } },
+      ]);
+    } finally {
+      records.delete(record);
+    }
+  });
+
   it('keeps FIFO published metadata and evicts whole reports at 10000', () => {
     startRecording(); for (let index = 1; index <= 10001; index++) publish(makeReport('one'), index);
     const session = stopRecording()!;
@@ -81,27 +100,60 @@ describe('recording', () => {
   it('evicts whole canvas lifetimes and treats re-entry as new', () => {
     startRecording(); for (let index = 0; index < 129; index++) publish(makeReport(`canvas-${index}`), index);
     publish(makeReport('canvas-0'), 130); const session = stopRecording()!;
-    expect(session.canvases).toHaveLength(128); expect(session.canvases[0].canvasId).toBe('canvas-2');
-    expect(session.canvases.at(-1)?.canvasId).toBe('canvas-0');
+    expect(session.canvases).toHaveLength(128); expect(session.canvases[0].canvasId).toBe('canvas-0');
     expect(session.windows.every(window => session.canvases.some(canvas => canvas.canvasId === window.canvasId))).toBe(true);
     expect(session.droppedEntryCounts.canvasLifetimes).toBe(2);
   });
 
   it('returns deep copies, JSON-only values, and JSON round trips', () => {
-    startRecording(); publish(makeReport(), 1); const stopped = stopRecording()!;
+    startRecording(); publish(makeReport('canvas-a', 'same', { canvasApiSelfTimeMs: 8, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 8 } } }), 1); const stopped = stopRecording()!;
     stopped.windows[0].sourceLocation!.file = 'changed'; stopped.canvases[0].sourceLocation!.line = 99;
     stopped.canvases[0].commandStatuses.same = 99; stopped.browserFeatures.monotonicTime = false;
+    stopped.windows[0].methodEvidence.fillRect.count = 99;
+    stopped.canvases[0].methodEvidence.fillRect.count = 99;
+    stopped.episodes[0].methodEvidence.fillRect.count = 99;
+    stopped.episodes[0].canvases[0].methodEvidence.fillRect.count = 99;
+    stopped.findings[0].topMethods[0].count = 99;
+    stopped.findings[0].maximumWindow.methodEvidence.fillRect.count = 99;
+    stopped.findings[0].claimBoundary.observation = 'changed';
     (stopped.collectionLimits as { maxDurationMs: number }).maxDurationMs = 99;
     stopped.droppedEntryCounts.canvasWindowReports = 99;
     const one = getLastSession()!; const two = getLastSession()!;
-    one.windows[0].sourceLocation!.file = 'changed again'; one.canvases[0].commandStatuses.same = 98;
+    one.windows[0].sourceLocation!.file = 'changed again'; one.canvases[0].commandStatuses.same = 98; one.findings[0].topMethods[0].count = 98;
     expect(two.windows[0].canvasId).toBe('canvas-a'); expect(two.windows[0].sourceLocation?.file).toBe('/src/Chart.tsx');
     expect(two.canvases[0].sourceLocation?.line).toBe(4); expect(two.canvases[0].commandStatuses.same).toBe(1);
+    expect(two.windows[0].methodEvidence.fillRect.count).toBe(2); expect(two.canvases[0].methodEvidence.fillRect.count).toBe(2);
+    expect(two.episodes[0].methodEvidence.fillRect.count).toBe(2); expect(two.episodes[0].canvases[0].methodEvidence.fillRect.count).toBe(2);
+    expect(two.findings[0].topMethods[0].count).toBe(2); expect(two.findings[0].maximumWindow.methodEvidence.fillRect.count).toBe(2);
+    expect(two.findings[0].claimBoundary.observation).toMatch(/measured Canvas2D API self-time/);
     expect(two.browserFeatures.monotonicTime).toBe(true); expect(two.collectionLimits.maxDurationMs).toBe(30000);
     expect(two.droppedEntryCounts.canvasWindowReports).toBe(0);
     expect(JSON.parse(JSON.stringify(two))).toEqual(two);
     const plain = (value: unknown): boolean => value === null || ['string', 'number', 'boolean'].includes(typeof value) || (Array.isArray(value) && value.every(plain)) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(plain));
     expect(plain(two)).toBe(true);
+  });
+
+  it('derives canvas and episode sums only from retained windows', () => {
+    startRecording();
+    publish(makeReport('a', 'same', { rasterOperationCount: 2, canvasApiSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 1.25 } } }), 1);
+    publish(makeReport('b', 'same', { rasterOperationCount: 3, canvasApiSelfTimeMs: 2, methodEvidence: { stroke: { count: 1, canvasApiSelfTimeMs: 2 } } }), 1);
+    publish(makeReport('a', 'same', { rasterOperationCount: 1, canvasApiSelfTimeMs: 0.75, methodEvidence: { fillRect: { count: 1, canvasApiSelfTimeMs: 0.75 } } }), 3);
+    const session = stopRecording()!;
+    const canvasA = session.canvases.find(canvas => canvas.canvasId === 'a')!;
+    expect(canvasA).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 3, canvasApiSelfTimeMs: 2, maxWindowSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 } } });
+    expect(session.episodes).toHaveLength(1);
+    expect(session.episodes[0]).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 6, canvasApiSelfTimeMs: 4, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 }, stroke: { count: 1, canvasApiSelfTimeMs: 2 } } });
+    expect(session.episodes[0].canvases.find(canvas => canvas.canvasId === 'a')).toEqual({ canvasId: 'a', activeWindowCount: 2, rasterOperationCount: 3, canvasApiSelfTimeMs: 2, maxWindowSelfTimeMs: 1.25, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 2 } } });
+  });
+
+  it('ranks canvases by total, maximum window, raster operations, and stable id', () => {
+    startRecording();
+    publish(makeReport('beta', 'same', { canvasApiSelfTimeMs: 2 }), 1); publish(makeReport('beta', 'same', { canvasApiSelfTimeMs: 2 }), 2);
+    publish(makeReport('alpha', 'same', { canvasApiSelfTimeMs: 2 }), 3); publish(makeReport('alpha', 'same', { canvasApiSelfTimeMs: 2 }), 4);
+    publish(makeReport('raster', 'same', { canvasApiSelfTimeMs: 2, rasterOperationCount: 9 }), 5); publish(makeReport('raster', 'same', { canvasApiSelfTimeMs: 2, rasterOperationCount: 0 }), 6);
+    publish(makeReport('max', 'same', { canvasApiSelfTimeMs: 3 }), 7); publish(makeReport('max', 'same', { canvasApiSelfTimeMs: 1 }), 8);
+    publish(makeReport('total', 'same', { canvasApiSelfTimeMs: 5 }), 9);
+    expect(stopRecording()!.canvases.map(canvas => canvas.canvasId)).toEqual(['total', 'max', 'raster', 'alpha', 'beta']);
   });
 
   it('preserves command evidence from publication without mutation', () => {

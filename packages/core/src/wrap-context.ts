@@ -11,6 +11,7 @@ import {
 } from './signature';
 import type {
   AttributionKind,
+  CanvasMethodEvidence,
   SignatureStatus,
 } from './types';
 import type { WindowSignature } from './signature';
@@ -132,6 +133,14 @@ const BARE_PATH_OPS = new Set([
   'rect',
   'roundRect',
 ]);
+const MATRIX_OPS = new Set([
+  'translate',
+  'rotate',
+  'scale',
+  'transform',
+  'setTransform',
+  'resetTransform',
+]);
 const CAPTURED_SETTERS = [
   'fillStyle',
   'strokeStyle',
@@ -171,6 +180,7 @@ let installed = false;
 let killed = false;
 let nextCanvasSerial = 1;
 let windowCaptured = true;
+let methodEvidenceByRecord: Map<CanvasRecord, Record<string, CanvasMethodEvidence>> | null = null;
 // Captured at install time: instance-level shadowing of getLineDash must
 // never be invoked by the tracer (a Chrome probe showed a shadowed getter
 // returning [] while native state was [5, 5]).
@@ -182,6 +192,35 @@ let takeAttributeRecords: (() => MutationRecord[]) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
+}
+
+export function setMethodEvidenceCollectionEnabled(enabled: boolean): void {
+  methodEvidenceByRecord = enabled ? new Map() : null;
+}
+
+export function getMethodEvidence(record: CanvasRecord): Record<string, CanvasMethodEvidence> {
+  if (!methodEvidenceByRecord) return {};
+  const evidence = methodEvidenceByRecord.get(record) ?? {};
+  methodEvidenceByRecord.set(record, evidence);
+  return evidence;
+}
+
+export function clearMethodEvidence(record: CanvasRecord): void {
+  methodEvidenceByRecord?.delete(record);
+}
+
+function addMethodEvidence(
+  collection: Map<CanvasRecord, Record<string, CanvasMethodEvidence>>,
+  record: CanvasRecord,
+  name: string,
+  duration: number | null,
+): void {
+  const recordEvidence = collection.get(record) ?? {};
+  const evidence = recordEvidence[name] ?? { count: 0, canvasApiSelfTimeMs: duration === null ? null : 0 };
+  evidence.count++;
+  if (duration !== null && evidence.canvasApiSelfTimeMs !== null) evidence.canvasApiSelfTimeMs += duration;
+  recordEvidence[name] = evidence;
+  collection.set(record, recordEvidence);
 }
 
 function quantize(value: number): number {
@@ -518,8 +557,10 @@ function updateMethodState(
   name: string,
   args: unknown[],
   context?: any,
+  matrixOperation = false,
+  barePathOperation = false,
 ): void {
-  if (updateMatrix(record, name, args)) {
+  if (matrixOperation && updateMatrix(record, name, args)) {
     return;
   }
   if (name === 'save') {
@@ -549,7 +590,7 @@ function updateMethodState(
   } else if (name === 'beginPath') {
     record.pathHash = 0x811c9dc5;
     record.pathUnknown = false;
-  } else if (BARE_PATH_OPS.has(name)) {
+  } else if (barePathOperation) {
     updatePathHash(record, name, args);
   } else if (name === 'setLineDash') {
     // The native call consumes one-shot iterables, so re-reading the
@@ -948,6 +989,11 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   for (const name of CAPTURED_METHODS) {
     const original = contextProto[name];
     if (typeof original !== 'function') continue;
+    const resetsContext = name === 'reset';
+    const rasterOperation = RASTER_OPS.has(name);
+    const gradientCreator = GRADIENT_CREATORS.has(name);
+    const matrixOperation = MATRIX_OPS.has(name);
+    const barePathOperation = BARE_PATH_OPS.has(name);
 
     contextProto[name] = function (this: any, ...args: unknown[]) {
       const record = recordByContext.get(this);
@@ -955,7 +1001,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
 
       const firstActivity = !record.activeInWindow;
       const headEntries =
-        name !== 'reset' && windowCaptured && firstActivity
+        !resetsContext && windowCaptured && firstActivity
           ? headState(record)
           : null;
       // Uncaptured windows discard selfTimeMs at reset, so skip the two
@@ -967,7 +1013,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       // synchronous, so a later same-window consumer still sees the dirty
       // token before it can read this source.
       const previousActivity =
-        name === 'reset'
+        resetsContext
           ? beginExactReset(record)
           : null;
       let result;
@@ -979,8 +1025,16 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         }
         throw error;
       }
-      if (timed) record.selfTimeMs += performance.now() - start;
-      if (name === 'reset') {
+      if (timed) {
+        const duration = performance.now() - start;
+        record.selfTimeMs += duration;
+        if (methodEvidenceByRecord) {
+          addMethodEvidence(methodEvidenceByRecord, record, name, duration);
+        }
+      } else if (methodEvidenceByRecord) {
+        addMethodEvidence(methodEvidenceByRecord, record, name, null);
+      }
+      if (resetsContext) {
         drainAttributeRecords();
         recordExactReset(
           record,
@@ -990,7 +1044,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       } else {
         record.activeInWindow = true;
         record.contextActivityInWindow = true;
-        if (RASTER_OPS.has(name)) {
+        if (rasterOperation) {
           record.rasterOps++;
           if (!record.contentDirty) {
             record.contentDirty = true;
@@ -1014,10 +1068,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             markUnknown(record.sig, 'canvas-dimensions-unmodeled');
           }
         }
-        if (name !== 'reset') {
-          updateMethodState(record, name, args, this);
+        if (!resetsContext) {
+          updateMethodState(record, name, args, this, matrixOperation, barePathOperation);
         }
-        if (windowCaptured && name !== 'reset') {
+        if (windowCaptured && !resetsContext) {
           if (name === 'clip' && record.clipUnknown) {
             markUnknown(record.sig, 'clip-unmodeled');
           }
@@ -1042,11 +1096,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           }
           captureOp(record.sig, name, args);
         }
-        if (
-          GRADIENT_CREATORS.has(name) &&
-          result &&
-          typeof result === 'object'
-        ) {
+        if (gradientCreator && result && typeof result === 'object') {
           trackGradient(result, name, args);
         }
       } catch (error) {
@@ -1074,6 +1124,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             : null;
         originalSet.call(this, value);
         if (!record || killed) return;
+        if (methodEvidenceByRecord) {
+          addMethodEvidence(methodEvidenceByRecord, record, name, null);
+        }
         record.activeInWindow = true;
         record.contextActivityInWindow = true;
         if (headEntries) {

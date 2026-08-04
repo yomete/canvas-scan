@@ -22,6 +22,16 @@ export interface DrawBatchReport {
   unknownReason: string | null;
   sampled: boolean;
   comparisonGap: number | null;
+  methodEvidence: Record<string, CanvasMethodEvidence>;
+}
+
+export interface CanvasMethodEvidence {
+  count: number;
+  canvasApiSelfTimeMs: number | null;
+}
+
+export interface RecordedTopMethod extends CanvasMethodEvidence {
+  method: string;
 }
 
 export interface CanvasScanOptions {
@@ -47,7 +57,45 @@ export interface RecordedCanvasSummary {
   activeWindowCount: number;
   rasterOperationCount: number;
   canvasApiSelfTimeMs: number;
+  maxWindowSelfTimeMs: number;
+  evidenceLevel: 'measured';
+  methodEvidence: Record<string, CanvasMethodEvidence>;
   commandStatuses: { same: number; changed: number; unknown: number };
+}
+
+export interface RecordedEpisodeCanvasSummary {
+  canvasId: string;
+  activeWindowCount: number;
+  rasterOperationCount: number;
+  canvasApiSelfTimeMs: number;
+  maxWindowSelfTimeMs: number;
+  methodEvidence: Record<string, CanvasMethodEvidence>;
+}
+
+export interface RecordedDrawEpisode {
+  episodeId: string;
+  firstWindowIndex: number;
+  lastWindowIndex: number;
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  activeWindowCount: number;
+  rasterOperationCount: number;
+  canvasApiSelfTimeMs: number;
+  methodEvidence: Record<string, CanvasMethodEvidence>;
+  canvases: RecordedEpisodeCanvasSummary[];
+}
+
+export interface HeavyCanvasWorkFinding {
+  type: 'heavy-canvas-work';
+  evidenceLevel: 'candidate';
+  canvasId: string;
+  episodeId: string;
+  canvasApiSelfTimeMs: number;
+  rasterOperationCount: number;
+  topMethods: RecordedTopMethod[];
+  maximumWindow: Pick<RecordedCanvasWindow, 'windowIndex' | 'timestampMs' | 'canvasApiSelfTimeMs' | 'rasterOperationCount' | 'methodEvidence'>;
+  claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
+  nextCheck: string;
 }
 
 export interface InvestigationSessionV1 {
@@ -61,6 +109,8 @@ export interface InvestigationSessionV1 {
   browserFeatures: { monotonicTime: boolean };
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
+  episodes: RecordedDrawEpisode[];
+  findings: HeavyCanvasWorkFinding[];
   collectionLimits: {
     maxDurationMs: 30000;
     maxCanvasWindowReports: 10000;

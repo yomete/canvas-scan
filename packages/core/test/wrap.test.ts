@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   getRecord,
+  getMethodEvidence,
   installCanvasPatch,
   isKilled,
   records,
+  setMethodEvidenceCollectionEnabled,
+  setWindowCaptured,
 } from '../src/wrap-context';
 
 const fillRectResult = Symbol('fillRect result');
@@ -12,6 +15,7 @@ class FakeContext {
   canvas: FakeCanvas;
   invocations: Array<{ method: string; args: unknown[] }> = [];
   throwOnFillRect: Error | null = null;
+  throwOnFillStyle: Error | null = null;
   private fillStyleValue = '#000000';
 
   constructor(canvas: FakeCanvas) {
@@ -23,6 +27,7 @@ class FakeContext {
   }
 
   set fillStyle(value: string) {
+    if (this.throwOnFillStyle) throw this.throwOnFillStyle;
     this.fillStyleValue = value;
   }
 
@@ -42,6 +47,10 @@ class FakeContext {
 
   stroke(...args: unknown[]) {
     this.invocations.push({ method: 'stroke', args });
+  }
+
+  reset() {
+    this.invocations.push({ method: 'reset', args: [] });
   }
 
   boom() {
@@ -80,6 +89,9 @@ installCanvasPatch({
 
 const canvas = new FakeCanvas();
 const context = canvas.getContext('2d')!;
+
+beforeAll(() => setMethodEvidenceCollectionEnabled(true));
+afterAll(() => setMethodEvidenceCollectionEnabled(false));
 
 describe('canvas context wrapping', () => {
   it('preserves context identity and registers the canvas once', () => {
@@ -149,8 +161,66 @@ describe('canvas context wrapping', () => {
     expect(record.activeInWindow).toBe(true);
   });
 
+  it('keeps method counts and measured time separate', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    record.selfTimeMs = 0;
+    const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(10).mockReturnValueOnce(11.25).mockReturnValueOnce(20).mockReturnValueOnce(23.5);
+    context.fillRect(1, 2, 3, 4);
+    context.clearRect(1, 2, 3, 4);
+    expect(getMethodEvidence(record)).toEqual({ fillRect: { count: 1, canvasApiSelfTimeMs: 1.25 }, clearRect: { count: 1, canvasApiSelfTimeMs: 3.5 } });
+    expect(record.selfTimeMs).toBe(4.75);
+    clock.mockRestore();
+  });
+
+  it('records successful setters without timing them', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    const clock = vi.spyOn(performance, 'now');
+    context.fillStyle = '#123456';
+    expect(getMethodEvidence(record).fillStyle).toEqual({ count: 1, canvasApiSelfTimeMs: null });
+    expect(clock).not.toHaveBeenCalled();
+    clock.mockRestore();
+  });
+
+  it('records reset with its existing measured duration', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(4).mockReturnValueOnce(6.5);
+    context.reset();
+    expect(getMethodEvidence(record).reset).toEqual({ count: 1, canvasApiSelfTimeMs: 2.5 });
+    expect(context.invocations.at(-1)).toEqual({ method: 'reset', args: [] });
+    clock.mockRestore();
+  });
+
+  it('does not record a failed setter and preserves its native error', () => {
+    const nativeError = new Error('setter failure');
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    context.throwOnFillStyle = nativeError;
+    try {
+      expect(() => { context.fillStyle = '#123456'; }).toThrow(nativeError);
+      expect(getMethodEvidence(record).fillStyle).toBeUndefined();
+    } finally {
+      context.throwOnFillStyle = null;
+    }
+  });
+
+  it('keeps detailed method evidence off outside a recording', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(false);
+    try {
+      context.fillRect(1, 2, 3, 4);
+      context.fillStyle = '#abcdef';
+      expect(getMethodEvidence(record)).toEqual({});
+    } finally {
+      setMethodEvidenceCollectionEnabled(true);
+    }
+  });
+
   it('propagates the same native error instance', () => {
     const nativeError = new Error('native failure');
+    setMethodEvidenceCollectionEnabled(true);
     context.throwOnFillRect = nativeError;
 
     let thrown: unknown;
@@ -163,6 +233,7 @@ describe('canvas context wrapping', () => {
     }
 
     expect(thrown).toBe(nativeError);
+    expect(getMethodEvidence(getRecord(canvas)!).fillRect).toBeUndefined();
   });
 
   it('kills instrumentation when capture fails without escaping', () => {

@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Canvas burst probe</title>
+<script>window.__CANVAS_SCAN_OPTS = { overlay: false };</script>
+<script src="/canvas-scan.iife.js"></script>
+<button id="draw">Draw flamegraph</button>
+<canvas id="flamegraph-canvas" width="900" height="500"></canvas>
+<canvas id="decoy-canvas" width="20" height="20"></canvas>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode') || 'bad';
+  const canvas = document.querySelector('#flamegraph-canvas');
+  const decoyContext = document.querySelector('#decoy-canvas').getContext('2d');
+  const context = canvas.getContext('2d');
+  const prepared = document.createElement('canvas');
+  prepared.width = canvas.width;
+  prepared.height = canvas.height;
+  const preparedContext = prepared.getContext('2d');
+  const data = Array.from({ length: 2000 }, (_, index) => (index * 17) % 487);
+  const checksum = data.reduce((sum, value) => sum + value, 0);
+  const fullDrawCount = 18000;
+  let interactions = 0;
+  const drawFlamegraph = (target, count) => {
+    target.clearRect(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < count; index++) {
+      const value = data[index % data.length];
+      target.fillStyle = index & 1 ? '#2563eb' : '#7c3aed';
+      target.fillRect((index * 13) % 900, value, 9, 2 + (index % 8));
+    }
+  };
+  drawFlamegraph(preparedContext, fullDrawCount);
+  context.drawImage(prepared, 0, 0);
+  decoyContext.fillRect(0, 0, 1, 1);
+  document.querySelector('#draw').onclick = () => {
+    interactions++;
+    decoyContext.fillRect(0, 0, 1, 1);
+    if (mode === 'bad') {
+      for (let pass = 0; pass < 5; pass++) drawFlamegraph(context, fullDrawCount);
+    } else {
+      context.drawImage(prepared, 0, 0);
+    }
+    window.__BURST_PROBE__ = { mode, checksum, interactions, drawComplete: true };
+  };
+  window.__BURST_PROBE__ = { mode, checksum, interactions, drawComplete: false };
+</script>

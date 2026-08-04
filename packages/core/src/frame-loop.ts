@@ -7,7 +7,9 @@ import type {
 } from './types';
 import type { CanvasRecord } from './wrap-context';
 import {
+  clearMethodEvidence,
   drainAttributeRecords,
+  getMethodEvidence,
   refreshContentToken,
   records,
   setWindowCaptured,
@@ -35,6 +37,10 @@ const reportListeners = new Set<ReportListener>();
 
 let windowIndex = 0;
 
+export function getCurrentWindowIndex(): number {
+  return windowIndex;
+}
+
 // `sourceLocation` is a nested object, so a shallow spread would hand callers a
 // live handle on stored state.
 export function copyReport(report: DrawBatchReport): DrawBatchReport {
@@ -43,6 +49,7 @@ export function copyReport(report: DrawBatchReport): DrawBatchReport {
     sourceLocation: report.sourceLocation
       ? { ...report.sourceLocation }
       : null,
+    methodEvidence: Object.fromEntries(Object.entries(report.methodEvidence).map(([method, evidence]) => [method, { ...evidence }])),
   };
 }
 
@@ -167,6 +174,7 @@ export function processRecord(
           : null,
       sampled: captureEvery > 1,
       comparisonGap,
+      methodEvidence: Object.fromEntries(Object.entries(getMethodEvidence(record)).map(([method, evidence]) => [method, { ...evidence, canvasApiSelfTimeMs: evidence.canvasApiSelfTimeMs === null ? null : Number(evidence.canvasApiSelfTimeMs.toFixed(3)) }])),
     };
     const shouldLog =
       record.lastStatus === null || record.lastStatus !== signatureStatus;
@@ -206,6 +214,7 @@ export function processRecord(
   record.sig = newWindowSignature();
   record.rasterOps = 0;
   record.selfTimeMs = 0;
+  clearMethodEvidence(record);
   record.activeInWindow = false;
   record.contextActivityInWindow = false;
   record.sourceResetVersions.clear();
@@ -251,7 +260,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
         }
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
-      emitReport(processed.report, record.canvas, { windowIndex, timestampMs });
+      emitReport(copyReport(processed.report), record.canvas, { windowIndex, timestampMs });
     }
 
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);

@@ -13,6 +13,14 @@ const FORBIDDEN = [
   /repaint cost/i,
 ];
 const DISCLAIMER = /does not claim|never claims/i;
+const FINDING_FORBIDDEN = [
+  /\bGPU time\b/i,
+  /\brender time\b/i,
+  /\bcaused by\b/i,
+  /\bwasted\b/i,
+  /\bavoidable work\b/i,
+];
+const FINDING_DISCLAIMER = /does not establish/i;
 
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -24,6 +32,17 @@ function offendingLines(text: string): string[] {
 }
 
 describe('claim discipline', () => {
+  it('keeps heavy-work copy within the measured claim boundary', () => {
+    const source = readFileSync(join(packageDir, 'src/recording.ts'), 'utf8');
+    const findings = source
+      .split('\n')
+      .filter((line) => !FINDING_DISCLAIMER.test(line))
+      .filter((line) => FINDING_FORBIDDEN.some((pattern) => pattern.test(line)));
+    expect(findings).toEqual([]);
+    expect(source).toContain('Canvas2D API self-time');
+    expect(source).toContain('does not establish GPU time');
+  });
+
   it('keeps forbidden claims out of the overlay copy', () => {
     const source = readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8');
     expect(offendingLines(source)).toEqual([]);

@@ -45,6 +45,7 @@ export function start(options: CanvasScanOptions = {}): void {
 
 export type {
   AttributionKind,
+  CanvasMethodEvidence,
   CanvasScanOptions,
   DrawBatchReport,
   SignatureStatus,
@@ -52,6 +53,10 @@ export type {
   InvestigationSessionV1,
   RecordedCanvasSummary,
   RecordedCanvasWindow,
+  RecordedDrawEpisode,
+  RecordedEpisodeCanvasSummary,
+  RecordedTopMethod,
+  HeavyCanvasWorkFinding,
   RecordingState,
   RecordingStopReason,
 } from './types';

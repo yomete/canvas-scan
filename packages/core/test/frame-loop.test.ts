@@ -11,7 +11,12 @@ import {
 } from '../src/frame-loop';
 import { getReports } from '../src/index';
 import type { DrawBatchReport } from '../src/types';
-import { records, type CanvasRecord } from '../src/wrap-context';
+import {
+  getMethodEvidence,
+  records,
+  setMethodEvidenceCollectionEnabled,
+  type CanvasRecord,
+} from '../src/wrap-context';
 
 let nextSerial = 0;
 
@@ -106,6 +111,24 @@ describe('processRecord', () => {
     expect(record.selfTimeMs).toBe(0);
     expect(record.activeInWindow).toBe(false);
     expect(record.lastStatus).toBe('unknown');
+  });
+
+  it('publishes and clears method evidence but preserves it while inactive', () => {
+    const record = makeRecord();
+    setMethodEvidenceCollectionEnabled(true);
+    try {
+      getMethodEvidence(record).fillRect = { count: 2, canvasApiSelfTimeMs: 1.23456 };
+      expect(processRecord(record, 1, 1)?.report.methodEvidence).toEqual({
+        fillRect: { count: 2, canvasApiSelfTimeMs: 1.235 },
+      });
+      expect(getMethodEvidence(record)).toEqual({});
+
+      getMethodEvidence(record).stroke = { count: 1, canvasApiSelfTimeMs: 0.5 };
+      expect(processRecord(record, 2, 1)).toBeNull();
+      expect(getMethodEvidence(record).stroke).toEqual({ count: 1, canvasApiSelfTimeMs: 0.5 });
+    } finally {
+      setMethodEvidenceCollectionEnabled(false);
+    }
   });
 
   it("reports identical windows as 'same'", () => {
@@ -326,6 +349,7 @@ describe('processRecord', () => {
         'unknownReason',
         'sampled',
         'comparisonGap',
+        'methodEvidence',
       ].sort(),
     );
     expect(processed?.report.sourceLocation).toBeNull();
@@ -687,6 +711,7 @@ describe('report subscribers', () => {
     unknownReason: null,
     sampled: false,
     comparisonGap: 1,
+    methodEvidence: {},
   };
 
   it('delivers reports until unsubscribed', () => {
@@ -811,6 +836,43 @@ describe('report history', () => {
       expect(getHistory(record.id)[0].rasterOperationCount).toBe(2);
     } finally {
       records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps nested method evidence isolated from listeners and callers', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback),
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const record = makeRecord({ id: 'method-copy' });
+    const listener = vi.fn((report: DrawBatchReport) => {
+      report.methodEvidence.fillRect.count = 99;
+    });
+    const unsubscribe = subscribeToReports(listener);
+    records.add(record);
+    setMethodEvidenceCollectionEnabled(true);
+
+    try {
+      getMethodEvidence(record).fillRect = { count: 2, canvasApiSelfTimeMs: 0.5 };
+      startFrameLoop({});
+      callbacks.shift()!(0);
+
+      expect(listener).toHaveBeenCalledOnce();
+      expect(latestReports.get(record.id)?.methodEvidence.fillRect.count).toBe(2);
+      expect(getHistory(record.id)[0].methodEvidence.fillRect.count).toBe(2);
+
+      getHistory(record.id)[0].methodEvidence.fillRect.count = 88;
+      getReports()[record.id].methodEvidence.fillRect.count = 77;
+      expect(getHistory(record.id)[0].methodEvidence.fillRect.count).toBe(2);
+      expect(latestReports.get(record.id)?.methodEvidence.fillRect.count).toBe(2);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      latestReports.delete(record.id);
+      setMethodEvidenceCollectionEnabled(false);
       debug.mockRestore();
       vi.unstubAllGlobals();
     }

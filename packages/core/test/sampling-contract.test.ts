@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { processRecord } from '../src/frame-loop';
 import {
   getRecord,
   installCanvasPatch,
+  setMethodEvidenceCollectionEnabled,
   setWindowCaptured,
 } from '../src/wrap-context';
 import type { CanvasRecord } from '../src/wrap-context';
@@ -94,10 +95,24 @@ function finish(
 }
 
 beforeEach(() => {
+  setMethodEvidenceCollectionEnabled(true);
   setWindowCaptured(true);
 });
 
+afterEach(() => setMethodEvidenceCollectionEnabled(false));
+
 describe('sampling contract', () => {
+  it('uses two clock reads when captured and none when uncaptured', () => {
+    const { context } = makeCanvas();
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(1);
+    context.fillRect(0, 0, 1, 1);
+    expect(clock).toHaveBeenCalledTimes(2);
+    clock.mockClear();
+    setWindowCaptured(false);
+    context.fillRect(0, 0, 1, 1);
+    expect(clock).not.toHaveBeenCalled();
+    clock.mockRestore();
+  });
   it('refuses comparison across a continuous uncaptured raster window', () => {
     const { context, record } = makeCanvas();
 
