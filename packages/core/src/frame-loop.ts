@@ -2,6 +2,7 @@ import { resolveAttribution } from './attribution';
 import { computeStatus, newWindowSignature } from './signature';
 import type {
   CanvasScanOptions,
+  RecordedCanvasLifecycleEvent,
   DrawBatchReport,
   RecordedResetEvent,
   SourceLocation,
@@ -13,8 +14,10 @@ import {
   getMethodEvidence,
   refreshContentToken,
   records,
+  getConnectionState,
   setWindowCaptured,
   takeResetEvents,
+  takeLifecycleEvents,
 } from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
@@ -37,6 +40,9 @@ export type ReportListener = (
 
 const reportListeners = new Set<ReportListener>();
 const resetEventListeners = new Set<(event: RecordedResetEvent) => void>();
+const lifecycleEventListeners = new Set<(event: RecordedCanvasLifecycleEvent) => void>();
+
+export const INACTIVE_BOUNDARIES_BEFORE_RETIREMENT = 120;
 
 let windowIndex = 0;
 
@@ -113,6 +119,15 @@ export function subscribeToResetEvents(listener: (event: RecordedResetEvent) => 
 
 export function emitResetEvent(event: RecordedResetEvent): void {
   for (const listener of resetEventListeners) listener({ ...event });
+}
+
+export function subscribeToLifecycleEvents(listener: (event: RecordedCanvasLifecycleEvent) => void): () => void {
+  lifecycleEventListeners.add(listener);
+  return () => lifecycleEventListeners.delete(listener);
+}
+
+export function emitLifecycleEvent(event: RecordedCanvasLifecycleEvent): void {
+  for (const listener of lifecycleEventListeners) listener({ ...event });
 }
 
 export interface ProcessedRecord {
@@ -271,19 +286,40 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     drainAttributeRecords();
 
     const processedRecords: Array<[CanvasRecord, ProcessedRecord]> = [];
-    if (resetEventListeners.size === 0) {
-      for (const record of records) {
-        const processed = processRecord(record, windowIndex, captureEvery);
-        if (processed) processedRecords.push([record, processed]);
+    const processedResetEvents: RecordedResetEvent[] = [];
+    const lifecycleEvents: RecordedCanvasLifecycleEvent[] = [];
+    for (const record of records) {
+      const connected = getConnectionState(record);
+      if (record.lastConnected && !connected) {
+        record.pendingLifecycleEvents.push({ type: 'detached', connected, activeRegistrySize: records.size });
       }
-    } else {
-      const processedResetEvents: RecordedResetEvent[] = [];
-      for (const record of records) {
-        const processed = processRecordWithResetEvents(record, windowIndex, captureEvery, processedResetEvents);
-        if (processed) processedRecords.push([record, processed]);
+      record.lastConnected = connected;
+      const hadActivity = record.activeInWindow;
+      const processed = resetEventListeners.size === 0
+        ? processRecord(record, windowIndex, captureEvery)
+        : processRecordWithResetEvents(record, windowIndex, captureEvery, processedResetEvents);
+      if (processed) processedRecords.push([record, processed]);
+      if (hadActivity) record.inactiveBoundaries = 0;
+      else record.inactiveBoundaries++;
+      if (record.inactiveBoundaries === INACTIVE_BOUNDARIES_BEFORE_RETIREMENT) {
+        records.delete(record);
+        record.retired = true;
+        record.pendingLifecycleEvents.push({ type: 'retired', connected, activeRegistrySize: records.size });
       }
-      for (const event of processedResetEvents) emitResetEvent({ ...event, timestampMs });
+      for (const event of takeLifecycleEvents(record)) {
+        lifecycleEvents.push({
+          canvasId: record.id,
+          type: event.type,
+          windowIndex,
+          timestampMs,
+          connected: event.connected,
+          activeRegistrySize: event.activeRegistrySize,
+          evidenceLevel: 'measured',
+        });
+      }
     }
+    for (const event of lifecycleEvents) emitLifecycleEvent(event);
+    for (const event of processedResetEvents) emitResetEvent({ ...event, timestampMs });
 
     for (const [record, processed] of processedRecords) {
       latestReports.set(processed.report.canvasId, processed.report);

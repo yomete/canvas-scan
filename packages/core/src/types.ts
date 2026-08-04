@@ -67,6 +67,23 @@ export interface RecordedCanvasGeometry {
 
 export type CanvasResetSource = 'width-setter' | 'height-setter' | 'width-attribute' | 'height-attribute' | 'context-reset';
 
+export type CanvasLifecycleEventType =
+  | 'first-observed'
+  | 'active'
+  | 'detached'
+  | 'retired'
+  | 'reactivated';
+
+export interface RecordedCanvasLifecycleEvent {
+  canvasId: string;
+  type: CanvasLifecycleEventType;
+  windowIndex: number;
+  timestampMs: number;
+  connected: boolean;
+  activeRegistrySize: number;
+  evidenceLevel: 'measured';
+}
+
 export interface RecordedResetEvent {
   canvasId: string;
   windowIndex: number;
@@ -196,6 +213,7 @@ export interface InvestigationSessionV1 {
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
   resetEvents: RecordedResetEvent[];
+  lifecycleEvents: RecordedCanvasLifecycleEvent[];
   episodes: RecordedDrawEpisode[];
   findings: InvestigationFinding[];
   collectionLimits: {
@@ -203,6 +221,7 @@ export interface InvestigationSessionV1 {
     maxCanvasWindowReports: 10000;
     maxCanvasLifetimes: 128;
     maxResetEvents: 10000;
+    maxLifecycleEvents: 10000;
   };
-  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number };
+  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number; lifecycleEvents: number };
 }

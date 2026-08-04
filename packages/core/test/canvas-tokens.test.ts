@@ -5,6 +5,7 @@ import {
   drainAttributeRecords,
   getRecord,
   installCanvasPatch,
+  records,
   setWindowCaptured,
 } from '../src/wrap-context';
 import type { CanvasRecord } from '../src/wrap-context';
@@ -115,6 +116,13 @@ function finish(
   return processRecord(record, windowIndex, captureEvery)?.report;
 }
 
+function retire(record: CanvasRecord) {
+  records.delete(record);
+  record.retired = true;
+  record.inactiveBoundaries = 120;
+  record.activeInWindow = false;
+}
+
 beforeEach(() => {
   setWindowCaptured(true);
   attributeObserver.reset();
@@ -160,6 +168,60 @@ describe('tracked canvas source tokens', () => {
     scene.context.drawImage(cache.canvas, 0, 0);
 
     expect(finish(scene.record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('uses the current token from a retired tracked source', () => {
+    const cache = makeCanvas();
+    const scene = makeCanvas();
+
+    cache.context.fillRect(0, 0, 10, 10);
+    finish(cache.record, 1);
+    scene.context.drawImage(cache.canvas, 0, 0);
+    finish(scene.record, 1);
+    retire(cache.record);
+    scene.context.drawImage(cache.canvas, 0, 0);
+
+    expect(records.has(cache.record)).toBe(false);
+    expect(finish(scene.record, 2)?.signatureStatus).toBe('same');
+  });
+
+  it('reactivates a retired source before its changed token is consumed', () => {
+    const cache = makeCanvas();
+    const scene = makeCanvas();
+
+    cache.context.fillRect(0, 0, 10, 10);
+    finish(cache.record, 1);
+    scene.context.drawImage(cache.canvas, 0, 0);
+    finish(scene.record, 1);
+    retire(cache.record);
+    cache.context.fillRect(0, 0, 20, 20);
+
+    expect(records.has(cache.record)).toBe(true);
+    expect(finish(cache.record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+    scene.context.drawImage(cache.canvas, 0, 0);
+    expect(finish(scene.record, 2)?.signatureStatus).toBe('changed');
+  });
+
+  it('reactivates a retired source before its reset token is consumed', () => {
+    const cache = makeCanvas();
+    const scene = makeCanvas();
+
+    cache.context.fillRect(0, 0, 10, 10);
+    finish(cache.record, 1);
+    scene.context.drawImage(cache.canvas, 0, 0);
+    finish(scene.record, 1);
+    retire(cache.record);
+    cache.canvas.width = 100;
+
+    expect(records.has(cache.record)).toBe(true);
+    scene.context.drawImage(cache.canvas, 0, 0);
+    expect(finish(scene.record, 2)).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'canvas-source-reset',
+    });
   });
 
   it('poisons an untracked canvas source', () => {

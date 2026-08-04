@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   emitReport,
+  getCurrentWindowIndex,
   getHistory,
+  INACTIVE_BOUNDARIES_BEFORE_RETIREMENT,
   latestReports,
   processRecord,
   processRecordWithResetEvents,
   setSourceLocation,
   startFrameLoop,
+  subscribeToLifecycleEvents,
   subscribeToResetEvents,
   subscribeToReports,
 } from '../src/frame-loop';
@@ -17,6 +20,7 @@ import type { DrawBatchReport } from '../src/types';
 import {
   getMethodEvidence,
   getResetEvents,
+  reactivateRecord,
   records,
   setMethodEvidenceCollectionEnabled,
   setResetEventCollectionEnabled,
@@ -69,6 +73,11 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     attributeObservationUnavailable: false,
     contextActivityInWindow: false,
     exactResetDepth: 0,
+    inactiveBoundaries: 0,
+    retired: false,
+    lastConnected: false,
+    activeLifecycleRecorded: false,
+    pendingLifecycleEvents: [],
     stateStack: [],
     ...overrides,
   };
@@ -877,6 +886,187 @@ describe('published metadata', () => {
       unsubscribe();
       records.delete(record);
       resetRecordingForTests();
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('publishes lifecycle evidence before a synchronous report listener stops recording', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({
+      id: 'lifecycle-stop-order',
+      pendingLifecycleEvents: [{ type: 'first-observed', connected: false, activeRegistrySize: 1 }],
+    });
+    const stopOnReport = () => stopRecording();
+    const unsubscribe = subscribeToReports(stopOnReport);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+    startRecording();
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(10);
+      expect(stopRecording()).toBeUndefined();
+      expect(getLastSession()?.lifecycleEvents).toMatchObject([
+        { canvasId: 'lifecycle-stop-order', type: 'first-observed', timestampMs: 10 },
+      ]);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      resetRecordingForTests();
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('record lifecycle retirement', () => {
+  it('retires an inactive record on exactly the 120th boundary', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({
+      id: 'exact-retirement',
+      canvas: { isConnected: true },
+      activeInWindow: false,
+      lastConnected: true,
+    });
+    const events: Array<{ type: string; windowIndex: number; activeRegistrySize: number }> = [];
+    const unsubscribe = subscribeToLifecycleEvents(event => {
+      if (event.canvasId === record.id) events.push(event);
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const startWindowIndex = getCurrentWindowIndex();
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      for (let boundary = 1; boundary < INACTIVE_BOUNDARIES_BEFORE_RETIREMENT; boundary++) {
+        callbacks.shift()!(boundary);
+      }
+      expect(records.has(record)).toBe(true);
+      expect(record.inactiveBoundaries).toBe(INACTIVE_BOUNDARIES_BEFORE_RETIREMENT - 1);
+
+      callbacks.shift()!(INACTIVE_BOUNDARIES_BEFORE_RETIREMENT);
+      expect(records.has(record)).toBe(false);
+      expect(record.retired).toBe(true);
+      expect(events).toMatchObject([
+        {
+          type: 'retired',
+          windowIndex: startWindowIndex + INACTIVE_BOUNDARIES_BEFORE_RETIREMENT,
+          activeRegistrySize: 0,
+        },
+      ]);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a detached cache active when it draws before retirement', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({
+      id: 'detached-active-cache',
+      canvas: { isConnected: false },
+      activeInWindow: true,
+      inactiveBoundaries: INACTIVE_BOUNDARIES_BEFORE_RETIREMENT - 1,
+      lastConnected: true,
+    });
+    const events: string[] = [];
+    const unsubscribe = subscribeToLifecycleEvents(event => {
+      if (event.canvasId === record.id) events.push(event.type);
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(1);
+      expect(records.has(record)).toBe(true);
+      expect(record.inactiveBoundaries).toBe(0);
+      callbacks.shift()!(2);
+      expect(records.has(record)).toBe(true);
+      expect(events.filter(type => type === 'detached')).toEqual(['detached']);
+      expect(events).not.toContain('retired');
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('publishes detach before retirement with registry sizes from each transition', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({
+      id: 'detach-then-retire',
+      canvas: { isConnected: false },
+      activeInWindow: false,
+      inactiveBoundaries: INACTIVE_BOUNDARIES_BEFORE_RETIREMENT - 1,
+      lastConnected: true,
+    });
+    const events: Array<{ type: string; activeRegistrySize: number }> = [];
+    const unsubscribe = subscribeToLifecycleEvents(event => {
+      if (event.canvasId === record.id) events.push(event);
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(1);
+      expect(events).toMatchObject([
+        { type: 'detached', activeRegistrySize: 1 },
+        { type: 'retired', activeRegistrySize: 0 },
+      ]);
+      expect(records.has(record)).toBe(false);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the active registry bounded across repeated retire-reactivate cycles', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
+    const record = makeRecord({
+      id: 'repeated-lifecycle',
+      canvas: { isConnected: false },
+      activeInWindow: false,
+      inactiveBoundaries: INACTIVE_BOUNDARIES_BEFORE_RETIREMENT - 1,
+    });
+    const id = record.id;
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    let timestamp = 0;
+    records.add(record);
+
+    try {
+      startFrameLoop({});
+      callbacks.shift()!(++timestamp);
+      expect(records.has(record)).toBe(false);
+
+      for (let cycle = 0; cycle < 3; cycle++) {
+        expect(reactivateRecord(record)).toBe(true);
+        record.activeInWindow = true;
+        expect(records.size).toBe(1);
+        callbacks.shift()!(++timestamp);
+        for (let boundary = 0; boundary < INACTIVE_BOUNDARIES_BEFORE_RETIREMENT; boundary++) {
+          callbacks.shift()!(++timestamp);
+        }
+        expect(records.has(record)).toBe(false);
+        expect(record.id).toBe(id);
+      }
+
+      expect(records.size).toBe(0);
+    } finally {
+      records.delete(record);
+      latestReports.delete(record.id);
       debug.mockRestore();
       vi.unstubAllGlobals();
     }

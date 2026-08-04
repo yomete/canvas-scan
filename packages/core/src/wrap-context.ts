@@ -12,6 +12,7 @@ import {
 import type {
   AttributionKind,
   CanvasMethodEvidence,
+  CanvasLifecycleEventType,
   CanvasResetSource,
   SignatureStatus,
 } from './types';
@@ -61,6 +62,11 @@ export interface CanvasRecord {
   attributeObservationUnavailable: boolean;
   contextActivityInWindow: boolean;
   exactResetDepth: number;
+  inactiveBoundaries: number;
+  retired: boolean;
+  lastConnected: boolean;
+  activeLifecycleRecorded: boolean;
+  pendingLifecycleEvents: Array<{ type: CanvasLifecycleEventType; connected: boolean; activeRegistrySize: number }>;
   stateStack: Array<{
     matrix: CanvasRecord['matrix'];
     matrixUnknown: boolean;
@@ -190,6 +196,7 @@ let resetEventsByRecord: Map<CanvasRecord, PendingResetEvent[]> | null = null;
 let nativeGetLineDash: ((this: any) => unknown) | null = null;
 let nativeCanvasWidthGetter: ((this: any) => unknown) | null = null;
 let nativeCanvasHeightGetter: ((this: any) => unknown) | null = null;
+let nativeIsConnectedGetter: ((this: any) => unknown) | null = null;
 let attributeObserverUnavailable = false;
 let takeAttributeRecords: (() => MutationRecord[]) | null = null;
 
@@ -216,6 +223,53 @@ export function takeResetEvents(record: CanvasRecord): PendingResetEvent[] | nul
   const events = resetEventsByRecord.get(record) ?? [];
   resetEventsByRecord.delete(record);
   return events;
+}
+
+export function takeLifecycleEvents(record: CanvasRecord): Array<{ type: CanvasLifecycleEventType; connected: boolean; activeRegistrySize: number }> {
+  const events = record.pendingLifecycleEvents ?? [];
+  record.pendingLifecycleEvents = [];
+  return events;
+}
+
+export function getConnectionState(record: CanvasRecord): boolean {
+  try {
+    const connected = nativeIsConnectedGetter?.call(record.canvas);
+    if (typeof connected === 'boolean') return connected;
+  } catch {}
+  return record.canvas?.isConnected === true;
+}
+
+function queueLifecycleEvent(record: CanvasRecord, type: CanvasLifecycleEventType, connected = getConnectionState(record)): void {
+  record.pendingLifecycleEvents.push({ type, connected, activeRegistrySize: records.size });
+}
+
+export function reactivateRecord(record: CanvasRecord): boolean {
+  if (!record.retired) return false;
+  record.retired = false;
+  record.inactiveBoundaries = 0;
+  record.prev = null;
+  record.lastStatus = null;
+  records.add(record);
+  queueLifecycleEvent(record, 'reactivated');
+  return true;
+}
+
+export function restoreRetirement(record: CanvasRecord): void {
+  if (!record.retired) {
+    records.delete(record);
+    record.retired = true;
+    record.pendingLifecycleEvents.pop();
+  }
+}
+
+function markRecordActive(record: CanvasRecord): void {
+  record.activeInWindow = true;
+  record.contextActivityInWindow = true;
+  record.inactiveBoundaries = 0;
+  if (!record.activeLifecycleRecorded) {
+    record.activeLifecycleRecorded = true;
+    queueLifecycleEvent(record, 'active');
+  }
 }
 
 function recordResetEvent(record: CanvasRecord, source: CanvasResetSource): void {
@@ -335,9 +389,8 @@ function recordExactReset(
   clearPersistentState(record);
   record.modelUntrusted = reentrantActivity;
   record.resetPendingReason ??= reason;
-  record.activeInWindow = true;
-  record.contextActivityInWindow =
-    record.exactResetDepth > 0 && reentrantActivity;
+  markRecordActive(record);
+  record.contextActivityInWindow = record.exactResetDepth > 0 && reentrantActivity;
   recordResetEvent(record, source);
 }
 
@@ -368,7 +421,8 @@ function recordLateAttributeReset(record: CanvasRecord, source: CanvasResetSourc
   }
   refreshContentToken(record);
   record.resetPendingReason ??= 'canvas-attribute-reset';
-  record.activeInWindow = true;
+  reactivateRecord(record);
+  markRecordActive(record);
   recordResetEvent(record, source);
 }
 
@@ -680,8 +734,8 @@ function trackGradient(gradient: any, creator: string, args: unknown[]) {
           for (const record of gradientDependents.get(this) ?? []) {
             // Dependents stay registered after reassignment; a false unknown is conservative-safe.
             markUnknown(record.sig, 'gradient-mutated');
-            record.activeInWindow = true;
-            record.contextActivityInWindow = true;
+            reactivateRecord(record);
+            markRecordActive(record);
           }
         }
       } catch (error) {
@@ -796,6 +850,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     typeof contextProto.getLineDash === 'function'
       ? contextProto.getLineDash
       : null;
+  nativeIsConnectedGetter =
+    typeof Node !== 'undefined'
+      ? Object.getOwnPropertyDescriptor(Node.prototype, 'isConnected')?.get ?? null
+      : null;
   // The DOM reports every width/height attribute mutation, regardless of
   // which API made it. takeRecords() moves late delivery to the comparison
   // boundary so the affected window is refused.
@@ -859,12 +917,19 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         attributeObservationUnavailable: attributeObserverUnavailable,
         contextActivityInWindow: false,
         exactResetDepth: 0,
+        inactiveBoundaries: 0,
+        retired: false,
+        lastConnected: false,
+        activeLifecycleRecorded: false,
+        pendingLifecycleEvents: [],
         stateStack: [],
       };
+      record.lastConnected = getConnectionState(record);
       computeMatrixHash(record);
       refreshContentToken(record);
       trackBuild(this, record.contentSig);
       records.add(record);
+      queueLifecycleEvent(record, 'first-observed', record.lastConnected);
       recordByCanvas.set(this, record);
       recordByContext.set(context, record);
       if (observeAttributes) {
@@ -928,6 +993,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       }
       if (!record || killed) return result;
       if (dimensional) {
+        reactivateRecord(record);
         drainAttributeRecordsForExactReset(this, attribute);
         recordExactReset(
           record,
@@ -981,6 +1047,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       }
       if (!record || killed) return result;
       if (dimensional && wasPresent) {
+        reactivateRecord(record);
         drainAttributeRecordsForExactReset(this, attribute);
         recordExactReset(
           record,
@@ -1016,6 +1083,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           throw error;
         }
         if (!record || killed) return;
+        reactivateRecord(record);
         drainAttributeRecordsForExactReset(this, name);
         recordExactReset(
           record,
@@ -1040,6 +1108,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const record = recordByContext.get(this);
       if (!record || killed) return original.apply(this, args);
 
+      const reactivated = reactivateRecord(record);
       const firstActivity = !record.activeInWindow;
       const headEntries =
         !resetsContext && windowCaptured && firstActivity
@@ -1061,6 +1130,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       try {
         result = original.apply(this, args);
       } catch (error) {
+        if (reactivated) restoreRetirement(record);
         if (previousActivity !== null) {
           restoreActivityAfterFailedReset(record, previousActivity);
         }
@@ -1084,8 +1154,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'context-reset',
         );
       } else {
-        record.activeInWindow = true;
-        record.contextActivityInWindow = true;
+        markRecordActive(record);
         if (rasterOperation) {
           record.rasterOps++;
           if (!record.contentDirty) {
@@ -1166,11 +1235,11 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             : null;
         originalSet.call(this, value);
         if (!record || killed) return;
+        reactivateRecord(record);
         if (methodEvidenceByRecord) {
           addMethodEvidence(methodEvidenceByRecord, record, name, null);
         }
-        record.activeInWindow = true;
-        record.contextActivityInWindow = true;
+        markRecordActive(record);
         if (headEntries) {
           try {
             captureHeadState(record.sig, headEntries.entries);

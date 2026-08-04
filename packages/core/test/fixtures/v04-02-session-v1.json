@@ -17,8 +17,9 @@
     { "canvasId": "canvas-a", "nearestReactOwner": "Chart", "attributionKind": "jsx-owner", "sourceLocation": { "file": "/src/Chart.tsx", "line": 4, "column": 2 }, "rasterOperationCount": 2, "canvasApiSelfTimeMs": 1, "signatureStatus": "changed", "unknownReason": null, "sampled": false, "comparisonGap": 1, "methodEvidence": {}, "windowIndex": 3, "timestampMs": 300, "geometry": { "backingWidth": null, "backingHeight": null, "cssWidth": null, "cssHeight": null, "devicePixelRatio": null, "expectedBackingWidth": null, "expectedBackingHeight": null, "expectedPixelArea": null, "actualToExpectedAreaRatio": null, "unavailableReason": "unavailable" } }
   ],
   "resetEvents": [],
+  "lifecycleEvents": [],
   "episodes": [{ "episodeId": "canvas-scan-1785837600000-1:episode:1", "firstWindowIndex": 1, "lastWindowIndex": 3, "startedAtTimestampMs": 100, "endedAtTimestampMs": 300, "activeWindowCount": 3, "rasterOperationCount": 4, "canvasApiSelfTimeMs": 1.75, "methodEvidence": {}, "resetEventCount": 0, "canvases": [{ "canvasId": "canvas-a", "activeWindowCount": 2, "rasterOperationCount": 3, "canvasApiSelfTimeMs": 1.5, "maxWindowSelfTimeMs": 1, "methodEvidence": {}, "resetEventCount": 0 }, { "canvasId": "canvas-b", "activeWindowCount": 1, "rasterOperationCount": 1, "canvasApiSelfTimeMs": 0.25, "maxWindowSelfTimeMs": 0.25, "methodEvidence": {}, "resetEventCount": 0 }] }],
   "findings": [],
-  "collectionLimits": { "maxDurationMs": 30000, "maxCanvasWindowReports": 10000, "maxCanvasLifetimes": 128, "maxResetEvents": 10000 },
-  "droppedEntryCounts": { "canvasWindowReports": 0, "canvasLifetimes": 0, "resetEvents": 0 }
+  "collectionLimits": { "maxDurationMs": 30000, "maxCanvasWindowReports": 10000, "maxCanvasLifetimes": 128, "maxResetEvents": 10000, "maxLifecycleEvents": 10000 },
+  "droppedEntryCounts": { "canvasWindowReports": 0, "canvasLifetimes": 0, "resetEvents": 0, "lifecycleEvents": 0 }
 }

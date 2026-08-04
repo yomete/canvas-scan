@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { emitReport, emitResetEvent, getCurrentWindowIndex } from '../src/frame-loop';
+import { emitLifecycleEvent, emitReport, emitResetEvent, getCurrentWindowIndex } from '../src/frame-loop';
 import { getLastSession, getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 import { getResetEvents, records, type CanvasRecord } from '../src/wrap-context';
@@ -16,6 +16,19 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
   comparisonGap: status === 'unknown' ? null : 1, methodEvidence: {}, ...overrides,
 });
 const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: index, timestampMs: index * 100 });
+const publishLifecycle = (
+  canvasId: string,
+  timestampMs: number,
+  type: 'first-observed' | 'active' | 'detached' | 'retired' | 'reactivated' = 'first-observed',
+) => emitLifecycleEvent({
+  canvasId,
+  type,
+  windowIndex: getCurrentWindowIndex() + 1,
+  timestampMs,
+  connected: false,
+  activeRegistrySize: 1,
+  evidenceLevel: 'measured',
+});
 
 afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -101,6 +114,24 @@ describe('recording', () => {
     expect(storedFinding?.unknownReasons['canvas-reset']).toBe(1);
   });
 
+  it('keeps measured lifecycle history without creating a finding', () => {
+    startRecording();
+    publishLifecycle('cache', 1, 'first-observed');
+    publishLifecycle('cache', 2, 'active');
+    publishLifecycle('cache', 3, 'retired');
+    const stopped = stopRecording()!;
+
+    expect(stopped.lifecycleEvents.map(event => event.type)).toEqual([
+      'first-observed',
+      'active',
+      'retired',
+    ]);
+    expect(stopped.lifecycleEvents.every(event => event.evidenceLevel === 'measured')).toBe(true);
+    expect(stopped.findings).toEqual([]);
+    stopped.lifecycleEvents[0].type = 'reactivated';
+    expect(getLastSession()!.lifecycleEvents[0].type).toBe('first-observed');
+  });
+
   it('does not carry reset evidence from outside recording or before a same-window start', () => {
     const nextWindowIndex = getCurrentWindowIndex() + 1;
     emitResetEvent({ canvasId: 'outside', windowIndex: nextWindowIndex, timestampMs: 5, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
@@ -167,6 +198,19 @@ describe('recording', () => {
     expect(session.collectionLimits.maxResetEvents).toBe(10000);
   });
 
+  it('keeps 10000 lifecycle events in FIFO order and counts the removed event', () => {
+    startRecording();
+    for (let index = 0; index <= 10000; index++) {
+      publishLifecycle('lifecycle-fifo', index);
+    }
+    const session = stopRecording()!;
+
+    expect(session.lifecycleEvents).toHaveLength(10000);
+    expect(session.lifecycleEvents[0].timestampMs).toBe(1);
+    expect(session.droppedEntryCounts.lifecycleEvents).toBe(1);
+    expect(session.collectionLimits.maxLifecycleEvents).toBe(10000);
+  });
+
   it('counts reset events removed with an evicted canvas lifetime', () => {
     startRecording();
     const windowIndex = getCurrentWindowIndex() + 1;
@@ -174,6 +218,21 @@ describe('recording', () => {
     const session = stopRecording()!;
     expect(session.resetEvents.map(event => event.canvasId)).not.toContain('reset-0');
     expect(session.droppedEntryCounts).toMatchObject({ canvasLifetimes: 1, resetEvents: 1 });
+  });
+
+  it('counts lifecycle events removed with an evicted canvas lifetime', () => {
+    startRecording();
+    for (let index = 0; index <= 128; index++) {
+      publishLifecycle(`lifecycle-${index}`, index);
+    }
+    const session = stopRecording()!;
+
+    expect(session.lifecycleEvents.map(event => event.canvasId)).not.toContain('lifecycle-0');
+    expect(new Set(session.lifecycleEvents.map(event => event.canvasId))).toHaveLength(128);
+    expect(session.droppedEntryCounts).toMatchObject({
+      canvasLifetimes: 1,
+      lifecycleEvents: 1,
+    });
   });
 
   it('keeps reset-event FIFO replacement within 128 canvas lifetimes', () => {
@@ -241,6 +300,7 @@ describe('recording', () => {
     stoppedFinding.claimBoundary.observation = 'changed';
     (stopped.collectionLimits as { maxDurationMs: number }).maxDurationMs = 99;
     stopped.droppedEntryCounts.canvasWindowReports = 99;
+    stopped.lifecycleEvents.push({ canvasId: 'changed', type: 'retired', windowIndex: 1, timestampMs: 1, connected: false, activeRegistrySize: 0, evidenceLevel: 'measured' });
     const one = getLastSession()!; const two = getLastSession()!;
     one.windows[0].sourceLocation!.file = 'changed again'; one.canvases[0].commandStatuses.same = 98; one.findings.find(finding => finding.type === 'heavy-canvas-work')!.topMethods[0].count = 98;
     expect(two.windows[0].canvasId).toBe('canvas-a'); expect(two.windows[0].sourceLocation?.file).toBe('/src/Chart.tsx');
@@ -252,6 +312,7 @@ describe('recording', () => {
     expect(copiedFinding.claimBoundary.observation).toMatch(/measured Canvas2D API self-time/);
     expect(two.browserFeatures.monotonicTime).toBe(true); expect(two.collectionLimits.maxDurationMs).toBe(30000);
     expect(two.droppedEntryCounts.canvasWindowReports).toBe(0);
+    expect(two.lifecycleEvents).toEqual([]);
     expect(JSON.parse(JSON.stringify(two))).toEqual(two);
     const plain = (value: unknown): boolean => value === null || ['string', 'number', 'boolean'].includes(typeof value) || (Array.isArray(value) && value.every(plain)) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(plain));
     expect(plain(two)).toBe(true);

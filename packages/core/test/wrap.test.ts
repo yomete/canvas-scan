@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { processRecord } from '../src/frame-loop';
 import {
   getRecord,
   getMethodEvidence,
@@ -9,6 +10,7 @@ import {
   setMethodEvidenceCollectionEnabled,
   setResetEventCollectionEnabled,
   setWindowCaptured,
+  takeLifecycleEvents,
 } from '../src/wrap-context';
 
 const fillRectResult = Symbol('fillRect result');
@@ -62,6 +64,7 @@ class FakeContext {
 
 class FakeCanvas {
   id = '';
+  isConnected = false;
   private context: FakeContext | null = null;
 
   get width() {
@@ -246,6 +249,76 @@ describe('canvas context wrapping', () => {
 
     expect(thrown).toBe(nativeError);
     expect(getMethodEvidence(getRecord(canvas)!).fillRect).toBeUndefined();
+  });
+
+  it('records the first observed connection state', () => {
+    const connectedCanvas = new FakeCanvas();
+    connectedCanvas.isConnected = true;
+    connectedCanvas.getContext('2d');
+    const record = getRecord(connectedCanvas)!;
+
+    expect(takeLifecycleEvents(record)).toEqual([
+      {
+        type: 'first-observed',
+        connected: true,
+        activeRegistrySize: records.size,
+      },
+    ]);
+  });
+
+  it('reactivates the same retired record before capture', () => {
+    const retiredCanvas = new FakeCanvas();
+    const retiredContext = retiredCanvas.getContext('2d')!;
+    const record = getRecord(retiredCanvas)!;
+    const id = record.id;
+    takeLifecycleEvents(record);
+    record.prev = { hash: record.sig.hash, unknown: false, windowIndex: 1 };
+    records.delete(record);
+    record.retired = true;
+    record.inactiveBoundaries = 120;
+
+    retiredContext.fillRect(0, 0, 10, 10);
+
+    expect(getRecord(retiredCanvas)).toBe(record);
+    expect(record.id).toBe(id);
+    expect(records.has(record)).toBe(true);
+    expect(record.retired).toBe(false);
+    expect(takeLifecycleEvents(record).map(event => event.type)).toEqual([
+      'reactivated',
+      'active',
+    ]);
+    expect(processRecord(record, 2, 1)?.report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
+  });
+
+  it('rolls back reactivation when the native method throws', () => {
+    const retiredCanvas = new FakeCanvas();
+    const retiredContext = retiredCanvas.getContext('2d')!;
+    const record = getRecord(retiredCanvas)!;
+    const id = record.id;
+    const nativeError = new Error('retired native failure');
+    takeLifecycleEvents(record);
+    record.prev = { hash: record.sig.hash, unknown: false, windowIndex: 1 };
+    records.delete(record);
+    record.retired = true;
+    record.inactiveBoundaries = 120;
+    retiredContext.throwOnFillRect = nativeError;
+
+    expect(() => retiredContext.fillRect(0, 0, 10, 10)).toThrow(nativeError);
+    expect(getRecord(retiredCanvas)).toBe(record);
+    expect(record.id).toBe(id);
+    expect(records.has(record)).toBe(false);
+    expect(record.retired).toBe(true);
+    expect(takeLifecycleEvents(record)).toEqual([]);
+
+    retiredContext.throwOnFillRect = null;
+    retiredContext.fillRect(0, 0, 10, 10);
+    expect(processRecord(record, 2, 1)?.report).toMatchObject({
+      signatureStatus: 'unknown',
+      unknownReason: 'first-window',
+    });
   });
 
   it('kills instrumentation when capture fails without escaping', () => {

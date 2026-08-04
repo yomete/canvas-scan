@@ -11,7 +11,8 @@
     "probe:burst-heavy": "node burst-heavy-probe.mjs",
     "probe:continuous-repeated": "node v04-04-continuous-probe.mjs",
     "probe:resize-churn": "node v04-05-resize-churn-probe.mjs",
-    "probe:backing-store": "node v04-06-backing-store-probe.mjs"
+    "probe:backing-store": "node v04-06-backing-store-probe.mjs",
+    "probe:lifecycle": "node v04-07-lifecycle-probe.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

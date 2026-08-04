@@ -1,4 +1,4 @@
-import { copyReport, getCurrentWindowIndex, subscribeToReports, subscribeToResetEvents } from './frame-loop';
+import { copyReport, getCurrentWindowIndex, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
 import { drainAttributeRecords, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
 import type {
@@ -14,6 +14,7 @@ import type {
   RecordedTopMethod,
   RepeatedDrawWorkFinding,
   RecordedResetEvent,
+  RecordedCanvasLifecycleEvent,
   ResizeChurnFinding,
   BackingStoreMismatchFinding,
   RecordingState,
@@ -24,6 +25,7 @@ const MAX_DURATION_MS = 30000;
 const MAX_WINDOWS = 10000;
 const MAX_CANVASES = 128;
 const MAX_RESET_EVENTS = 10000;
+const MAX_LIFECYCLE_EVENTS = 10000;
 const HEAVY_CANVAS_WORK_THRESHOLD_MS = 8;
 const HEAVY_CANVAS_WORK_CLAIM = {
   observation: 'The canvas spent the measured Canvas2D API self-time in the named draw episode.',
@@ -58,13 +60,16 @@ let sessionId = '';
 let timer: ReturnType<typeof setTimeout> | undefined;
 let windows: RecordedCanvasWindow[] = [];
 let resetEvents: RecordedResetEvent[] = [];
+let lifecycleEvents: RecordedCanvasLifecycleEvent[] = [];
 let canvasIds: string[] = [];
 let droppedWindows = 0;
 let droppedCanvases = 0;
 let droppedResetEvents = 0;
+let droppedLifecycleEvents = 0;
 let sequence = 0;
 let unsubscribe: (() => void) | undefined;
 let unsubscribeResetEvents: (() => void) | undefined;
+let unsubscribeLifecycleEvents: (() => void) | undefined;
 let recordingStartWindowIndex = 0;
 let minRepeatedRasterOps = 2;
 let recordingStartOffsets = new Map<string, { rasterOperationCount: number; canvasApiSelfTimeMs: number }>();
@@ -79,6 +84,7 @@ function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
 }
 
 function copyResetEvent(event: RecordedResetEvent): RecordedResetEvent { return { ...event }; }
+function copyLifecycleEvent(event: RecordedCanvasLifecycleEvent): RecordedCanvasLifecycleEvent { return { ...event }; }
 
 function copyEvidence(evidence: Record<string, CanvasMethodEvidence>): Record<string, CanvasMethodEvidence> {
   return Object.fromEntries(Object.entries(evidence).map(([method, value]) => [method, { ...value }]));
@@ -121,6 +127,7 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
     })),
     windows: session.windows.map(copyWindow),
     resetEvents: session.resetEvents.map(copyResetEvent),
+    lifecycleEvents: session.lifecycleEvents.map(copyLifecycleEvent),
     episodes: session.episodes.map(episode => ({ ...episode, methodEvidence: copyEvidence(episode.methodEvidence), canvases: episode.canvases.map(canvas => ({ ...canvas, methodEvidence: copyEvidence(canvas.methodEvidence) })) })),
     findings: session.findings.map(finding => finding.type === 'heavy-canvas-work'
       ? { ...finding, topMethods: finding.topMethods.map(method => ({ ...method })), maximumWindow: { ...finding.maximumWindow, methodEvidence: copyEvidence(finding.maximumWindow.methodEvidence) }, claimBoundary: { ...finding.claimBoundary } }
@@ -152,10 +159,16 @@ function removeCanvas(canvasId: string): void {
     else keptResetEvents.push(event);
   }
   resetEvents = keptResetEvents;
+  const keptLifecycleEvents: RecordedCanvasLifecycleEvent[] = [];
+  for (const event of lifecycleEvents) {
+    if (event.canvasId === canvasId) droppedLifecycleEvents++;
+    else keptLifecycleEvents.push(event);
+  }
+  lifecycleEvents = keptLifecycleEvents;
 }
 
 function removeCanvasIfEmpty(canvasId: string): void {
-  if (windows.some(window => window.canvasId === canvasId) || resetEvents.some(event => event.canvasId === canvasId)) return;
+  if (windows.some(window => window.canvasId === canvasId) || resetEvents.some(event => event.canvasId === canvasId) || lifecycleEvents.some(event => event.canvasId === canvasId)) return;
   canvasIds = canvasIds.filter(id => id !== canvasId);
 }
 
@@ -188,6 +201,17 @@ function captureResetEvent(event: RecordedResetEvent): void {
   }
   retainCanvas(event.canvasId);
   resetEvents.push(copyResetEvent(event));
+}
+
+function captureLifecycleEvent(event: RecordedCanvasLifecycleEvent): void {
+  if (state !== 'recording') return;
+  if (lifecycleEvents.length === MAX_LIFECYCLE_EVENTS) {
+    const removed = lifecycleEvents.shift()!;
+    droppedLifecycleEvents++;
+    removeCanvasIfEmpty(removed.canvasId);
+  }
+  retainCanvas(event.canvasId);
+  lifecycleEvents.push(copyLifecycleEvent(event));
 }
 
 function summaries(): RecordedCanvasSummary[] {
@@ -355,14 +379,16 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   unsubscribe = undefined;
   unsubscribeResetEvents?.();
   unsubscribeResetEvents = undefined;
+  unsubscribeLifecycleEvents?.();
+  unsubscribeLifecycleEvents = undefined;
   const derived = episodesAndFindings();
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
     stopReason, canvasScanVersion: '0.3.1', browserFeatures: { monotonicTime: typeof performance !== 'undefined' },
-    canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), episodes: derived.episodes, findings: derived.findings,
-    collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000 },
-    droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents },
+    canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, findings: derived.findings,
+    collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000 },
+    droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents },
   };
   state = 'complete';
   notify();
@@ -383,10 +409,12 @@ export function startRecording(): void {
   sessionId = `canvas-scan-${Date.parse(startedAt)}-${++sequence}`;
   windows = [];
   resetEvents = [];
+  lifecycleEvents = [];
   canvasIds = [];
   droppedWindows = 0;
   droppedCanvases = 0;
   droppedResetEvents = 0;
+  droppedLifecycleEvents = 0;
   state = 'recording';
   unsubscribe = subscribeToReports((report, canvas, metadata) => {
     if (!metadata) return;
@@ -406,6 +434,9 @@ export function startRecording(): void {
       const rasterOperationCount = Math.max(0, event.rasterOperationCount - offset.rasterOperationCount);
       captureResetEvent({ ...event, rasterOperationCount, activeRasterOverlap: rasterOperationCount > 0 });
     } else captureResetEvent(event);
+  });
+  unsubscribeLifecycleEvents = subscribeToLifecycleEvents(event => {
+    if (event.windowIndex > recordingStartWindowIndex) captureLifecycleEvent(event);
   });
   timer = setTimeout(() => { finish('max-duration'); }, MAX_DURATION_MS);
   lastSession = undefined;
@@ -433,14 +464,18 @@ export function resetRecordingForTests(): void {
   unsubscribe = undefined;
   unsubscribeResetEvents?.();
   unsubscribeResetEvents = undefined;
+  unsubscribeLifecycleEvents?.();
+  unsubscribeLifecycleEvents = undefined;
   state = 'idle';
   lastSession = undefined;
   windows = [];
   resetEvents = [];
+  lifecycleEvents = [];
   canvasIds = [];
   droppedWindows = 0;
   droppedCanvases = 0;
   droppedResetEvents = 0;
+  droppedLifecycleEvents = 0;
   recordingStartWindowIndex = 0;
   recordingStartOffsets.clear();
   minRepeatedRasterOps = 2;

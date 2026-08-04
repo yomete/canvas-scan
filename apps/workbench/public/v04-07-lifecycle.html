@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Canvas lifecycle probe</title>
+<link rel="icon" href="data:," />
+<script>window.__CANVAS_SCAN_OPTS = { overlay: false };</script>
+<script src="/canvas-scan.iife.js"></script>
+<script>
+  const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const idleFrames = async count => { for (let index = 0; index < count; index++) await nextFrame(); };
+  const canvas = (id, connected = false) => {
+    const element = document.createElement('canvas');
+    element.id = id; element.width = element.height = 20;
+    if (connected) document.documentElement.append(element);
+    return element;
+  };
+  const facts = { mode: new URLSearchParams(location.search).has('soak') ? 'soak' : 'main', frame: 0, done: false };
+  const tick = async () => {
+    window.__CANVAS_SCAN__.startRecording();
+    if (facts.mode === 'soak') {
+      const fixed = canvas('soak-fixed', true); fixed.getContext('2d').fillRect(0, 0, 1, 1);
+      for (let boundary = 0; boundary < 720; boundary++) {
+        for (let index = 0; index < 4; index++) canvas(`soak-${boundary}-${index}`).getContext('2d');
+        await nextFrame(); facts.frame++;
+      }
+      window.__LIFECYCLE_V04_07_SOAK_CREATION_SESSION__ = window.__CANVAS_SCAN__.stopRecording();
+      window.__CANVAS_SCAN__.startRecording();
+      await idleFrames(120); facts.frame += 120;
+      facts.created = 2880; facts.done = true;
+      window.__LIFECYCLE_V04_07_FIXTURE__ = facts;
+      return;
+    }
+    const destination = canvas('destination', true); const destinationContext = destination.getContext('2d');
+    const retiredCache = canvas('retired-cache'); const retiredContext = retiredCache.getContext('2d');
+    const retainedCache = canvas('retained-cache'); const retainedContext = retainedCache.getContext('2d');
+    const connected = canvas('disconnect-once', true); connected.getContext('2d'); connected.remove();
+    retiredContext.fillStyle = '#2563eb'; retiredContext.fillRect(0, 0, 20, 20);
+    retainedContext.fillStyle = '#16a34a'; retainedContext.fillRect(0, 0, 20, 20);
+    destinationContext.drawImage(retiredCache, 0, 0);
+    await idleFrames(100); facts.frame += 100; retainedContext.fillRect(0, 0, 1, 1); destinationContext.fillRect(19, 19, 1, 1);
+    await idleFrames(21); facts.frame += 21;
+    destinationContext.drawImage(retiredCache, 0, 0); facts.unchangedRetiredSource = true;
+    await nextFrame(); facts.frame++;
+    retiredContext.fillStyle = '#dc2626'; retiredContext.fillRect(0, 0, 20, 20);
+    destinationContext.drawImage(retiredCache, 0, 0); facts.changedRetiredSource = true;
+    for (let index = 0; index < 3; index++) { await idleFrames(90); facts.frame += 90; retainedContext.fillRect(index, 0, 1, 1); }
+    await nextFrame(); facts.frame++;
+    await idleFrames(90); facts.frame += 90;
+    retiredContext.reset(); destinationContext.drawImage(retiredCache, 0, 0); facts.resetRetiredSource = true;
+    await nextFrame(); facts.frame++;
+    facts.done = true; window.__LIFECYCLE_V04_07_FIXTURE__ = facts;
+  };
+  tick().catch(error => { facts.error = String(error); facts.done = true; window.__LIFECYCLE_V04_07_FIXTURE__ = facts; });
+</script>

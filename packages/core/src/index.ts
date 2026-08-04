@@ -58,6 +58,8 @@ export type {
   CanvasGeometryUnavailableReason,
   RecordedResetEvent,
   CanvasResetSource,
+  CanvasLifecycleEventType,
+  RecordedCanvasLifecycleEvent,
   RecordedDrawEpisode,
   RecordedEpisodeCanvasSummary,
   RecordedTopMethod,
