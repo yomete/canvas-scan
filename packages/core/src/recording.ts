@@ -1,5 +1,6 @@
 import { copyReport, getCurrentWindowIndex, subscribeToReports, subscribeToResetEvents } from './frame-loop';
 import { drainAttributeRecords, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents } from './wrap-context';
+import { collectCanvasGeometry } from './geometry';
 import type {
   CanvasMethodEvidence,
   CanvasScanOptions,
@@ -14,6 +15,7 @@ import type {
   RepeatedDrawWorkFinding,
   RecordedResetEvent,
   ResizeChurnFinding,
+  BackingStoreMismatchFinding,
   RecordingState,
   RecordingStopReason,
 } from './types';
@@ -41,6 +43,12 @@ const RESIZE_CHURN_CLAIM = {
   nonEstablishedFacts: 'The evidence does not show that resets made the application slow or that the application can remove them.',
 };
 const RESIZE_CHURN_NEXT_CHECK = 'Check whether sizing or reset calls can run only when dimensions or state need to change.';
+const BACKING_STORE_MISMATCH_CLAIM = {
+  observation: 'The recorded backing area is larger than the DPR-adjusted expected area in the named active windows.',
+  explanation: 'The recorded dimensions are a review candidate.',
+  nonEstablishedFacts: 'The evidence does not establish GPU cost, render cost, or the required image quality.',
+};
+const BACKING_STORE_MISMATCH_NEXT_CHECK = 'Check the canvas sizing policy and the required image quality.';
 
 let state: RecordingState = 'idle';
 let lastSession: InvestigationSessionV1 | undefined;
@@ -67,7 +75,7 @@ function now(): number {
 }
 
 function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
-  return { ...copyReport(window), windowIndex: window.windowIndex, timestampMs: window.timestampMs };
+  return { ...copyReport(window), windowIndex: window.windowIndex, timestampMs: window.timestampMs, geometry: { ...window.geometry } };
 }
 
 function copyResetEvent(event: RecordedResetEvent): RecordedResetEvent { return { ...event }; }
@@ -86,6 +94,13 @@ function addEvidence(target: Record<string, CanvasMethodEvidence>, source: Recor
 }
 
 function rounded(value: number): number { return Number(value.toFixed(3)); }
+
+function hasBackingStoreMismatch(geometry: RecordedCanvasWindow['geometry']): boolean {
+  if (geometry.unavailableReason !== null || geometry.backingWidth === null || geometry.backingHeight === null || geometry.cssWidth === null || geometry.cssHeight === null || geometry.devicePixelRatio === null) return false;
+  const actualPixelArea = geometry.backingWidth * geometry.backingHeight;
+  const expectedPixelArea = geometry.cssWidth * geometry.cssHeight * geometry.devicePixelRatio * geometry.devicePixelRatio;
+  return Number.isFinite(actualPixelArea) && Number.isFinite(expectedPixelArea) && expectedPixelArea > 0 && actualPixelArea >= expectedPixelArea * 2;
+}
 
 function roundedEvidence(evidence: Record<string, CanvasMethodEvidence>): Record<string, CanvasMethodEvidence> {
   return Object.fromEntries(Object.entries(evidence).map(([method, value]) => [method, {
@@ -111,7 +126,9 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
       ? { ...finding, topMethods: finding.topMethods.map(method => ({ ...method })), maximumWindow: { ...finding.maximumWindow, methodEvidence: copyEvidence(finding.maximumWindow.methodEvidence) }, claimBoundary: { ...finding.claimBoundary } }
       : finding.type === 'repeated-draw-work'
         ? { ...finding, repeatedWindows: finding.repeatedWindows.map(window => ({ ...window })), unknownCoverage: { ...finding.unknownCoverage }, claimBoundary: { ...finding.claimBoundary } }
-        : { ...finding, resetEvents: finding.resetEvents.map(event => ({ ...event })), affectedEpisodeIds: [...finding.affectedEpisodeIds], commandStatuses: { ...finding.commandStatuses }, unknownReasons: { ...finding.unknownReasons }, claimBoundary: { ...finding.claimBoundary } }),
+        : finding.type === 'resize-churn'
+          ? { ...finding, resetEvents: finding.resetEvents.map(event => ({ ...event })), affectedEpisodeIds: [...finding.affectedEpisodeIds], commandStatuses: { ...finding.commandStatuses }, unknownReasons: { ...finding.unknownReasons }, claimBoundary: { ...finding.claimBoundary } }
+          : { ...finding, affectedWindows: finding.affectedWindows.map(window => ({ ...window })), affectedEpisodeIds: [...finding.affectedEpisodeIds], claimBoundary: { ...finding.claimBoundary } }),
     collectionLimits: { ...session.collectionLimits },
     droppedEntryCounts: { ...session.droppedEntryCounts },
   };
@@ -282,6 +299,7 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
         canvasApiSelfTimeMs: 0,
         signatureStatus: event.commandStatus,
         unknownReason: event.unknownReason,
+        geometry: { backingWidth: null, backingHeight: null, cssWidth: null, cssHeight: null, devicePixelRatio: null, expectedBackingWidth: null, expectedBackingHeight: null, expectedPixelArea: null, actualToExpectedAreaRatio: null, unavailableReason: 'unavailable' },
       }];
     })).values()];
     const affectedEpisodeIds = episodes.filter(episode => qualifying.some(event => event.windowIndex >= episode.firstWindowIndex && event.windowIndex <= episode.lastWindowIndex)).map(episode => episode.episodeId);
@@ -289,6 +307,18 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
     const unknownReasons: Record<string, number> = {};
     for (const window of qualifyingWindows) { commandStatuses[window.signatureStatus]++; if (window.unknownReason) unknownReasons[window.unknownReason] = (unknownReasons[window.unknownReason] ?? 0) + 1; }
     const finding: ResizeChurnFinding = { type: 'resize-churn', evidenceLevel: 'candidate', canvasId, observedResetCount: observed.length, activeResetCount: qualifying.length, resetEvents: qualifying.map(({ source, width, height, windowIndex, timestampMs }) => ({ source, width, height, windowIndex, timestampMs })), affectedEpisodeIds, commandStatuses, unknownReasons, canvasApiSelfTimeMs: rounded(qualifyingWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), rasterOperationCount: qualifyingWindows.reduce((total, window) => total + window.rasterOperationCount, 0), claimBoundary: { ...RESIZE_CHURN_CLAIM }, nextCheck: RESIZE_CHURN_NEXT_CHECK };
+    findings.push(finding);
+  }
+  for (const canvasId of [...new Set(windows.map(window => window.canvasId))]) {
+    const qualifying = windows.filter(window => window.canvasId === canvasId && window.rasterOperationCount > 0 && hasBackingStoreMismatch(window.geometry));
+    const distinct = [...new Map(qualifying.map(window => [window.windowIndex, window])).values()];
+    if (distinct.length < 2) continue;
+    const affectedEpisodeIds = episodes.filter(episode => distinct.some(window => window.windowIndex >= episode.firstWindowIndex && window.windowIndex <= episode.lastWindowIndex)).map(episode => episode.episodeId);
+    const finding: BackingStoreMismatchFinding = {
+      type: 'backing-store-mismatch', evidenceLevel: 'candidate', canvasId, affectedWindowCount: distinct.length,
+      affectedWindows: distinct.map(window => ({ windowIndex: window.windowIndex, timestampMs: window.timestampMs, backingWidth: window.geometry.backingWidth, backingHeight: window.geometry.backingHeight, expectedBackingWidth: window.geometry.expectedBackingWidth, expectedBackingHeight: window.geometry.expectedBackingHeight, expectedPixelArea: window.geometry.expectedPixelArea, actualToExpectedAreaRatio: window.geometry.actualToExpectedAreaRatio, rasterOperationCount: window.rasterOperationCount, canvasApiSelfTimeMs: window.canvasApiSelfTimeMs })),
+      affectedEpisodeIds, rasterOperationCount: distinct.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(distinct.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), claimBoundary: { ...BACKING_STORE_MISMATCH_CLAIM }, nextCheck: BACKING_STORE_MISMATCH_NEXT_CHECK,
+    };
     findings.push(finding);
   }
   findings.sort((left, right) => right.canvasApiSelfTimeMs - left.canvasApiSelfTimeMs || right.rasterOperationCount - left.rasterOperationCount || left.type.localeCompare(right.type) || left.canvasId.localeCompare(right.canvasId));
@@ -358,7 +388,7 @@ export function startRecording(): void {
   droppedCanvases = 0;
   droppedResetEvents = 0;
   state = 'recording';
-  unsubscribe = subscribeToReports((report, _canvas, metadata) => {
+  unsubscribe = subscribeToReports((report, canvas, metadata) => {
     if (!metadata) return;
     const offset = recordingStartOffsets.get(report.canvasId);
     recordingStartOffsets.delete(report.canvasId);
@@ -367,7 +397,7 @@ export function startRecording(): void {
       copied.rasterOperationCount = Math.max(0, copied.rasterOperationCount - offset.rasterOperationCount);
       copied.canvasApiSelfTimeMs = rounded(Math.max(0, copied.canvasApiSelfTimeMs - offset.canvasApiSelfTimeMs));
     }
-    capture({ ...copied, ...metadata });
+    capture({ ...copied, ...metadata, geometry: collectCanvasGeometry(canvas) });
   });
   unsubscribeResetEvents = subscribeToResetEvents(event => {
     if (state !== 'recording' || event.windowIndex <= recordingStartWindowIndex) return;

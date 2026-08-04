@@ -17,7 +17,7 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
 });
 const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: index, timestampMs: index * 100 });
 
-afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('recording', () => {
   it('starts idle and has no session or no-op stop', () => {
@@ -60,6 +60,22 @@ describe('recording', () => {
     const second = stopRecording()!;
     expect(first.windows).toHaveLength(1); expect(second.sessionId).not.toBe(first.sessionId);
     expect(second.windows.map(window => window.canvasId)).toEqual(['two']);
+  });
+
+  it('reads geometry only for reports during recording and deep-copies it', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const rect = vi.fn(() => ({ width: 240, height: 120 }));
+    const canvas = { isConnected: true, width: 480, height: 240, getBoundingClientRect: rect };
+    publish(makeReport('geometry'), 1);
+    expect(rect).not.toHaveBeenCalled();
+    startRecording();
+    emitReport(makeReport('geometry'), canvas, { windowIndex: 3, timestampMs: 300 });
+    const stopped = stopRecording()!;
+    expect(rect).toHaveBeenCalledTimes(1);
+    stopped.windows[0].geometry.backingWidth = 1;
+    expect(getLastSession()!.windows[0].geometry.backingWidth).toBe(480);
+    emitReport(makeReport('geometry'), canvas, { windowIndex: 4, timestampMs: 400 });
+    expect(rect).toHaveBeenCalledTimes(1);
   });
 
   it('keeps reset-only events and deep-copies them from stopped sessions', () => {

@@ -47,6 +47,22 @@ export type RecordingState = 'idle' | 'recording' | 'complete';
 export interface RecordedCanvasWindow extends DrawBatchReport {
   windowIndex: number;
   timestampMs: number;
+  geometry: RecordedCanvasGeometry;
+}
+
+export type CanvasGeometryUnavailableReason = 'disconnected' | 'hidden' | 'zero-size' | 'unavailable';
+
+export interface RecordedCanvasGeometry {
+  backingWidth: number | null;
+  backingHeight: number | null;
+  cssWidth: number | null;
+  cssHeight: number | null;
+  devicePixelRatio: number | null;
+  expectedBackingWidth: number | null;
+  expectedBackingHeight: number | null;
+  expectedPixelArea: number | null;
+  actualToExpectedAreaRatio: number | null;
+  unavailableReason: CanvasGeometryUnavailableReason | null;
 }
 
 export type CanvasResetSource = 'width-setter' | 'height-setter' | 'width-attribute' | 'height-attribute' | 'context-reset';
@@ -153,7 +169,20 @@ export interface ResizeChurnFinding {
   nextCheck: string;
 }
 
-export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding | ResizeChurnFinding;
+export interface BackingStoreMismatchFinding {
+  type: 'backing-store-mismatch';
+  evidenceLevel: 'candidate';
+  canvasId: string;
+  affectedWindowCount: number;
+  affectedWindows: Array<Pick<RecordedCanvasWindow, 'windowIndex' | 'timestampMs' | 'rasterOperationCount' | 'canvasApiSelfTimeMs'> & Pick<RecordedCanvasGeometry, 'backingWidth' | 'backingHeight' | 'expectedBackingWidth' | 'expectedBackingHeight' | 'expectedPixelArea' | 'actualToExpectedAreaRatio'>>;
+  affectedEpisodeIds: string[];
+  rasterOperationCount: number;
+  canvasApiSelfTimeMs: number;
+  claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
+  nextCheck: string;
+}
+
+export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding | ResizeChurnFinding | BackingStoreMismatchFinding;
 
 export interface InvestigationSessionV1 {
   schemaVersion: 1;

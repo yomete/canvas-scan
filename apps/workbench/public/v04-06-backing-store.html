@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Canvas backing store probe</title>
+<link rel="icon" href="data:," />
+<script src="/canvas-scan.iife.js"></script>
+<button id="draw">Draw recorded windows</button>
+<canvas id="seeded-canvas"></canvas>
+<canvas id="idle-canvas"></canvas>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode') || 'bad';
+  const seeded = document.querySelector('#seeded-canvas'); const idle = document.querySelector('#idle-canvas');
+  const context = seeded.getContext('2d'); const idleContext = idle.getContext('2d');
+  seeded.style.cssText = 'width:240px;height:120px'; idle.style.cssText = 'width:240px;height:120px';
+  const qualityTargetDpr = 2; seeded.width = mode === 'bad' ? 960 : 480; seeded.height = mode === 'bad' ? 480 : 240; idle.width = 960; idle.height = 480;
+  const scene = [20, 30, 80, '#2563eb']; let ticks = 0; let pendingDraws = 0;
+  const draw = () => { context.setTransform(seeded.width / 240, 0, 0, seeded.height / 120, 0, 0); context.fillStyle = scene[3]; context.fillRect(scene[0], scene[1], scene[2], 40); };
+  idleContext.fillRect(0, 0, 1, 1);
+  const tick = () => { ticks++; if (pendingDraws > 0) { draw(); pendingDraws--; } window.__BACKING_STORE_PROBE__ = { mode, ticks, pendingDraws, qualityTargetDpr, scene, cssWidth: 240, cssHeight: 120, devicePixelRatio }; requestAnimationFrame(tick); };
+  document.querySelector('#draw').onclick = () => { pendingDraws = 3; };
+  window.__BACKING_STORE_PROBE__ = { mode, ticks, qualityTargetDpr, scene, cssWidth: 240, cssHeight: 120, devicePixelRatio }; requestAnimationFrame(tick);
+</script>

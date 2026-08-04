@@ -81,6 +81,7 @@ afterEach(() => {
   resetRecordingForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   document.body.replaceChildren();
   latestReports.clear();
 });
@@ -272,6 +273,33 @@ describe('overlay flyout', () => {
     card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="resize-seeded"]')?.classList).toContain('locate');
+    card.click();
+    refreshOverlay();
+    expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
+  });
+
+  it('shows backing-store evidence and opens the connected canvas', () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    mountOverlay();
+    const canvas = makeCanvas();
+    canvas.width = 400; canvas.height = 200;
+    startRecording();
+    emitReport(makeReport({ canvasId: 'backing-seeded', rasterOperationCount: 1, canvasApiSelfTimeMs: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'backing-seeded', rasterOperationCount: 1, canvasApiSelfTimeMs: 3 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="backing-seeded"]')!;
+    expect(card.textContent).toContain('Backing store mismatch · candidate');
+    expect(card.textContent).toContain('Actual 400×200; expected 200×100; area ratio 4');
+    expect(card.textContent).toContain('2 affected windows');
+    expect(card.textContent).toContain('GPU cost');
+    expect(card.textContent).toContain('required image quality');
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector('.outline[data-canvas-id="backing-seeded"]')?.classList).toContain('locate');
     card.click();
     refreshOverlay();
     expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
@@ -636,6 +664,36 @@ describe('overlay flyout', () => {
 });
 
 describe('overlay inspect mode and popover', () => {
+  it('reads geometry only during recording or explicit inspection', () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    mountOverlay();
+    const canvas = makeCanvas();
+    canvas.width = 480; canvas.height = 240;
+    const rect = vi.mocked(canvas.getBoundingClientRect);
+    const passiveReport = makeReport({ signatureStatus: 'changed', rasterOperationCount: 1 });
+    rect.mockClear();
+    emitReport(passiveReport, canvas, { windowIndex: 1, timestampMs: 10 });
+    refreshOverlay();
+    expect(rect).not.toHaveBeenCalled();
+    startRecording();
+    emitReport(passiveReport, canvas, { windowIndex: 2, timestampMs: 20 });
+    refreshOverlay();
+    expect(rect).toHaveBeenCalledTimes(1);
+    stopRecording();
+    emitReport(passiveReport, canvas, { windowIndex: 3, timestampMs: 30 });
+    refreshOverlay();
+    expect(rect).toHaveBeenCalledTimes(1);
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    rect.mockClear();
+    root.querySelector<HTMLButtonElement>('.row')!.click();
+    expect(rect).toHaveBeenCalledTimes(1);
+    refreshOverlay();
+    expect(root.querySelector('.geometry')?.textContent).toContain('480×240 backing');
+  });
+
   it('makes connected outlines interactive and exits on Escape', () => {
     mountOverlay();
     emitReport(
@@ -737,6 +795,8 @@ describe('overlay inspect mode and popover', () => {
       column: 7,
     });
     expect(copied.aggregates.unknown).toBe(1);
+    expect(copied.geometry).toMatchObject({ unavailableReason: 'disconnected' });
+    expect(root.querySelector('.geometry')?.textContent).toBe('geometry: disconnected');
   });
 
   it('opens detached canvases from rows and caches a resolved source', async () => {

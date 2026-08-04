@@ -1,13 +1,93 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emitReport, emitResetEvent } from '../src/frame-loop';
-import { configureRecording, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { configureRecording, getLastSession, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 const report = (canvasId: string, selfTime: number, overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 1, canvasApiSelfTimeMs: selfTime, signatureStatus: 'same', unknownReason: null, sampled: false, comparisonGap: 1, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: selfTime } }, ...overrides });
-const publish = (canvasId: string, selfTime: number, windowIndex: number, overrides: Partial<DrawBatchReport> = {}) => emitReport(report(canvasId, selfTime, overrides), {}, { windowIndex, timestampMs: windowIndex * 10 });
-afterEach(resetRecordingForTests);
+const publish = (canvasId: string, selfTime: number, windowIndex: number, overrides: Partial<DrawBatchReport> = {}, canvas: unknown = {}) => emitReport(report(canvasId, selfTime, overrides), canvas, { windowIndex, timestampMs: windowIndex * 10 });
+afterEach(() => { resetRecordingForTests(); vi.unstubAllGlobals(); });
 
 describe('investigation findings', () => {
+  it('finds two raster-active windows at the inclusive backing-store ratio', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const oversized = { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) };
+    startRecording(); publish('oversized', 2, 1, {}, oversized); publish('oversized', 3, 2, {}, oversized);
+    const session = stopRecording()!;
+    const finding = session.findings.find(item => item.type === 'backing-store-mismatch');
+    expect(finding).toMatchObject({ canvasId: 'oversized', evidenceLevel: 'candidate', affectedWindowCount: 2, rasterOperationCount: 2, canvasApiSelfTimeMs: 5 });
+    expect(finding?.affectedWindows).toEqual([
+      { windowIndex: 1, timestampMs: 10, backingWidth: 960, backingHeight: 240, expectedBackingWidth: 480, expectedBackingHeight: 240, expectedPixelArea: 115200, actualToExpectedAreaRatio: 2, rasterOperationCount: 1, canvasApiSelfTimeMs: 2 },
+      { windowIndex: 2, timestampMs: 20, backingWidth: 960, backingHeight: 240, expectedBackingWidth: 480, expectedBackingHeight: 240, expectedPixelArea: 115200, actualToExpectedAreaRatio: 2, rasterOperationCount: 1, canvasApiSelfTimeMs: 3 },
+    ]);
+    expect(finding?.affectedEpisodeIds).toEqual([session.episodes[0].episodeId]);
+    expect(finding?.claimBoundary).toEqual({
+      observation: 'The recorded backing area is larger than the DPR-adjusted expected area in the named active windows.',
+      explanation: 'The recorded dimensions are a review candidate.',
+      nonEstablishedFacts: 'The evidence does not establish GPU cost, render cost, or the required image quality.',
+    });
+    expect(finding?.nextCheck).toBe('Check the canvas sizing policy and the required image quality.');
+    if (!finding || finding.type !== 'backing-store-mismatch') throw new Error('missing backing-store finding');
+    finding.affectedWindows[0].backingWidth = 1;
+    finding.affectedEpisodeIds[0] = 'changed';
+    finding.claimBoundary.observation = 'changed';
+    const copied = getLastSession()!.findings.find(item => item.type === 'backing-store-mismatch');
+    expect(copied?.affectedWindows[0].backingWidth).toBe(960);
+    expect(copied?.affectedEpisodeIds[0]).not.toBe('changed');
+    expect(copied?.claimBoundary.observation).toContain('recorded backing area');
+  });
+
+  it('requires two qualifying backing-store windows', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const oversized = { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) };
+    startRecording(); publish('one-window', 2, 1, {}, oversized);
+    expect(stopRecording()!.findings.some(item => item.type === 'backing-store-mismatch')).toBe(false);
+  });
+
+  it('does not round a sub-threshold backing-store ratio into a finding', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 1);
+    const almostOversized = { isConnected: true, width: 199.96, height: 1, getBoundingClientRect: () => ({ width: 100, height: 1 }) };
+    startRecording(); publish('almost-oversized', 2, 1, {}, almostOversized); publish('almost-oversized', 3, 2, {}, almostOversized);
+    const session = stopRecording()!;
+    expect(session.windows[0].geometry.actualToExpectedAreaRatio).toBe(2);
+    expect(session.findings.some(item => item.type === 'backing-store-mismatch')).toBe(false);
+  });
+
+  it('keeps unavailable and idle oversized windows out of backing-store findings', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const unavailable = { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 0, height: 120 }) };
+    const oversized = { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) };
+    startRecording();
+    publish('unavailable', 2, 1, {}, unavailable); publish('unavailable', 2, 2, {}, unavailable);
+    publish('idle', 2, 3, { rasterOperationCount: 0 }, oversized); publish('idle', 2, 4, { rasterOperationCount: 0 }, oversized);
+    expect(stopRecording()!.findings.some(item => item.type === 'backing-store-mismatch')).toBe(false);
+  });
+
+  it('keeps every unavailable geometry reason out of backing-store findings', () => {
+    vi.stubGlobal('getComputedStyle', (element: { hidden?: boolean }) => ({ display: element.hidden ? 'none' : 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const canvases = [
+      ['disconnected', { isConnected: false, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) }],
+      ['hidden', { isConnected: true, hidden: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) }],
+      ['zero-size', { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 0, height: 120 }) }],
+      ['unavailable', { isConnected: true, width: 960, height: 240 }],
+    ] as const;
+    startRecording();
+    canvases.forEach(([reason, canvas], index) => {
+      publish(reason, 2, index * 2 + 1, {}, canvas);
+      publish(reason, 2, index * 2 + 2, {}, canvas);
+    });
+    const session = stopRecording()!;
+    expect(canvases.map(([reason]) => session.windows.find(window => window.canvasId === reason)?.geometry.unavailableReason)).toEqual(canvases.map(([reason]) => reason));
+    expect(session.findings.some(item => item.type === 'backing-store-mismatch')).toBe(false);
+  });
+
+  it('keeps mixed backing-store finding order stable', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
+    const oversized = { isConnected: true, width: 960, height: 240, getBoundingClientRect: () => ({ width: 240, height: 120 }) };
+    startRecording();
+    publish('mixed-geometry', 4, 1, {}, oversized);
+    publish('mixed-geometry', 4, 2, {}, oversized);
+    expect(stopRecording()!.findings.map(finding => finding.type)).toEqual(['backing-store-mismatch', 'heavy-canvas-work']);
+  });
   it('creates resize churn only for two active reset events and counts each qualifying window once', () => {
     startRecording();
     publish('resize', 2, 1, { rasterOperationCount: 4, signatureStatus: 'unknown', unknownReason: 'canvas-reset' });

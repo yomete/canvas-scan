@@ -12,6 +12,7 @@ import {
   stopRecording,
   subscribeToRecordingState,
 } from './recording';
+import { collectCanvasGeometry } from './geometry';
 import { resolveSourceOutcome } from './symbolicate';
 import type {
   AttributionKind,
@@ -19,6 +20,8 @@ import type {
   DrawBatchReport,
   RepeatedDrawWorkFinding,
   ResizeChurnFinding,
+  BackingStoreMismatchFinding,
+  RecordedCanvasGeometry,
   SourceLocation,
 } from './types';
 
@@ -84,6 +87,7 @@ let flyoutOpen = false;
 let showAllRows = false;
 let inspectMode = false;
 let selectedCanvasId: string | null = null;
+let selectedGeometry: RecordedCanvasGeometry | null = null;
 let minFlashRasterOps = 2;
 let refreshInterval: number | null = null;
 let survivalInterval: number | null = null;
@@ -648,6 +652,7 @@ function updateInspectOutlines(): void {
 
 function closePopover(): void {
   selectedCanvasId = null;
+  selectedGeometry = null;
 }
 
 function sourceLabel(state: SourceState | undefined, failed: boolean): {
@@ -681,6 +686,7 @@ function copyPopoverJson(canvasId: string): void {
   const payload = JSON.stringify({
     latest: { ...latest, sourceLocation: latest.sourceLocation ?? shown },
     aggregates: getAggregate(canvasId),
+    geometry: selectedGeometry ? { ...selectedGeometry } : null,
   });
   try {
     const copied = navigator.clipboard?.writeText(payload);
@@ -762,12 +768,19 @@ function renderPopover(): void {
     source.textContent = `source: ${label.text}`;
     source.title = label.title;
   }
+  const geometry = popover.querySelector<HTMLElement>('.geometry');
+  if (geometry) {
+    geometry.textContent = !selectedGeometry ? 'geometry: unavailable' : selectedGeometry.unavailableReason
+      ? `geometry: ${selectedGeometry.unavailableReason}`
+      : `geometry: ${selectedGeometry.backingWidth}×${selectedGeometry.backingHeight} backing · ${selectedGeometry.cssWidth}×${selectedGeometry.cssHeight} CSS · ${selectedGeometry.actualToExpectedAreaRatio}× expected area`;
+  }
 }
 
 function openPopover(canvasId: string): void {
   const canvasStats = stats.get(canvasId);
   if (!canvasStats) return;
   selectedCanvasId = canvasId;
+  selectedGeometry = collectCanvasGeometry(canvases.get(canvasId));
   flyoutOpen = false;
   flyoutRevision++;
 
@@ -864,6 +877,22 @@ function appendResizeChurnFinding(finding: ResizeChurnFinding): void {
   flyout.append(card);
 }
 
+function appendBackingStoreMismatchFinding(finding: BackingStoreMismatchFinding): void {
+  if (!flyout) return;
+  const card = document.createElement('button');
+  card.className = 'repeated-finding'; card.type = 'button'; card.dataset.canvasId = finding.canvasId;
+  const title = document.createElement('div'); title.className = 'repeated-finding-title'; title.textContent = `${stats.get(finding.canvasId)?.owner ?? finding.canvasId} · Backing store mismatch · ${finding.evidenceLevel}`; card.append(title);
+  const lines = [
+    `${finding.affectedWindowCount} affected windows`,
+    ...finding.affectedWindows.map(window => `Actual ${window.backingWidth}×${window.backingHeight}; expected ${window.expectedBackingWidth}×${window.expectedBackingHeight}; area ratio ${window.actualToExpectedAreaRatio}`),
+    `Raster operations: ${finding.rasterOperationCount}`,
+    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
+    finding.claimBoundary.observation, finding.claimBoundary.explanation, finding.claimBoundary.nonEstablishedFacts, finding.nextCheck,
+  ];
+  for (const text of lines) { const line = document.createElement('div'); line.className = 'repeated-finding-line'; line.textContent = text; card.append(line); }
+  flyout.append(card);
+}
+
 function renderFlyout(): void {
   if (!flyout) return;
   flyout.hidden = !flyoutOpen || collapsed || selectedCanvasId !== null;
@@ -910,6 +939,8 @@ function renderFlyout(): void {
   for (const finding of repeatedFindings) appendRepeatedFinding(finding);
   const resizeFindings = getLastSession()?.findings.filter((finding): finding is ResizeChurnFinding => finding.type === 'resize-churn') ?? [];
   for (const finding of resizeFindings) appendResizeChurnFinding(finding);
+  const backingStoreFindings = getLastSession()?.findings.filter((finding): finding is BackingStoreMismatchFinding => finding.type === 'backing-store-mismatch') ?? [];
+  for (const finding of backingStoreFindings) appendBackingStoreMismatchFinding(finding);
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     let row = flyoutRows.get(canvasId);
     if (!row) {
@@ -1256,7 +1287,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   countsButton.append(canvasCount, candidateCount);
   countsButton.addEventListener('click', () => {
     flyoutOpen = !flyoutOpen;
-    selectedCanvasId = null;
+    closePopover();
     showAllRows = false;
     flyoutRevision++;
     markDirty();
@@ -1340,6 +1371,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     'sampling',
     'unknown-reasons',
     'source',
+    'geometry',
   ]) {
     const line = document.createElement('div');
     line.className = `popover-line ${className}`;
@@ -1418,6 +1450,7 @@ export function unmountOverlay(): void {
   showAllRows = false;
   inspectMode = false;
   selectedCanvasId = null;
+  selectedGeometry = null;
   minFlashRasterOps = 2;
   dirty = false;
   flyoutRevision = 0;
