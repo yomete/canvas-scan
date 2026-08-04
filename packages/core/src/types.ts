@@ -98,6 +98,30 @@ export interface HeavyCanvasWorkFinding {
   nextCheck: string;
 }
 
+export interface RecordedRepeatedWindow {
+  windowIndex: number;
+  timestampMs: number;
+  rasterOperationCount: number;
+  canvasApiSelfTimeMs: number;
+  comparisonGap: number | null;
+}
+
+export interface RepeatedDrawWorkFinding {
+  type: 'repeated-draw-work';
+  evidenceLevel: 'candidate';
+  canvasId: string;
+  episodeId: string;
+  repeatedWindowCount: number;
+  rasterOperationCount: number;
+  canvasApiSelfTimeMs: number;
+  repeatedWindows: RecordedRepeatedWindow[];
+  unknownCoverage: { unknownWindowCount: number; activeWindowCount: number };
+  claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
+  nextCheck: string;
+}
+
+export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding;
+
 export interface InvestigationSessionV1 {
   schemaVersion: 1;
   sessionId: string;
@@ -110,7 +134,7 @@ export interface InvestigationSessionV1 {
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
   episodes: RecordedDrawEpisode[];
-  findings: HeavyCanvasWorkFinding[];
+  findings: InvestigationFinding[];
   collectionLimits: {
     maxDurationMs: 30000;
     maxCanvasWindowReports: 10000;

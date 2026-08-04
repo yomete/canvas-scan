@@ -113,24 +113,40 @@ describe('recording', () => {
     stopped.canvases[0].methodEvidence.fillRect.count = 99;
     stopped.episodes[0].methodEvidence.fillRect.count = 99;
     stopped.episodes[0].canvases[0].methodEvidence.fillRect.count = 99;
-    stopped.findings[0].topMethods[0].count = 99;
-    stopped.findings[0].maximumWindow.methodEvidence.fillRect.count = 99;
-    stopped.findings[0].claimBoundary.observation = 'changed';
+    const stoppedFinding = stopped.findings.find(finding => finding.type === 'heavy-canvas-work')!;
+    stoppedFinding.topMethods[0].count = 99;
+    stoppedFinding.maximumWindow.methodEvidence.fillRect.count = 99;
+    stoppedFinding.claimBoundary.observation = 'changed';
     (stopped.collectionLimits as { maxDurationMs: number }).maxDurationMs = 99;
     stopped.droppedEntryCounts.canvasWindowReports = 99;
     const one = getLastSession()!; const two = getLastSession()!;
-    one.windows[0].sourceLocation!.file = 'changed again'; one.canvases[0].commandStatuses.same = 98; one.findings[0].topMethods[0].count = 98;
+    one.windows[0].sourceLocation!.file = 'changed again'; one.canvases[0].commandStatuses.same = 98; one.findings.find(finding => finding.type === 'heavy-canvas-work')!.topMethods[0].count = 98;
     expect(two.windows[0].canvasId).toBe('canvas-a'); expect(two.windows[0].sourceLocation?.file).toBe('/src/Chart.tsx');
     expect(two.canvases[0].sourceLocation?.line).toBe(4); expect(two.canvases[0].commandStatuses.same).toBe(1);
     expect(two.windows[0].methodEvidence.fillRect.count).toBe(2); expect(two.canvases[0].methodEvidence.fillRect.count).toBe(2);
     expect(two.episodes[0].methodEvidence.fillRect.count).toBe(2); expect(two.episodes[0].canvases[0].methodEvidence.fillRect.count).toBe(2);
-    expect(two.findings[0].topMethods[0].count).toBe(2); expect(two.findings[0].maximumWindow.methodEvidence.fillRect.count).toBe(2);
-    expect(two.findings[0].claimBoundary.observation).toMatch(/measured Canvas2D API self-time/);
+    const copiedFinding = two.findings.find(finding => finding.type === 'heavy-canvas-work')!;
+    expect(copiedFinding.topMethods[0].count).toBe(2); expect(copiedFinding.maximumWindow.methodEvidence.fillRect.count).toBe(2);
+    expect(copiedFinding.claimBoundary.observation).toMatch(/measured Canvas2D API self-time/);
     expect(two.browserFeatures.monotonicTime).toBe(true); expect(two.collectionLimits.maxDurationMs).toBe(30000);
     expect(two.droppedEntryCounts.canvasWindowReports).toBe(0);
     expect(JSON.parse(JSON.stringify(two))).toEqual(two);
     const plain = (value: unknown): boolean => value === null || ['string', 'number', 'boolean'].includes(typeof value) || (Array.isArray(value) && value.every(plain)) || (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(plain));
     expect(plain(two)).toBe(true);
+  });
+
+  it('deep-copies repeated-work evidence', () => {
+    startRecording();
+    publish(makeReport('repeated', 'same', { rasterOperationCount: 2, canvasApiSelfTimeMs: 1 }), 1);
+    const session = stopRecording()!;
+    const finding = session.findings.find(finding => finding.type === 'repeated-draw-work')!;
+    finding.repeatedWindows[0].rasterOperationCount = 99;
+    finding.unknownCoverage.activeWindowCount = 99;
+    finding.claimBoundary.observation = 'changed';
+    const copied = getLastSession()!.findings.find(finding => finding.type === 'repeated-draw-work')!;
+    expect(copied.repeatedWindows[0].rasterOperationCount).toBe(2);
+    expect(copied.unknownCoverage.activeWindowCount).toBe(1);
+    expect(copied.claimBoundary.observation).toContain('repeated commands');
   });
 
   it('derives canvas and episode sums only from retained windows', () => {

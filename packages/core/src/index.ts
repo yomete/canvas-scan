@@ -7,7 +7,7 @@ import {
   startFrameLoop,
 } from './frame-loop';
 import { mountOverlay } from './overlay';
-import { getLastSession, startRecording, stopRecording } from './recording';
+import { configureRecording, getLastSession, startRecording, stopRecording } from './recording';
 import type {
   CanvasScanOptions,
   DrawBatchReport,
@@ -31,6 +31,7 @@ export function start(options: CanvasScanOptions = {}): void {
   installCanvasPatch();
   installPath2DPatch();
   if (options.skipOwners?.length) addSkippedOwners(options.skipOwners);
+  configureRecording(options);
   startFrameLoop(options);
   if (options.overlay !== false) mountOverlay(options);
   (window as any).__CANVAS_SCAN__ = {
@@ -57,6 +58,9 @@ export type {
   RecordedEpisodeCanvasSummary,
   RecordedTopMethod,
   HeavyCanvasWorkFinding,
+  InvestigationFinding,
+  RepeatedDrawWorkFinding,
+  RecordedRepeatedWindow,
   RecordingState,
   RecordingStopReason,
 } from './types';

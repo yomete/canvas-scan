@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { emitReport } from '../src/frame-loop';
-import { resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { configureRecording, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 const report = (canvasId: string, selfTime: number, overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 1, canvasApiSelfTimeMs: selfTime, signatureStatus: 'same', unknownReason: null, sampled: false, comparisonGap: 1, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: selfTime } }, ...overrides });
@@ -58,7 +58,25 @@ describe('investigation findings', () => {
     publish('more-raster', 8, 1, { rasterOperationCount: 2 });
     publish('higher-self-time', 9, 1);
     const session = stopRecording()!;
-    expect(session.findings.map(finding => finding.canvasId)).toEqual(['higher-self-time', 'more-raster', 'alpha', 'zeta']);
+    expect(session.findings.filter(finding => finding.type === 'heavy-canvas-work').map(finding => finding.canvasId)).toEqual(['higher-self-time', 'more-raster', 'alpha', 'zeta']);
+  });
+
+  it('orders mixed findings by self-time, raster operations, type, and canvas ID', () => {
+    startRecording();
+    publish('high', 10, 1, { rasterOperationCount: 2 });
+    publish('more-raster', 8, 2, { rasterOperationCount: 4 });
+    publish('beta', 8, 3, { rasterOperationCount: 2 });
+    publish('alpha', 8, 4, { rasterOperationCount: 2 });
+    expect(stopRecording()!.findings.map(({ type, canvasId }) => ({ type, canvasId }))).toEqual([
+      { type: 'heavy-canvas-work', canvasId: 'high' },
+      { type: 'repeated-draw-work', canvasId: 'high' },
+      { type: 'heavy-canvas-work', canvasId: 'more-raster' },
+      { type: 'repeated-draw-work', canvasId: 'more-raster' },
+      { type: 'heavy-canvas-work', canvasId: 'alpha' },
+      { type: 'heavy-canvas-work', canvasId: 'beta' },
+      { type: 'repeated-draw-work', canvasId: 'alpha' },
+      { type: 'repeated-draw-work', canvasId: 'beta' },
+    ]);
   });
 
   it('reports ordered methods, maximum-window evidence, claim limits, and next check', () => {
@@ -67,8 +85,9 @@ describe('investigation findings', () => {
     publish('a', 3, 2, { rasterOperationCount: 4, methodEvidence: { fillRect: { count: 1, canvasApiSelfTimeMs: 1 }, stroke: { count: 2, canvasApiSelfTimeMs: 2 } } });
     publish('b', 8, 2, { rasterOperationCount: 1, methodEvidence: { arc: { count: 1, canvasApiSelfTimeMs: 8 } } });
     const session = stopRecording()!;
-    expect(session.findings.map(finding => finding.canvasId)).toEqual(['a', 'b']);
-    expect(session.findings[0]).toMatchObject({
+    const findings = session.findings.filter(finding => finding.type === 'heavy-canvas-work');
+    expect(findings.map(finding => finding.canvasId)).toEqual(['a', 'b']);
+    expect(findings[0]).toMatchObject({
       canvasId: 'a', canvasApiSelfTimeMs: 8, rasterOperationCount: 6,
       topMethods: [
         { method: 'fillRect', count: 3, canvasApiSelfTimeMs: 4 },
@@ -78,12 +97,68 @@ describe('investigation findings', () => {
       maximumWindow: { windowIndex: 1, timestampMs: 10, canvasApiSelfTimeMs: 5, rasterOperationCount: 2 },
       evidenceLevel: 'candidate',
     });
-    expect(session.findings[0].maximumWindow.methodEvidence.fillRect.count).toBe(2);
-    expect(session.findings[0].claimBoundary).toEqual({
+    expect(findings[0].maximumWindow.methodEvidence.fillRect.count).toBe(2);
+    expect(findings[0].claimBoundary).toEqual({
       observation: 'The canvas spent the measured Canvas2D API self-time in the named draw episode.',
       explanation: 'The episode contains concentrated synchronous Canvas2D API work and is a review candidate.',
       nonEstablishedFacts: 'The evidence does not establish GPU time, presentation or render time, or avoidable work.',
     });
-    expect(session.findings[0].nextCheck).toBe('Check the top measured methods and the application code that calls them.');
+    expect(findings[0].nextCheck).toBe('Check the top measured methods and the application code that calls them.');
+  });
+
+  it('records only same windows at the default repeated threshold', () => {
+    startRecording();
+    publish('candidate', 1.25, 1, { rasterOperationCount: 2, comparisonGap: 3 });
+    publish('candidate', 5, 2, { rasterOperationCount: 9, signatureStatus: 'changed' });
+    publish('candidate', 4, 3, { rasterOperationCount: 8, signatureStatus: 'unknown', unknownReason: 'uncaptured-raster' });
+    const finding = stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work');
+    expect(finding).toEqual({
+      type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: 'candidate',
+      episodeId: expect.any(String), repeatedWindowCount: 1, rasterOperationCount: 2,
+      canvasApiSelfTimeMs: 1.25,
+      repeatedWindows: [{ windowIndex: 1, timestampMs: 10, rasterOperationCount: 2, canvasApiSelfTimeMs: 1.25, comparisonGap: 3 }],
+      unknownCoverage: { unknownWindowCount: 1, activeWindowCount: 3 },
+      claimBoundary: {
+        observation: 'The canvas sent repeated commands in the recorded windows and spent the measured Canvas2D API self-time shown here.',
+        explanation: 'The repeated commands are a review candidate.',
+        nonEstablishedFacts: 'The evidence does not establish that the output stayed unchanged or that the work can be removed.',
+      },
+      nextCheck: 'Check whether the application needs to send these repeated commands for the same scene and interaction.',
+    });
+  });
+
+  it('uses the configured repeated threshold exactly', () => {
+    configureRecording({ minFlashRasterOps: 4 });
+    startRecording();
+    publish('candidate', 1, 1, { rasterOperationCount: 3 });
+    publish('candidate', 2, 2, { rasterOperationCount: 4 });
+    const finding = stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work');
+    expect(finding?.repeatedWindows.map(window => window.windowIndex)).toEqual([2]);
+    expect(finding?.rasterOperationCount).toBe(4);
+  });
+
+  it('does not create repeated work for a one-operation wake-up', () => {
+    startRecording();
+    publish('wake-up', 1, 1, { rasterOperationCount: 1 });
+    expect(stopRecording()!.findings.some(finding => finding.type === 'repeated-draw-work')).toBe(false);
+  });
+
+  it('keeps changed, unknown, and below-threshold work out of another canvas finding', () => {
+    startRecording();
+    publish('untrusted', 9, 1, { rasterOperationCount: 8, signatureStatus: 'changed' });
+    publish('untrusted', 7, 2, { rasterOperationCount: 7, signatureStatus: 'unknown', unknownReason: 'uncaptured-raster' });
+    publish('untrusted', 3, 3, { rasterOperationCount: 1 });
+    publish('trusted', 2.5, 1, { rasterOperationCount: 2 });
+    const findings = stopRecording()!.findings.filter(finding => finding.type === 'repeated-draw-work');
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ canvasId: 'trusted', rasterOperationCount: 2, canvasApiSelfTimeMs: 2.5 });
+  });
+
+  it('keeps an idle sampled gap only after trusted same evidence returns', () => {
+    startRecording();
+    publish('sampled', 2, 1, { rasterOperationCount: 4, sampled: true, signatureStatus: 'unknown', unknownReason: 'uncaptured-raster', comparisonGap: 3 });
+    publish('sampled', 3, 4, { rasterOperationCount: 4, sampled: true, comparisonGap: 4 });
+    const finding = stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work');
+    expect(finding?.repeatedWindows).toEqual([{ windowIndex: 4, timestampMs: 40, rasterOperationCount: 4, canvasApiSelfTimeMs: 3, comparisonGap: 4 }]);
   });
 });

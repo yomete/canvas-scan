@@ -12,6 +12,7 @@ const FORBIDDEN = [
   /pixel-?identical/i,
   /repaint cost/i,
 ];
+const OVERLAY_FORBIDDEN = [...FORBIDDEN, /\bavoidable\b/i];
 const DISCLAIMER = /does not claim|never claims/i;
 const FINDING_FORBIDDEN = [
   /\bGPU time\b/i,
@@ -31,6 +32,13 @@ function offendingLines(text: string): string[] {
     .filter((line) => FORBIDDEN.some((pattern) => pattern.test(line)));
 }
 
+function overlayOffendingLines(text: string): string[] {
+  return text
+    .split('\n')
+    .filter((line) => !DISCLAIMER.test(line))
+    .filter((line) => OVERLAY_FORBIDDEN.some((pattern) => pattern.test(line)));
+}
+
 describe('claim discipline', () => {
   it('keeps heavy-work copy within the measured claim boundary', () => {
     const source = readFileSync(join(packageDir, 'src/recording.ts'), 'utf8');
@@ -45,7 +53,9 @@ describe('claim discipline', () => {
 
   it('keeps forbidden claims out of the overlay copy', () => {
     const source = readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8');
-    expect(offendingLines(source)).toEqual([]);
+    expect(overlayOffendingLines(source)).toEqual([]);
+    expect(source).toContain('repeated commands');
+    expect(source).toContain('review candidate');
   });
 
   it('keeps forbidden claims out of the package description', () => {

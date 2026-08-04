@@ -2,13 +2,16 @@ import { copyReport, getCurrentWindowIndex, subscribeToReports } from './frame-l
 import { records, setMethodEvidenceCollectionEnabled } from './wrap-context';
 import type {
   CanvasMethodEvidence,
+  CanvasScanOptions,
   HeavyCanvasWorkFinding,
+  InvestigationFinding,
   InvestigationSessionV1,
   RecordedDrawEpisode,
   RecordedEpisodeCanvasSummary,
   RecordedCanvasSummary,
   RecordedCanvasWindow,
   RecordedTopMethod,
+  RepeatedDrawWorkFinding,
   RecordingState,
   RecordingStopReason,
 } from './types';
@@ -23,6 +26,12 @@ const HEAVY_CANVAS_WORK_CLAIM = {
   nonEstablishedFacts: 'The evidence does not establish GPU time, presentation or render time, or avoidable work.',
 };
 const HEAVY_CANVAS_WORK_NEXT_CHECK = 'Check the top measured methods and the application code that calls them.';
+const REPEATED_DRAW_WORK_CLAIM = {
+  observation: 'The canvas sent repeated commands in the recorded windows and spent the measured Canvas2D API self-time shown here.',
+  explanation: 'The repeated commands are a review candidate.',
+  nonEstablishedFacts: 'The evidence does not establish that the output stayed unchanged or that the work can be removed.',
+};
+const REPEATED_DRAW_WORK_NEXT_CHECK = 'Check whether the application needs to send these repeated commands for the same scene and interaction.';
 
 let state: RecordingState = 'idle';
 let lastSession: InvestigationSessionV1 | undefined;
@@ -37,6 +46,7 @@ let droppedCanvases = 0;
 let sequence = 0;
 let unsubscribe: (() => void) | undefined;
 let recordingStartWindowIndex = 0;
+let minRepeatedRasterOps = 2;
 let recordingStartOffsets = new Map<unknown, { rasterOperationCount: number; canvasApiSelfTimeMs: number }>();
 const listeners = new Set<(state: RecordingState) => void>();
 
@@ -82,7 +92,9 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
     })),
     windows: session.windows.map(copyWindow),
     episodes: session.episodes.map(episode => ({ ...episode, methodEvidence: copyEvidence(episode.methodEvidence), canvases: episode.canvases.map(canvas => ({ ...canvas, methodEvidence: copyEvidence(canvas.methodEvidence) })) })),
-    findings: session.findings.map(finding => ({ ...finding, topMethods: finding.topMethods.map(method => ({ ...method })), maximumWindow: { ...finding.maximumWindow, methodEvidence: copyEvidence(finding.maximumWindow.methodEvidence) }, claimBoundary: { ...finding.claimBoundary } })),
+    findings: session.findings.map(finding => finding.type === 'heavy-canvas-work'
+      ? { ...finding, topMethods: finding.topMethods.map(method => ({ ...method })), maximumWindow: { ...finding.maximumWindow, methodEvidence: copyEvidence(finding.maximumWindow.methodEvidence) }, claimBoundary: { ...finding.claimBoundary } }
+      : { ...finding, repeatedWindows: finding.repeatedWindows.map(window => ({ ...window })), unknownCoverage: { ...finding.unknownCoverage }, claimBoundary: { ...finding.claimBoundary } }),
     collectionLimits: { ...session.collectionLimits },
     droppedEntryCounts: { ...session.droppedEntryCounts },
   };
@@ -161,7 +173,7 @@ function topMethods(evidence: Record<string, CanvasMethodEvidence>): RecordedTop
   return Object.entries(evidence).map(([method, value]) => ({ method, ...value })).sort((left, right) => (right.canvasApiSelfTimeMs ?? -Infinity) - (left.canvasApiSelfTimeMs ?? -Infinity) || right.count - left.count || left.method.localeCompare(right.method));
 }
 
-function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: HeavyCanvasWorkFinding[] } {
+function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: InvestigationFinding[] } {
   const groups: RecordedCanvasWindow[][] = [];
   let group: RecordedCanvasWindow[] | undefined;
   let previousIndex: number | undefined;
@@ -197,10 +209,21 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Hea
     episodeMaximumWindows.set(episodeId, maximumWindows);
     return { episodeId, firstWindowIndex: first.windowIndex, lastWindowIndex: last.windowIndex, startedAtTimestampMs: first.timestampMs, endedAtTimestampMs: last.timestampMs, activeWindowCount: new Set(reports.map(report => report.windowIndex)).size, rasterOperationCount, canvasApiSelfTimeMs: rounded(canvasApiSelfTimeMs), methodEvidence: roundedEvidence(methodEvidence), canvases };
   });
-  const findings: HeavyCanvasWorkFinding[] = [];
+  const findings: InvestigationFinding[] = [];
   for (const episode of episodes) for (const canvas of episode.canvases) if (canvas.canvasApiSelfTimeMs >= HEAVY_CANVAS_WORK_THRESHOLD_MS) {
     const maximum = episodeMaximumWindows.get(episode.episodeId)!.get(canvas.canvasId)!;
     findings.push({ type: 'heavy-canvas-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, rasterOperationCount: canvas.rasterOperationCount, topMethods: topMethods(canvas.methodEvidence), maximumWindow: { windowIndex: maximum.windowIndex, timestampMs: maximum.timestampMs, canvasApiSelfTimeMs: maximum.canvasApiSelfTimeMs, rasterOperationCount: maximum.rasterOperationCount, methodEvidence: copyEvidence(maximum.methodEvidence) }, claimBoundary: { ...HEAVY_CANVAS_WORK_CLAIM }, nextCheck: HEAVY_CANVAS_WORK_NEXT_CHECK });
+  }
+  for (const episode of episodes) {
+    const reports = windows.filter(window => window.windowIndex >= episode.firstWindowIndex && window.windowIndex <= episode.lastWindowIndex);
+    for (const canvas of episode.canvases) {
+      const canvasReports = reports.filter(window => window.canvasId === canvas.canvasId);
+      const repeatedWindows = canvasReports
+        .filter(window => window.signatureStatus === 'same' && window.rasterOperationCount >= minRepeatedRasterOps)
+        .map(({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }) => ({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }));
+      if (repeatedWindows.length === 0) continue;
+      findings.push({ type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, repeatedWindowCount: repeatedWindows.length, rasterOperationCount: repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(repeatedWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), repeatedWindows, unknownCoverage: { unknownWindowCount: canvasReports.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: canvasReports.length }, claimBoundary: { ...REPEATED_DRAW_WORK_CLAIM }, nextCheck: REPEATED_DRAW_WORK_NEXT_CHECK });
+    }
   }
   findings.sort((left, right) => right.canvasApiSelfTimeMs - left.canvasApiSelfTimeMs || right.rasterOperationCount - left.rasterOperationCount || left.type.localeCompare(right.type) || left.canvasId.localeCompare(right.canvasId));
   return { episodes, findings };
@@ -261,6 +284,10 @@ export function startRecording(): void {
   notify();
 }
 
+export function configureRecording(options: CanvasScanOptions): void {
+  minRepeatedRasterOps = options.minFlashRasterOps ?? 2;
+}
+
 export function stopRecording(): InvestigationSessionV1 | undefined { return finish('manual'); }
 export function getLastSession(): InvestigationSessionV1 | undefined { return lastSession ? copySession(lastSession) : undefined; }
 export function getRecordingState(): RecordingState { return state; }
@@ -283,6 +310,7 @@ export function resetRecordingForTests(): void {
   droppedCanvases = 0;
   recordingStartWindowIndex = 0;
   recordingStartOffsets.clear();
+  minRepeatedRasterOps = 2;
   sequence = 0;
   listeners.clear();
 }

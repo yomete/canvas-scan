@@ -10,7 +10,7 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
 import { emitReport, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
-import { getRecordingState, startRecording, stopRecording } from '../src/recording';
+import { getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 function makeReport(
@@ -78,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unmountOverlay();
+  resetRecordingForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -246,6 +247,51 @@ describe('overlay toolbar', () => {
 });
 
 describe('overlay flyout', () => {
+  it('shows completed repeated-work evidence and opens the seeded canvas', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'seeded', rasterOperationCount: 2, canvasApiSelfTimeMs: 1.5, comparisonGap: 3 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'seeded', rasterOperationCount: 3, canvasApiSelfTimeMs: 2, comparisonGap: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    emitReport(makeReport({ canvasId: 'seeded', signatureStatus: 'unknown', unknownReason: 'uncaptured-raster' }), canvas, { windowIndex: 3, timestampMs: 30 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="seeded"]')!;
+    expect(card.textContent).toContain('Repeated commands');
+    expect(card.textContent).toContain('review candidate');
+    expect(card.textContent).toContain('2 repeated windows');
+    expect(card.textContent).toContain('5 repeated raster operations');
+    expect(card.textContent).toContain('Canvas2D API self-time: 3.5 ms');
+    expect(card.textContent).toContain('Comparison gaps: 3, 2');
+    expect(card.textContent).toContain('Unknown coverage: 1 of 3 active windows');
+    expect(card.textContent).not.toMatch(/wasted|pixel-identical|avoidable/i);
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector('.outline[data-canvas-id="seeded"]')?.classList).toContain('locate');
+    card.click();
+    refreshOverlay();
+    expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
+  });
+
+  it('keeps detached repeated-work evidence without a locate outline', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'detached-repeated', rasterOperationCount: 2 }), makeCanvas(false), { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-repeated"]')!;
+    expect(card.textContent).toContain('Repeated commands');
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector('.outline[data-canvas-id="detached-repeated"]')).toBeNull();
+  });
+
   it('sorts rows, caps them at eight, expands the rest, and labels kinds', () => {
     mountOverlay();
     for (let index = 0; index < 10; index++) {

@@ -6,6 +6,7 @@ import {
   subscribeToReports,
 } from './frame-loop';
 import {
+  getLastSession,
   getRecordingState,
   startRecording,
   stopRecording,
@@ -16,6 +17,7 @@ import type {
   AttributionKind,
   CanvasScanOptions,
   DrawBatchReport,
+  RepeatedDrawWorkFinding,
   SourceLocation,
 } from './types';
 
@@ -211,6 +213,20 @@ button { font: inherit; }
 }
 .row:hover,
 .more:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
+.repeated-finding {
+  width: 100%;
+  margin: 4px 0;
+  padding: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 5px;
+  background: rgba(239, 68, 68, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  text-align: left;
+  cursor: pointer;
+}
+.repeated-finding:hover { background: rgba(239, 68, 68, 0.16); color: #fff; }
+.repeated-finding-title { color: #fff; }
+.repeated-finding-line { margin-top: 2px; }
 .badge {
   flex: 0 0 auto;
   margin-right: 6px;
@@ -315,7 +331,7 @@ button { font: inherit; }
 // raw codes stay one hover away so a bug report can still quote them.
 const EXPLAINER =
   'canvas-scan watches what your app asks each canvas to draw. When a canvas ' +
-  'gets the same instructions twice, that redraw may be avoidable.';
+  'sends repeated commands, that work is a review candidate.';
 
 const UNKNOWN_PHRASES = new Map([
   ['first-window', 'first frame seen — nothing to compare yet'],
@@ -785,6 +801,36 @@ function openPopover(canvasId: string): void {
   markDirty();
 }
 
+function appendRepeatedFinding(finding: RepeatedDrawWorkFinding): void {
+  if (!flyout) return;
+  const card = document.createElement('button');
+  card.className = 'repeated-finding';
+  card.type = 'button';
+  card.dataset.canvasId = finding.canvasId;
+  const owner = stats.get(finding.canvasId)?.owner ?? finding.canvasId;
+  card.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'repeated-finding-title';
+  title.textContent = `${owner} · Repeated commands · review candidate`;
+  card.append(title);
+  const lines = [
+    `${finding.repeatedWindowCount} repeated windows`,
+    `${finding.rasterOperationCount} repeated raster operations`,
+    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
+    `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`,
+    `Unknown coverage: ${finding.unknownCoverage.unknownWindowCount} of ${finding.unknownCoverage.activeWindowCount} active windows`,
+    finding.claimBoundary.nonEstablishedFacts,
+    finding.nextCheck,
+  ];
+  for (const text of lines) {
+    const line = document.createElement('div');
+    line.className = 'repeated-finding-line';
+    line.textContent = text;
+    card.append(line);
+  }
+  flyout.append(card);
+}
+
 function renderFlyout(): void {
   if (!flyout) return;
   flyout.hidden = !flyoutOpen || collapsed || selectedCanvasId !== null;
@@ -826,6 +872,9 @@ function renderFlyout(): void {
     note.textContent = EXPLAINER;
   }
   flyout.append(note);
+  flyout.querySelectorAll('.repeated-finding').forEach(card => card.remove());
+  const repeatedFindings = getLastSession()?.findings.filter((finding): finding is RepeatedDrawWorkFinding => finding.type === 'repeated-draw-work') ?? [];
+  for (const finding of repeatedFindings) appendRepeatedFinding(finding);
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     let row = flyoutRows.get(canvasId);
     if (!row) {
@@ -1163,7 +1212,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   countsButton.type = 'button';
   countsButton.title =
     `${EXPLAINER} Review candidates are canvases that received the same ` +
-    'draw commands again — often a sign of avoidable redrawing.';
+    'draw commands again.';
   countsButton.setAttribute('aria-expanded', 'false');
   canvasCount = document.createElement('span');
   canvasCount.className = 'canvas-count';
@@ -1274,7 +1323,11 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   (document.body ?? document.documentElement).append(host);
   document.addEventListener('keydown', handleKeydown);
   unsubscribe = subscribeToReports(handleReport);
-  unsubscribeRecording = subscribeToRecordingState(renderRecordingState);
+  unsubscribeRecording = subscribeToRecordingState(() => {
+    renderRecordingState();
+    flyoutRevision++;
+    markDirty();
+  });
   renderRecordingState();
   refreshInterval = window.setInterval(() => {
     if (inspectMode || outlines.size > 0) dirty = true;

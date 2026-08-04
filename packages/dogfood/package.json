@@ -8,7 +8,8 @@
     "bench:chrome:tracked": "node bench-chrome.mjs --stream=tracked-source",
     "collect": "node collect.mjs",
     "probe:recording": "node recording-probe.mjs",
-    "probe:burst-heavy": "node burst-heavy-probe.mjs"
+    "probe:burst-heavy": "node burst-heavy-probe.mjs",
+    "probe:continuous-repeated": "node v04-04-continuous-probe.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

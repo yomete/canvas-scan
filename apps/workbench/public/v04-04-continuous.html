@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Canvas continuous probe</title>
+<script>window.__CANVAS_SCAN_OPTS = { minFlashRasterOps: 3 };</script>
+<script src="/canvas-scan.iife.js"></script>
+<button id="interact">Run interaction</button>
+<canvas id="seeded-canvas" width="240" height="120"></canvas>
+<canvas id="wake-up-canvas" width="20" height="20"></canvas>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode') || 'bad';
+  const seeded = document.querySelector('#seeded-canvas');
+  const seededContext = seeded.getContext('2d');
+  const wakeUpContext = document.querySelector('#wake-up-canvas').getContext('2d');
+  const scene = [12, 28, 44];
+  const checksum = scene.reduce((sum, value) => sum + value, 0);
+  let frameCount = 0;
+  let interactions = 0;
+  const drawStaticScene = () => {
+    seededContext.fillStyle = '#2563eb';
+    seededContext.fillRect(scene[0], scene[1], scene[2], scene[2]);
+    seededContext.strokeRect(scene[0], scene[1], scene[2], scene[2]);
+  };
+  drawStaticScene();
+  const wakeUp = () => wakeUpContext.fillRect(0, 0, 1, 1);
+  wakeUp();
+  const drawContinuousScene = () => {
+    seededContext.clearRect(0, 0, seeded.width, seeded.height);
+    seededContext.fillStyle = '#2563eb';
+    seededContext.fillRect(scene[0], scene[1], scene[2], scene[2]);
+    seededContext.strokeRect(scene[0], scene[1], scene[2], scene[2]);
+  };
+  const tick = () => {
+    frameCount++;
+    if (mode === 'bad') drawContinuousScene();
+    if (frameCount === 9) wakeUp();
+    window.__CONTINUOUS_PROBE__ = { mode, frameCount, checksum, interactions };
+    requestAnimationFrame(tick);
+  };
+  document.querySelector('#interact').onclick = () => { interactions++; };
+  window.__CONTINUOUS_PROBE__ = { mode, frameCount, checksum, interactions };
+  requestAnimationFrame(tick);
+</script>
