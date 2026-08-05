@@ -215,6 +215,14 @@ describe('investigation findings', () => {
     ]);
   });
 
+  it('keeps equal-key findings in episode generation order', () => {
+    startRecording();
+    publish('stable-episode', 8, 1, { rasterOperationCount: 2 });
+    publish('stable-episode', 8, 4, { rasterOperationCount: 2 });
+    const session = stopRecording()!;
+    expect(session.findings.filter(finding => finding.type === 'heavy-canvas-work').map(finding => finding.episodeId)).toEqual(session.episodes.map(episode => episode.episodeId));
+  });
+
   it('reports ordered methods, maximum-window evidence, claim limits, and next check', () => {
     startRecording();
     publish('a', 5, 1, { rasterOperationCount: 2, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 3 }, lineTo: { count: 5, canvasApiSelfTimeMs: null }, stroke: { count: 1, canvasApiSelfTimeMs: 2 } } });

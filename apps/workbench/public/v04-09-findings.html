@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas findings probe</title>
+<link rel="icon" href="data:," />
+<style>
+  :root { color-scheme: dark; font: 14px/1.45 ui-monospace, monospace; background: #111; color: #eee; }
+  body { margin: 0; min-height: 100vh; }
+  main { box-sizing: border-box; width: 500px; min-height: 720px; padding: 28px; border-right: 1px solid #333; background: #181818; }
+  h1 { margin: 0 0 4px; font-size: 18px; }
+  p { margin: 0 0 18px; color: #aaa; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  button { border: 1px solid #555; border-radius: 5px; padding: 7px 10px; background: #222; color: #fff; font: inherit; }
+  button:focus-visible { outline: 2px solid #ef4444; outline-offset: 2px; }
+  .canvases { display: grid; grid-template-columns: repeat(2, 200px); gap: 12px; }
+  figure { margin: 0; }
+  figcaption { margin-bottom: 4px; color: #aaa; font-size: 11px; }
+  canvas { display: block; width: 200px; height: 96px; background: #0b0b0b; border: 1px solid #444; }
+</style>
+<script>
+  const mode = new URLSearchParams(location.search).get('case') || 'findings';
+  if (mode === 'unsupported') {
+    const NativeObserver = window.PerformanceObserver;
+    class LimitedObserver extends NativeObserver {
+      static get supportedEntryTypes() {
+        return NativeObserver.supportedEntryTypes.filter(type => type !== 'event' && type !== 'long-animation-frame');
+      }
+    }
+    Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: LimitedObserver });
+  }
+  window.__CANVAS_SCAN_OPTS = { overlay: true };
+</script>
+<script src="/canvas-scan.iife.js"></script>
+<main>
+  <h1>Investigation findings fixture</h1>
+  <p>Public recording controls drive each saved state.</p>
+  <div class="controls">
+    <button id="pointer">Draw with pointer</button>
+    <button id="keyboard">Draw with keyboard</button>
+    <button id="pass-through">Application clicks: <span>0</span></button>
+  </div>
+  <div class="canvases">
+    <figure><figcaption>Concentrated work</figcaption><canvas id="heavy" width="200" height="96"></canvas></figure>
+    <figure><figcaption>Repeated work</figcaption><canvas id="repeat" width="200" height="96"></canvas></figure>
+    <figure><figcaption>Resize work</figcaption><canvas id="resize" width="200" height="96"></canvas></figure>
+    <figure><figcaption>Large backing store</figcaption><canvas id="backing" width="800" height="384"></canvas></figure>
+  </div>
+</main>
+<script>
+  const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const frames = async count => { for (let index = 0; index < count; index++) await nextFrame(); };
+  const overlayButton = label => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector(`[aria-label="${label}"]`);
+  const heavyCanvas = document.querySelector('#heavy');
+  const repeatedCanvas = document.querySelector('#repeat');
+  const resizeCanvas = document.querySelector('#resize');
+  const backingCanvas = document.querySelector('#backing');
+  const heavy = heavyCanvas.getContext('2d');
+  const repeated = repeatedCanvas.getContext('2d');
+  const resize = resizeCanvas.getContext('2d');
+  const backing = backingCanvas.getContext('2d');
+  const detachedCanvas = document.createElement('canvas');
+  detachedCanvas.id = 'detached-saved';
+  detachedCanvas.width = 40; detachedCanvas.height = 40;
+  document.querySelector('main').append(detachedCanvas);
+  const detached = detachedCanvas.getContext('2d');
+  const retiredCanvas = document.createElement('canvas');
+  retiredCanvas.id = 'retired-saved';
+  retiredCanvas.width = 40; retiredCanvas.height = 40;
+  const retired = retiredCanvas.getContext('2d');
+  let clicks = 0;
+  let pending = Promise.resolve();
+
+  document.querySelector('#pass-through').addEventListener('click', () => {
+    document.querySelector('#pass-through span').textContent = String(++clicks);
+  });
+
+  function drawHeavy() {
+    const end = performance.now() + 72;
+    let index = 0;
+    while (performance.now() < end) {
+      heavy.fillStyle = index & 1 ? '#2563eb' : '#7c3aed';
+      heavy.fillRect(index % 196, (index * 7) % 92, 4, 4);
+      index++;
+    }
+  }
+
+  async function drawRepeated(target, canvas, count = 4) {
+    for (let index = 0; index < count; index++) {
+      target.clearRect(0, 0, canvas.width, canvas.height);
+      target.fillStyle = '#2563eb';
+      target.fillRect(12, 18, 44, 28);
+      target.strokeRect(12, 18, 44, 28);
+      await nextFrame();
+    }
+  }
+
+  async function runPointerWork() {
+    window.__CANVAS_SCAN__.mark('pointer draw');
+    drawHeavy();
+    await Promise.all([
+      drawRepeated(repeated, repeatedCanvas),
+      drawRepeated(detached, detachedCanvas),
+      drawRepeated(retired, retiredCanvas),
+    ]);
+  }
+
+  async function runKeyboardWork() {
+    for (let index = 0; index < 4; index++) {
+      resizeCanvas.width = resizeCanvas.width;
+      resizeCanvas.height = resizeCanvas.height;
+      resize.reset();
+      resize.fillStyle = '#16a34a';
+      resize.fillRect(20, 20, 60, 32);
+      backing.setTransform(4, 0, 0, 4, 0, 0);
+      backing.fillStyle = '#dc2626';
+      backing.fillRect(10, 10, 32, 16);
+      await nextFrame();
+    }
+  }
+
+  document.querySelector('#pointer').addEventListener('pointerdown', () => {
+    pending = pending.then(runPointerWork);
+  });
+  document.querySelector('#keyboard').addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') pending = pending.then(runKeyboardWork);
+  });
+
+  async function settleFindings() {
+    await pending;
+    await frames(4);
+  }
+
+  async function retireSavedCanvas() {
+    await frames(110);
+    heavy.fillRect(0, 0, 1, 1);
+    detached.fillRect(0, 0, 1, 1);
+    await frames(2);
+    detachedCanvas.remove();
+    await frames(3);
+  }
+
+  async function reactivateAfterStop() {
+    document.querySelector('main').append(retiredCanvas);
+    retired.fillRect(1, 1, 2, 2);
+    await frames(3);
+  }
+
+  async function initialize() {
+    if (mode === 'recording') {
+      overlayButton('Record investigation').click();
+      return;
+    }
+    if (mode === 'empty') {
+      overlayButton('Record investigation').click();
+      await nextFrame();
+      overlayButton('Stop recording').click();
+      return;
+    }
+    if (mode === 'limit') {
+      overlayButton('Record investigation').click();
+      for (let index = 0; index < 2105; index++) window.__CANVAS_SCAN__.mark(`fixture mark ${index}`);
+      drawHeavy();
+      await frames(3);
+      overlayButton('Stop recording').click();
+      return;
+    }
+    if (mode === 'unsupported') {
+      overlayButton('Record investigation').click();
+      drawHeavy();
+      await frames(3);
+      overlayButton('Stop recording').click();
+    }
+  }
+
+  window.__V04_09__ = {
+    mode,
+    settleFindings,
+    retireSavedCanvas,
+    reactivateAfterStop,
+    get clicks() { return clicks; },
+  };
+  initialize().catch(error => { window.__V04_09_ERROR__ = String(error); });
+</script>

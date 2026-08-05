@@ -18,9 +18,8 @@ import type {
   AttributionKind,
   CanvasScanOptions,
   DrawBatchReport,
-  RepeatedDrawWorkFinding,
-  ResizeChurnFinding,
-  BackingStoreMismatchFinding,
+  InvestigationFinding,
+  InvestigationSessionV1,
   RecordedCanvasGeometry,
   SourceLocation,
 } from './types';
@@ -56,6 +55,7 @@ const stats = new Map<string, CanvasStats>();
 const canvases = new Map<string, unknown>();
 const outlines = new Map<string, HTMLDivElement>();
 const flyoutRows = new Map<string, HTMLButtonElement>();
+const findingNodes = new Map<string, HTMLElement>();
 const locateTimeouts = new Map<string, number>();
 const locatingCanvases = new Set<string>();
 const flashAnimationFrames = new Map<string, number>();
@@ -88,6 +88,12 @@ let showAllRows = false;
 let inspectMode = false;
 let selectedCanvasId: string | null = null;
 let selectedGeometry: RecordedCanvasGeometry | null = null;
+let shownSession: InvestigationSessionV1 | null = null;
+let renderedSession: InvestigationSessionV1 | null = null;
+let expandedFindingId: string | null = null;
+let copySessionStatus = '';
+let flyoutInvoker: HTMLElement | null = null;
+let showAllSessionCanvases = false;
 let minFlashRasterOps = 2;
 let refreshInterval: number | null = null;
 let survivalInterval: number | null = null;
@@ -144,7 +150,7 @@ button { font: inherit; }
   cursor: pointer;
 }
 .control:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
-.control:disabled { cursor: default; opacity: 0.45; }
+.control:disabled, .control[aria-disabled="true"] { cursor: default; opacity: 0.45; }
 .record.active { background: #ef4444; color: #fff; }
 .inspect {
   display: grid;
@@ -191,7 +197,10 @@ button { font: inherit; }
   position: absolute;
   right: 0;
   bottom: 40px;
-  width: 310px;
+  width: 440px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
   box-sizing: border-box;
   padding: 5px;
   background: rgba(0, 0, 0, 0.94);
@@ -227,9 +236,23 @@ button { font: inherit; }
   background: rgba(239, 68, 68, 0.08);
   color: rgba(255, 255, 255, 0.78);
   text-align: left;
-  cursor: pointer;
 }
-.repeated-finding:hover { background: rgba(239, 68, 68, 0.16); color: #fff; }
+.finding-card { border-color: rgba(255, 255, 255, 0.16); background: transparent; }
+.finding-card:focus-visible,
+.finding-toggle:focus-visible,
+.session-copy:focus-visible,
+.current-action:focus-visible,
+.canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: #ef4444; }
+.finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
+.finding-line, .session-line, .raw-evidence { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
+.raw-evidence { color: rgba(255, 255, 255, 0.48); font-size: 10px; line-height: 14px; }
+.finding-actions { display: flex; gap: 4px; margin-top: 5px; }
+.finding-toggle, .current-action, .session-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
+.finding-toggle { width: 100%; color: #fff; font: 12px/16px ui-monospace, monospace; text-align: left; }
+.finding-evidence[hidden], .finding-actions[hidden], .finding-unavailable[hidden], .session-section[hidden] { display: none; }
+.session-section { border-top: 1px solid rgba(255,255,255,.1); margin-top: 4px; padding: 6px 5px; }
+.session-header { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
+.session-copy-status { grid-column: 1 / -1; color: rgba(255, 255, 255, 0.72); }
 .repeated-finding-title { color: #fff; }
 .repeated-finding-line { margin-top: 2px; }
 .badge {
@@ -483,7 +506,11 @@ function getAggregate(canvasId: string): Aggregate {
   };
 }
 
-function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
+function placeOutline(
+  outline: HTMLDivElement,
+  canvas: Element,
+  requireHitTest = inspectMode,
+): boolean {
   if (!canvas.isConnected) {
     outline.hidden = true;
     outline.style.pointerEvents = 'none';
@@ -494,7 +521,7 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
   // forced style recalculation per outline per frame, which the release bench
   // measures. A flash over a visibility:hidden canvas stays possible; that is
   // cosmetic, and input safety is unaffected.
-  if (inspectMode && !isVisiblyHitTestable(canvas)) {
+  if (requireHitTest && !isVisiblyHitTestable(canvas)) {
     outline.hidden = true;
     outline.style.pointerEvents = 'none';
     return false;
@@ -513,18 +540,27 @@ function placeOutline(outline: HTMLDivElement, canvas: Element): boolean {
   return true;
 }
 
+function isVisiblyPlaced(canvas: Element): boolean {
+  if (typeof getComputedStyle !== 'function') return true;
+  for (let el: Element | null = canvas; el;) {
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (style.display === 'none') return false;
+    const root = el.getRootNode() as ShadowRoot;
+    el = (el as HTMLElement).assignedSlot ?? el.parentElement ?? root.host ?? null;
+  }
+  return true;
+}
+
 function isVisiblyHitTestable(canvas: Element): boolean {
   if (typeof getComputedStyle !== 'function') return true;
+  if (!isVisiblyPlaced(canvas)) return false;
   // Computed pointer-events already resolves inheritance, so the canvas's own
   // value is the answer: if the page lets clicks pass through it, our outline
   // must not catch them instead.
   if (getComputedStyle(canvas).pointerEvents === 'none') return false;
   for (let el: Element | null = canvas; el;) {
     const style = getComputedStyle(el);
-    if (style.visibility === 'hidden' || style.visibility === 'collapse') {
-      return false;
-    }
-    if (style.display === 'none') return false;
     // An inert subtree cannot receive input, so neither should our outline.
     if ((el as HTMLElement).inert === true || el.hasAttribute('inert')) {
       return false;
@@ -539,7 +575,11 @@ function isVisiblyHitTestable(canvas: Element): boolean {
   return true;
 }
 
-function ensureOutline(canvasId: string, canvas: Element): HTMLDivElement | null {
+function ensureOutline(
+  canvasId: string,
+  canvas: Element,
+  requireHitTest = inspectMode,
+): HTMLDivElement | null {
   if (!outlineLayer) return null;
   let outline = outlines.get(canvasId);
   if (!outline) {
@@ -552,7 +592,7 @@ function ensureOutline(canvasId: string, canvas: Element): HTMLDivElement | null
     outlineLayer.append(outline);
     outlines.set(canvasId, outline);
   }
-  return placeOutline(outline, canvas) ? outline : null;
+  return placeOutline(outline, canvas, requireHitTest) ? outline : null;
 }
 
 function clearOutline(canvasId: string): void {
@@ -602,9 +642,11 @@ function flashOutline(report: DrawBatchReport, canvas: Element, same: number): v
   }));
 }
 
-function locateCanvas(canvasId: string): void {
+function locateCanvas(canvasId: string): 'located' | 'not-visible' | 'unavailable' {
   const canvas = canvases.get(canvasId);
-  if (!(canvas instanceof Element) || !canvas.isConnected) return;
+  if (!(canvas instanceof Element) || !canvas.isConnected) return 'unavailable';
+  if (!isVisiblyPlaced(canvas)) return 'not-visible';
+  if (!ensureOutline(canvasId, canvas, false)) return 'not-visible';
   locatingCanvases.add(canvasId);
   const currentTimeout = locateTimeouts.get(canvasId);
   if (currentTimeout !== undefined) window.clearTimeout(currentTimeout);
@@ -617,6 +659,7 @@ function locateCanvas(canvasId: string): void {
     }, 700),
   );
   markDirty();
+  return 'located';
 }
 
 function updateInspectOutlines(): void {
@@ -626,16 +669,20 @@ function updateInspectOutlines(): void {
   for (const [canvasId, canvas] of canvases) {
     if (!(canvas instanceof Element)) continue;
     if (!inspectMode && !locatingCanvases.has(canvasId)) continue;
-    placements.set(canvasId, ensureOutline(canvasId, canvas) !== null);
+    placements.set(
+      canvasId,
+      ensureOutline(canvasId, canvas, inspectMode && !locatingCanvases.has(canvasId)) !== null,
+    );
   }
 
   for (const [canvasId, outline] of outlines) {
     const canvas = canvases.get(canvasId);
     const active = placements.get(canvasId) === true;
+    const locating = locatingCanvases.has(canvasId);
     const placed =
       placements.get(canvasId) ??
-      (canvas instanceof Element && placeOutline(outline, canvas));
-    const interactive = inspectMode && placed;
+      (canvas instanceof Element && placeOutline(outline, canvas, inspectMode && !locating));
+    const interactive = inspectMode && placed && (!locating || canvas instanceof Element && isVisiblyHitTestable(canvas));
     if (interactive) {
       const label = outline.querySelector('.label');
       if (label && !outline.classList.contains('flash')) {
@@ -644,7 +691,7 @@ function updateInspectOutlines(): void {
     }
     outline.classList.toggle('inspect', interactive);
     outline.classList.toggle('selected', canvasId === selectedCanvasId);
-    outline.classList.toggle('locate', locatingCanvases.has(canvasId) && placed);
+    outline.classList.toggle('locate', locating && placed);
     outline.style.pointerEvents = interactive ? 'auto' : 'none';
     if (!placed || !active) clearOutline(canvasId);
   }
@@ -815,82 +862,292 @@ function openPopover(canvasId: string): void {
   markDirty();
 }
 
-function appendRepeatedFinding(finding: RepeatedDrawWorkFinding): void {
-  if (!flyout) return;
-  const card = document.createElement('button');
-  card.className = 'repeated-finding';
-  card.type = 'button';
-  card.dataset.canvasId = finding.canvasId;
-  const owner = stats.get(finding.canvasId)?.owner ?? finding.canvasId;
-  card.innerHTML = '';
-  const title = document.createElement('div');
-  title.className = 'repeated-finding-title';
-  title.textContent = `${owner} · Repeated commands · review candidate`;
-  card.append(title);
-  const lines = [
-    `${finding.repeatedWindowCount} repeated windows`,
-    `${finding.rasterOperationCount} repeated raster operations`,
-    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
-    `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`,
-    `Unknown coverage: ${finding.unknownCoverage.unknownWindowCount} of ${finding.unknownCoverage.activeWindowCount} active windows`,
-    finding.claimBoundary.nonEstablishedFacts,
-    finding.nextCheck,
-  ];
-  for (const text of lines) {
-    const line = document.createElement('div');
-    line.className = 'repeated-finding-line';
-    line.textContent = text;
-    card.append(line);
-  }
-  flyout.append(card);
+function findingLabel(type: InvestigationFinding['type']): string {
+  return { 'heavy-canvas-work': 'Concentrated canvas work', 'repeated-draw-work': 'Repeated draw commands', 'resize-churn': 'Resets during active work', 'backing-store-mismatch': 'Large canvas backing store' }[type];
 }
 
-function appendResizeChurnFinding(finding: ResizeChurnFinding): void {
-  if (!flyout) return;
-  const card = document.createElement('button');
-  card.className = 'repeated-finding';
-  card.type = 'button';
-  card.dataset.canvasId = finding.canvasId;
-  const title = document.createElement('div');
-  title.className = 'repeated-finding-title';
-  title.textContent = `${stats.get(finding.canvasId)?.owner ?? finding.canvasId} · Reset churn · review candidate`;
-  card.append(title);
-  const lines = [
-    `${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`,
-    `Resets: ${finding.resetEvents.map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ')}`,
-    `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`,
-    `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`,
-    `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`,
-    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
-    `Raster operations: ${finding.rasterOperationCount}`,
-    finding.claimBoundary.observation,
-    finding.claimBoundary.explanation,
-    finding.claimBoundary.nonEstablishedFacts,
-    finding.nextCheck,
-  ];
-  for (const text of lines) {
-    const line = document.createElement('div');
-    line.className = 'repeated-finding-line';
-    line.textContent = text;
-    card.append(line);
-  }
-  flyout.append(card);
+function findingEpisodeIds(finding: InvestigationFinding): string[] {
+  return finding.type === 'resize-churn' || finding.type === 'backing-store-mismatch'
+    ? finding.affectedEpisodeIds
+    : [finding.episodeId];
 }
 
-function appendBackingStoreMismatchFinding(finding: BackingStoreMismatchFinding): void {
-  if (!flyout) return;
-  const card = document.createElement('button');
-  card.className = 'repeated-finding'; card.type = 'button'; card.dataset.canvasId = finding.canvasId;
-  const title = document.createElement('div'); title.className = 'repeated-finding-title'; title.textContent = `${stats.get(finding.canvasId)?.owner ?? finding.canvasId} · Backing store mismatch · ${finding.evidenceLevel}`; card.append(title);
-  const lines = [
-    `${finding.affectedWindowCount} affected windows`,
-    ...finding.affectedWindows.map(window => `Actual ${window.backingWidth}×${window.backingHeight}; expected ${window.expectedBackingWidth}×${window.expectedBackingHeight}; area ratio ${window.actualToExpectedAreaRatio}`),
-    `Raster operations: ${finding.rasterOperationCount}`,
-    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`,
-    finding.claimBoundary.observation, finding.claimBoundary.explanation, finding.claimBoundary.nonEstablishedFacts, finding.nextCheck,
+function findingKey(finding: InvestigationFinding): string {
+  return `${finding.type}:${finding.canvasId}:${findingEpisodeIds(finding).join(',')}`;
+}
+
+function lifecycleEndsRetired(
+  session: InvestigationSessionV1,
+  canvasId: string,
+): boolean {
+  const events = session.lifecycleEvents.filter(event => event.canvasId === canvasId);
+  return events.at(-1)?.type === 'retired';
+}
+
+function appendLine(card: HTMLElement, label: string, text: string): void {
+  const line = document.createElement('div');
+  line.className = 'finding-line';
+  line.textContent = label ? `${label}: ${text}` : text;
+  card.append(line);
+}
+
+function findingMeasurements(finding: InvestigationFinding): string[] {
+  if (finding.type === 'heavy-canvas-work') return [
+    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`,
+    `Maximum frame: ${finding.maximumWindow.canvasApiSelfTimeMs} ms, ${finding.maximumWindow.rasterOperationCount} raster operations`,
+    `Top methods: ${finding.topMethods.map(method => `${method.method} ${method.count} ${method.canvasApiSelfTimeMs ?? 'unknown'} ms`).join(', ')}`,
   ];
-  for (const text of lines) { const line = document.createElement('div'); line.className = 'repeated-finding-line'; line.textContent = text; card.append(line); }
-  flyout.append(card);
+  if (finding.type === 'repeated-draw-work') return [`${finding.repeatedWindowCount} repeated frames`, `Repeated raster operations: ${finding.rasterOperationCount}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`];
+  if (finding.type === 'resize-churn') return [`${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`, `Resets: ${finding.resetEvents.map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ')}`, `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`, `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`, `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
+  return [`${finding.affectedWindowCount} affected frames`, ...finding.affectedWindows.map(window => `Actual ${window.backingWidth}×${window.backingHeight}; expected ${window.expectedBackingWidth}×${window.expectedBackingHeight}; area ratio ${window.actualToExpectedAreaRatio}`), `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
+}
+
+function findingWindows(
+  session: InvestigationSessionV1,
+  finding: InvestigationFinding,
+) {
+  const episodes = session.episodes.filter(episode =>
+    findingEpisodeIds(finding).includes(episode.episodeId));
+  return session.windows.filter(window =>
+    window.canvasId === finding.canvasId && episodes.some(episode =>
+      window.windowIndex >= episode.firstWindowIndex &&
+      window.windowIndex <= episode.lastWindowIndex));
+}
+
+function findingUnknowns(
+  session: InvestigationSessionV1,
+  finding: InvestigationFinding,
+): { active: number; reasons: Record<string, number>; unknown: number } {
+  if (finding.type === 'repeated-draw-work') {
+    const reasons: Record<string, number> = {};
+    for (const window of findingWindows(session, finding)) {
+      if (window.unknownReason) reasons[window.unknownReason] = (reasons[window.unknownReason] ?? 0) + 1;
+    }
+    return { active: finding.unknownCoverage.activeWindowCount, reasons, unknown: finding.unknownCoverage.unknownWindowCount };
+  }
+  if (finding.type === 'resize-churn') {
+    return {
+      active: Object.values(finding.commandStatuses).reduce((total, count) => total + count, 0),
+      reasons: finding.unknownReasons,
+      unknown: finding.commandStatuses.unknown,
+    };
+  }
+  const windows = findingWindows(session, finding);
+  const reasons: Record<string, number> = {};
+  for (const window of windows) {
+    if (window.unknownReason) reasons[window.unknownReason] = (reasons[window.unknownReason] ?? 0) + 1;
+  }
+  return {
+    active: windows.length,
+    reasons,
+    unknown: windows.filter(window => window.signatureStatus === 'unknown').length,
+  };
+}
+
+function droppedEntries(session: InvestigationSessionV1): Array<[string, number]> {
+  return Object.entries(session.droppedEntryCounts).filter(([, count]) => count > 0);
+}
+
+function createFinding(
+  session: InvestigationSessionV1,
+  finding: InvestigationFinding,
+  index: number,
+): HTMLElement {
+  const episodes = findingEpisodeIds(finding);
+  const key = findingKey(finding);
+  const id = `canvas-scan-finding-${key.replaceAll(':', '-')}`;
+  const card = document.createElement('section');
+  card.className = 'repeated-finding finding-card';
+  card.dataset.canvasId = finding.canvasId;
+  card.dataset.findingId = key;
+  card.id = id;
+
+  const control = document.createElement('button');
+  control.className = 'finding-toggle';
+  control.type = 'button';
+  control.dataset.findingId = key;
+  control.setAttribute('aria-controls', `${id}-evidence`);
+  control.textContent = `${index + 1}  ${findingLabel(finding.type)} · Review candidate`;
+  card.append(control);
+
+  const owner = session.canvases.find(canvas => canvas.canvasId === finding.canvasId)?.nearestReactOwner;
+  appendLine(card, '', `${owner ?? 'Canvas'} · canvasId=${finding.canvasId}`);
+  appendLine(card, '', `Episode ${episodes.join(', ') || 'none'}`);
+
+  const evidence = document.createElement('div');
+  evidence.className = 'finding-evidence';
+  evidence.id = `${id}-evidence`;
+  for (const association of session.episodeAssociations.filter(item => episodes.includes(item.episodeId))) {
+    const entry = session.browserEntries.find(item => item.entryId === association.entryId);
+    const label = entry?.kind === 'user-mark' ? ` ${entry.label}` : '';
+    appendLine(evidence, '', `${entry?.kind ?? association.entryKind}${label} associated with Episode ${association.episodeId} · overlapped ${association.startedAtTimestampMs.toFixed(1)}–${association.endedAtTimestampMs.toFixed(1)} ms`);
+  }
+
+  appendLine(evidence, 'Observed', finding.claimBoundary.observation);
+  for (const line of findingMeasurements(finding)) appendLine(evidence, '', line);
+  appendLine(evidence, 'Explanation', finding.claimBoundary.explanation);
+  appendLine(evidence, 'Does not establish', finding.claimBoundary.nonEstablishedFacts);
+  const unknown = findingUnknowns(session, finding);
+  appendLine(evidence, 'Unknown coverage', `${unknown.unknown} of ${unknown.active} active frames`);
+  const limits = droppedEntries(session);
+  if (limits.length) {
+    appendLine(evidence, 'Collection limit', limits.map(([name, count]) => `droppedEntryCounts.${name}=${count}`).join(' · '));
+  }
+  appendLine(evidence, 'Next check', finding.nextCheck);
+
+  if (lifecycleEndsRetired(session, finding.canvasId)) {
+    const retired = document.createElement('div');
+    retired.className = 'finding-line finding-retired';
+    retired.textContent = 'The recorded canvas retired. Saved evidence remains available.';
+    evidence.append(retired);
+  }
+  const unavailable = document.createElement('div');
+  unavailable.className = 'finding-line finding-unavailable';
+  unavailable.textContent = 'The canvas is not on the page. Saved evidence remains available.';
+  evidence.append(unavailable);
+
+  const actions = document.createElement('div');
+  actions.className = 'finding-actions';
+  for (const [actionName, text] of [['inspect-current', 'Inspect current canvas'], ['locate-current', 'Locate current canvas']] as const) {
+    const action = document.createElement('button');
+    action.className = 'current-action';
+    action.type = 'button';
+    action.dataset.action = actionName;
+    action.dataset.canvasId = finding.canvasId;
+    action.textContent = text;
+    actions.append(action);
+  }
+  evidence.append(actions);
+  const status = document.createElement('div');
+  status.className = 'finding-line finding-status';
+  status.setAttribute('aria-live', 'polite');
+  evidence.append(status);
+
+  const raw = document.createElement('div');
+  raw.className = 'raw-evidence';
+  const reasons = Object.entries(unknown.reasons).map(([reason, count]) => `${reason}:${count}`).join(',');
+  raw.textContent = `type=${finding.type} evidenceLevel=${finding.evidenceLevel} canvasId=${finding.canvasId} episodeIds=${episodes.join(',')} activeWindowCount=${unknown.active} unknownWindowCount=${unknown.unknown} unknownReasons=${reasons || 'none'}`;
+  evidence.append(raw);
+  card.append(evidence);
+  findingNodes.set(key, card);
+  return card;
+}
+
+function updateFinding(finding: InvestigationFinding): void {
+  const card = findingNodes.get(findingKey(finding));
+  if (!card) return;
+  const expanded = expandedFindingId === findingKey(finding);
+  const control = card.querySelector<HTMLButtonElement>('.finding-toggle');
+  const evidence = card.querySelector<HTMLElement>('.finding-evidence');
+  if (control) control.setAttribute('aria-expanded', String(expanded));
+  if (evidence) evidence.hidden = !expanded;
+  const live = canvases.get(finding.canvasId);
+  const connected = live instanceof Element && live.isConnected;
+  const actions = card.querySelector<HTMLElement>('.finding-actions');
+  const unavailable = card.querySelector<HTMLElement>('.finding-unavailable');
+  if (actions) actions.hidden = !connected;
+  if (unavailable) unavailable.hidden = connected;
+}
+
+function coverageLabel(name: string): string {
+  return ({
+    canvasWindowReports: 'canvas frame reports',
+    canvasLifetimes: 'canvas lifetimes',
+    resetEvents: 'reset events',
+    lifecycleEvents: 'lifecycle events',
+    documentEvents: 'document events',
+    eventTiming: 'Event Timing entries',
+    userMarks: 'user marks',
+    longAnimationFrames: 'Long Animation Frame entries',
+  } as Record<string, string>)[name] ?? name;
+}
+
+function createSessionView(session: InvestigationSessionV1): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'completed-session';
+  const header = document.createElement('div');
+  header.className = 'session-section session-header';
+  const heading = document.createElement('div');
+  heading.className = 'session-heading';
+  heading.textContent = 'Recording complete';
+  const copy = document.createElement('button');
+  copy.className = 'session-copy';
+  copy.type = 'button';
+  copy.dataset.action = 'copy-session';
+  copy.textContent = 'Copy session JSON';
+  const copyStatus = document.createElement('div');
+  copyStatus.className = 'session-copy-status';
+  copyStatus.setAttribute('aria-live', 'polite');
+  header.append(heading, copy, copyStatus);
+  root.append(header);
+
+  const coverage = document.createElement('div');
+  coverage.className = 'session-section session-coverage';
+  if (!session.browserFeatures.eventTiming) appendLine(coverage, '', 'This browser did not provide Event Timing. Canvas-scan still recorded supported document events. browserFeatures.eventTiming=false');
+  if (!session.browserFeatures.longAnimationFrames) appendLine(coverage, '', 'This browser did not provide Long Animation Frame entries. browserFeatures.longAnimationFrames=false');
+  for (const [name, count] of droppedEntries(session)) {
+    appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name)} were dropped (droppedEntryCounts.${name}=${count}).`);
+  }
+  coverage.hidden = coverage.childElementCount === 0;
+  root.append(coverage);
+
+  if (session.windows.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'session-section session-empty';
+    empty.textContent = 'No Canvas2D activity occurred during this recording. Record again and reproduce the canvas interaction before you stop.';
+    root.append(empty);
+  }
+
+  if (session.canvases.length) {
+    const summaries = document.createElement('div');
+    summaries.className = 'session-section canvas-summaries';
+    const summaryHeading = document.createElement('div');
+    summaryHeading.className = 'session-heading';
+    summaryHeading.textContent = 'CANVAS WORK';
+    summaries.append(summaryHeading);
+    for (const [index, canvas] of session.canvases.entries()) {
+      const line = document.createElement('div');
+      line.className = 'session-line canvas-summary';
+      line.tabIndex = 0;
+      line.dataset.summaryIndex = String(index);
+      line.dataset.sessionCanvasId = canvas.canvasId;
+      line.textContent = `${canvas.nearestReactOwner ?? 'Canvas'} · ${canvas.canvasApiSelfTimeMs} ms Canvas2D API self-time · ${canvas.maxWindowSelfTimeMs} ms maximum frame · ${canvas.rasterOperationCount} raster operations · ${canvas.evidenceLevel} · canvasId=${canvas.canvasId}`;
+      summaries.append(line);
+    }
+    const more = document.createElement('button');
+    more.className = 'more summary-more';
+    more.type = 'button';
+    more.dataset.action = 'show-session-canvases';
+    summaries.append(more);
+    root.append(summaries);
+  }
+
+  const findings = document.createElement('div');
+  findings.className = 'session-section findings-list';
+  const findingsHeading = document.createElement('div');
+  findingsHeading.className = 'session-heading';
+  findingsHeading.textContent = 'FINDINGS';
+  findings.append(findingsHeading);
+  if (session.findings.length === 0) appendLine(findings, '', 'No review candidates met the finding thresholds in this recording.');
+  for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
+  root.append(findings);
+  return root;
+}
+
+function updateSessionView(session: InvestigationSessionV1): void {
+  const root = flyout?.querySelector<HTMLElement>('.completed-session');
+  if (!root) return;
+  const copyStatus = root.querySelector<HTMLElement>('.session-copy-status');
+  if (copyStatus) copyStatus.textContent = copySessionStatus;
+  const summaries = [...root.querySelectorAll<HTMLElement>('.canvas-summary')];
+  for (const [index, summary] of summaries.entries()) summary.hidden = !showAllSessionCanvases && index >= 8;
+  const more = root.querySelector<HTMLButtonElement>('.summary-more');
+  if (more) {
+    const hidden = Math.max(0, summaries.length - 8);
+    more.hidden = showAllSessionCanvases || hidden === 0;
+    more.textContent = `+${hidden} more`;
+  }
+  for (const finding of session.findings) updateFinding(finding);
 }
 
 function renderFlyout(): void {
@@ -933,31 +1190,43 @@ function renderFlyout(): void {
     note.className = 'note';
     note.textContent = EXPLAINER;
   }
-  flyout.append(note);
-  flyout.querySelectorAll('.episode-evidence').forEach(line => line.remove());
-  const sessionEvidence = getLastSession();
-  if (sessionEvidence) {
-    if (!sessionEvidence.browserFeatures.eventTiming || !sessionEvidence.browserFeatures.longAnimationFrames) {
-      const unsupported = document.createElement('div');
-      unsupported.className = 'episode-evidence';
-      unsupported.textContent = [!sessionEvidence.browserFeatures.eventTiming ? 'Event Timing unsupported' : '', !sessionEvidence.browserFeatures.longAnimationFrames ? 'Long Animation Frames unsupported' : ''].filter(Boolean).join(' · ');
-      flyout.append(unsupported);
+  if (!note.isConnected) flyout.append(note);
+  let recording = flyout.querySelector<HTMLElement>('.recording-session');
+  if (getRecordingState() === 'recording') {
+    if (!recording) {
+      recording = document.createElement('div');
+      recording.className = 'session-section recording-session';
+      recording.textContent = 'Recording…';
     }
-    for (const association of sessionEvidence.episodeAssociations) {
-      const entry = sessionEvidence.browserEntries.find(item => item.entryId === association.entryId);
-      const line = document.createElement('div');
-      line.className = 'episode-evidence';
-      line.textContent = `${entry?.kind ?? association.entryKind}${entry?.kind === 'user-mark' ? ` ${entry.label}` : ''} associated with ${association.episodeId} · overlapped ${association.startedAtTimestampMs.toFixed(1)}–${association.endedAtTimestampMs.toFixed(1)} ms`;
-      flyout.append(line);
+    if (!recording.isConnected) {
+      const liveHeading = flyout.querySelector('.live-heading');
+      if (liveHeading) flyout.insertBefore(recording, liveHeading);
+      else flyout.append(recording);
+    }
+  } else recording?.remove();
+  if (renderedSession !== shownSession) {
+    flyout.querySelector('.completed-session')?.remove();
+    findingNodes.clear();
+    renderedSession = shownSession;
+    if (shownSession) {
+      const completed = createSessionView(shownSession);
+      const liveHeading = flyout.querySelector('.live-heading');
+      if (liveHeading) flyout.insertBefore(completed, liveHeading);
+      else flyout.append(completed);
     }
   }
-  flyout.querySelectorAll('.repeated-finding').forEach(card => card.remove());
-  const repeatedFindings = getLastSession()?.findings.filter((finding): finding is RepeatedDrawWorkFinding => finding.type === 'repeated-draw-work') ?? [];
-  for (const finding of repeatedFindings) appendRepeatedFinding(finding);
-  const resizeFindings = getLastSession()?.findings.filter((finding): finding is ResizeChurnFinding => finding.type === 'resize-churn') ?? [];
-  for (const finding of resizeFindings) appendResizeChurnFinding(finding);
-  const backingStoreFindings = getLastSession()?.findings.filter((finding): finding is BackingStoreMismatchFinding => finding.type === 'backing-store-mismatch') ?? [];
-  for (const finding of backingStoreFindings) appendBackingStoreMismatchFinding(finding);
+  if (shownSession) {
+    updateSessionView(shownSession);
+  }
+  let liveHeading = flyout.querySelector<HTMLElement>('.live-heading');
+  if (rows.length) {
+    if (!liveHeading) {
+      liveHeading = document.createElement('div');
+      liveHeading.className = 'session-heading session-section live-heading';
+      liveHeading.textContent = 'CURRENT CANVAS ACTIVITY';
+    }
+    if (!liveHeading.isConnected) flyout.append(liveHeading);
+  } else liveHeading?.remove();
   for (const { aggregate, canvasId, canvasStats } of visibleRows) {
     let row = flyoutRows.get(canvasId);
     if (!row) {
@@ -1001,7 +1270,7 @@ function renderFlyout(): void {
   }
 
   // Reused, not recreated: rebuilding it would drop focus mid-click.
-  let more = flyout.querySelector<HTMLButtonElement>('.more');
+  let more = flyout.querySelector<HTMLButtonElement>('.more:not(.summary-more)');
   const hiddenCount = rows.length - visibleRows.length;
   if (!showAllRows && hiddenCount > 0) {
     if (!more) {
@@ -1054,8 +1323,8 @@ function refresh(): void {
     }
   }
   if (!canvasCount || !candidateCount || !countsButton || !toolbar) return;
-  let totalCandidates = 0;
-  for (const canvasStats of stats.values()) {
+  let totalCandidates = shownSession?.findings.length ?? 0;
+  if (!shownSession) for (const canvasStats of stats.values()) {
     if (canvasStats.candidate) totalCandidates++;
   }
   canvasCount.textContent = `${stats.size} ${stats.size === 1 ? 'canvas' : 'canvases'} · `;
@@ -1093,11 +1362,17 @@ function refresh(): void {
 
 function renderRecordingState(): void {
   if (!recordButton || !stopRecordingButton) return;
-  const recording = getRecordingState() === 'recording';
+  const state = getRecordingState();
+  const recording = state === 'recording';
   recordButton.disabled = recording;
-  stopRecordingButton.disabled = !recording;
+  const stopRoot = stopRecordingButton.getRootNode();
+  const stopFocused = stopRoot instanceof ShadowRoot &&
+    stopRoot.activeElement === stopRecordingButton;
+  stopRecordingButton.disabled = !recording && !stopFocused;
+  stopRecordingButton.setAttribute('aria-disabled', String(!recording));
   recordButton.classList.toggle('active', recording);
   recordButton.setAttribute('aria-pressed', String(recording));
+  if (state === 'complete' && shownSession) flyoutOpen = true;
 }
 
 function commit(): void {
@@ -1133,7 +1408,28 @@ function toggleInspectMode(): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && inspectMode) exitInspectMode();
+  const root = host?.shadowRoot;
+  const controls = [...(root?.querySelectorAll<HTMLButtonElement>('.finding-toggle') ?? [])];
+  const active = root?.activeElement;
+  const index = active instanceof HTMLButtonElement ? controls.indexOf(active) : -1;
+  if (index !== -1 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault(); controls[event.key === 'ArrowDown' ? Math.min(index + 1, controls.length - 1) : event.key === 'ArrowUp' ? Math.max(index - 1, 0) : event.key === 'Home' ? 0 : controls.length - 1]?.focus(); return;
+  }
+  if (index !== -1 && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); const id = controls[index].dataset.findingId ?? null; expandedFindingId = expandedFindingId === id ? null : id; flyoutRevision++; markDirty(); return; }
+  if (event.key === 'Escape') {
+    if (selectedCanvasId !== null) {
+      closePopover();
+      if (inspectMode) inspectMode = false;
+      if (flyoutInvoker) flyoutOpen = true;
+      const invoker = flyoutInvoker;
+      markDirty();
+      requestAnimationFrame(() => invoker?.focus());
+      flyoutInvoker = null;
+      return;
+    }
+    if (flyoutOpen) { flyoutOpen = false; countsButton?.focus(); flyoutRevision++; markDirty(); return; }
+    if (inspectMode) exitInspectMode();
+  }
 }
 
 function updateDockTransform(): void {
@@ -1177,22 +1473,60 @@ function handleOutlineClick(event: MouseEvent): void {
   const canvasId = findCanvasId(event.target);
   if (!canvasId) return;
   event.stopPropagation();
+  const matching = [...(host?.shadowRoot?.querySelectorAll<HTMLElement>('.finding-card') ?? [])].find(card => card.dataset.canvasId === canvasId);
+  if (matching) {
+    flyoutOpen = true;
+    expandedFindingId = matching.dataset.findingId ?? null;
+    flyoutRevision++;
+    markDirty();
+    const control = matching.querySelector<HTMLButtonElement>('.finding-toggle');
+    requestAnimationFrame(() => control?.focus());
+    return;
+  }
   openPopover(canvasId);
 }
 
 function handleFlyoutClick(event: MouseEvent): void {
   if (!(event.target instanceof Element)) return;
   if (event.target.closest('.more')) {
+    if (event.target.closest('[data-action="show-session-canvases"]')) {
+      showAllSessionCanvases = true;
+      flyoutRevision++;
+      markDirty();
+      return;
+    }
     showAllRows = true;
     flyoutRevision++;
     markDirty();
     return;
   }
+  const action = event.target.closest<HTMLElement>('[data-action]');
+  if (action?.dataset.action === 'copy-session' && shownSession) {
+    const copied = (status: string) => { copySessionStatus = status; flyoutRevision++; markDirty(); };
+    try {
+      if (!navigator.clipboard?.writeText) copied('Copy failed');
+      else void navigator.clipboard.writeText(JSON.stringify(shownSession)).then(() => copied('Session JSON copied')).catch(() => copied('Copy failed'));
+    } catch { copied('Copy failed'); }
+    return;
+  }
+  if (action?.dataset.action === 'inspect-current' && action.dataset.canvasId) { flyoutInvoker = action; openPopover(action.dataset.canvasId); return; }
+  if (action?.dataset.action === 'locate-current' && action.dataset.canvasId) {
+    const result = locateCanvas(action.dataset.canvasId);
+    const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
+    if (status) status.textContent = result === 'not-visible' ? 'The canvas is connected but is not visible.' : '';
+    return;
+  }
+  const finding = event.target.closest<HTMLElement>('.finding-toggle');
+  if (finding) { expandedFindingId = expandedFindingId === finding.dataset.findingId ? null : finding.dataset.findingId ?? null; flyoutRevision++; markDirty(); return; }
   const canvasId = findCanvasId(event.target);
-  if (canvasId) openPopover(canvasId);
+  if (canvasId && !event.target.closest('.finding-card')) {
+    flyoutInvoker = event.target.closest<HTMLElement>('.row');
+    openPopover(canvasId);
+  }
 }
 
 function handleFlyoutMouseover(event: MouseEvent): void {
+  if (event.target instanceof Element && event.target.closest('.finding-card')) return;
   const canvasId = findCanvasId(event.target);
   if (canvasId) locateCanvas(canvasId);
 }
@@ -1294,8 +1628,8 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   countsButton.className = 'control counts';
   countsButton.type = 'button';
   countsButton.title =
-    `${EXPLAINER} Review candidates are canvases that received the same ` +
-    'draw commands again.';
+    `${EXPLAINER} A completed recording can also show concentrated work, ` +
+    'active resets, and large backing stores as review candidates.';
   countsButton.setAttribute('aria-expanded', 'false');
   canvasCount = document.createElement('span');
   canvasCount.className = 'canvas-count';
@@ -1315,14 +1649,30 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   recordButton.type = 'button';
   recordButton.setAttribute('aria-label', 'Record investigation');
   recordButton.textContent = 'Record';
-  recordButton.addEventListener('click', startRecording);
+  recordButton.addEventListener('click', () => {
+    if (getRecordingState() === 'recording') return;
+    startRecording();
+    if (getRecordingState() === 'recording') {
+      shownSession = null;
+      expandedFindingId = null;
+      copySessionStatus = '';
+      showAllSessionCanvases = false;
+      findingNodes.clear();
+      flyoutRevision++;
+    }
+  });
 
   stopRecordingButton = document.createElement('button');
   stopRecordingButton.className = 'control stop-recording';
   stopRecordingButton.type = 'button';
   stopRecordingButton.setAttribute('aria-label', 'Stop recording');
   stopRecordingButton.textContent = 'Stop';
-  stopRecordingButton.addEventListener('click', stopRecording);
+  stopRecordingButton.addEventListener('click', () => {
+    if (getRecordingState() === 'recording') stopRecording();
+  });
+  stopRecordingButton.addEventListener('blur', () => {
+    if (getRecordingState() !== 'recording') stopRecordingButton!.disabled = true;
+  });
 
   const collapseButton = document.createElement('button');
   collapseButton.className = 'control collapse';
@@ -1407,7 +1757,18 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   (document.body ?? document.documentElement).append(host);
   document.addEventListener('keydown', handleKeydown);
   unsubscribe = subscribeToReports(handleReport);
-  unsubscribeRecording = subscribeToRecordingState(() => {
+  if (getRecordingState() === 'complete') shownSession = getLastSession() ?? null;
+  unsubscribeRecording = subscribeToRecordingState((state) => {
+    if (state === 'recording') {
+      shownSession = null;
+      expandedFindingId = null;
+      copySessionStatus = '';
+      showAllSessionCanvases = false;
+      findingNodes.clear();
+    } else if (state === 'complete') {
+      shownSession = getLastSession() ?? null;
+      showAllSessionCanvases = false;
+    }
     renderRecordingState();
     flyoutRevision++;
     markDirty();
@@ -1468,6 +1829,12 @@ export function unmountOverlay(): void {
   inspectMode = false;
   selectedCanvasId = null;
   selectedGeometry = null;
+  shownSession = null;
+  renderedSession = null;
+  expandedFindingId = null;
+  copySessionStatus = '';
+  flyoutInvoker = null;
+  showAllSessionCanvases = false;
   minFlashRasterOps = 2;
   dirty = false;
   flyoutRevision = 0;
@@ -1477,6 +1844,7 @@ export function unmountOverlay(): void {
   dragY = 0;
   outlines.clear();
   flyoutRows.clear();
+  findingNodes.clear();
   locatingCanvases.clear();
   fadingFlashes.clear();
   expiredFlashes.clear();

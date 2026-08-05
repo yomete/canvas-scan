@@ -474,6 +474,14 @@ describe('recording', () => {
     expect(stopRecording()!.canvases.map(canvas => canvas.canvasId)).toEqual(['total', 'max', 'raster', 'alpha', 'beta']);
   });
 
+  it('preserves source order when every canvas-summary sort key compares equal', () => {
+    startRecording();
+    publish(makeReport('é', 'same', { canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), 1);
+    publish(makeReport('é', 'same', { canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), 2);
+    expect('é'.localeCompare('é')).toBe(0);
+    expect(stopRecording()!.canvases.map(canvas => canvas.canvasId)).toEqual(['é', 'é']);
+  });
+
   it('preserves command evidence from publication without mutation', () => {
     startRecording(); const reports = [makeReport('a', 'same'), makeReport('b', 'changed', { sampled: true, comparisonGap: 2 }), makeReport('c', 'unknown', { unknownReason: 'canvas-reset' })];
     reports.forEach((report, index) => publish(report, index + 1)); const session = stopRecording()!;

@@ -8,9 +8,9 @@ const { resolveSourceOutcome } = vi.hoisted(() => ({
 
 vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
-import { emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
+import { emitLifecycleEvent, emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
-import { getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 function makeReport(
@@ -248,6 +248,268 @@ describe('overlay toolbar', () => {
 });
 
 describe('overlay flyout', () => {
+  it('auto-opens empty and nonempty completed sessions without moving focus from Stop', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    const record = root.querySelector<HTMLButtonElement>('.record')!;
+    const stop = root.querySelector<HTMLButtonElement>('.stop-recording')!;
+    record.click(); stop.focus(); stop.click(); refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(false);
+    expect(root.querySelector('.session-empty')?.textContent).toBe('No Canvas2D activity occurred during this recording. Record again and reproduce the canvas interaction before you stop.');
+    expect(root.activeElement).toBe(stop);
+
+    record.click();
+    emitReport(makeReport({ canvasId: 'completed' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stop.focus(); stop.click(); refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(false);
+    expect(root.querySelector('.session-empty')).toBeNull();
+    expect(root.activeElement).toBe(stop);
+  });
+
+  it('keeps recording and completed evidence before current activity', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'already-live' }), makeCanvas());
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click(); refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.record')!.click(); refreshOverlay();
+    let children = [...root.querySelector<HTMLElement>('.flyout')!.children];
+    expect(children.indexOf(root.querySelector('.recording-session')!)).toBeLessThan(children.indexOf(root.querySelector('.live-heading')!));
+    emitReport(makeReport({ canvasId: 'recorded-live' }), makeCanvas(), { windowIndex: 2, timestampMs: 20 });
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click(); refreshOverlay();
+    children = [...root.querySelector<HTMLElement>('.flyout')!.children];
+    expect(children.indexOf(root.querySelector('.completed-session')!)).toBeLessThan(children.indexOf(root.querySelector('.live-heading')!));
+    expect(children.indexOf(root.querySelector('.live-heading')!)).toBeLessThan(children.indexOf(root.querySelector('.row')!));
+  });
+
+  it('renders every finding type in the canonical saved order', () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    mountOverlay();
+    const heavy = makeCanvas();
+    const repeated = makeCanvas();
+    const resize = makeCanvas();
+    const backing = makeCanvas();
+    backing.width = 400; backing.height = 200;
+    startRecording();
+    emitReport(makeReport({ canvasId: 'heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), heavy, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'repeated', canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), repeated, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 1, timestampMs: 10 });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'height-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 2 }), backing, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 3 }), backing, { windowIndex: 2, timestampMs: 20 });
+    const session = stopRecording()!;
+    refreshOverlay();
+    const root = getShadowRoot();
+    const rawTypes = [...root.querySelectorAll<HTMLElement>('.finding-card .raw-evidence')].map(node => node.textContent?.match(/type=([^ ]+)/)?.[1]);
+    expect(new Set(rawTypes)).toEqual(new Set(['heavy-canvas-work', 'repeated-draw-work', 'resize-churn', 'backing-store-mismatch']));
+    expect(rawTypes).toEqual(session.findings.map(finding => finding.type));
+    expect(root.querySelector('.canvas-summaries')?.textContent).toContain('Canvas2D API self-time');
+    expect(root.querySelector('.candidate-count')?.textContent).toBe(`${session.findings.length} review candidates`);
+  });
+
+  it('keeps finding controls stable and exports only the shown session snapshot', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stable-finding', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const control = root.querySelector<HTMLButtonElement>('.finding-toggle')!;
+    const expected = JSON.stringify(getLastSession());
+    root.querySelector<HTMLButtonElement>('.session-copy')!.click();
+    await Promise.resolve();
+    emitReport(makeReport({ canvasId: 'later-live-work', canvasApiSelfTimeMs: 12 }), makeCanvas(), { windowIndex: 2, timestampMs: 20 });
+    refreshOverlay();
+    expect(root.querySelector('.finding-toggle')).toBe(control);
+    root.querySelector<HTMLButtonElement>('.session-copy')!.click();
+    await Promise.resolve();
+    expect(writeText.mock.calls.map(call => call[0])).toEqual([expected, expected]);
+  });
+
+  it('keeps a finding control stable after a source result', async () => {
+    resolveSourceOutcome.mockResolvedValue({ kind: 'found', location: { file: '/src/Stable.tsx', line: 4, column: 2 } });
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stable-source', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const control = root.querySelector<HTMLButtonElement>('.finding-toggle')!;
+    control.click(); refreshOverlay();
+    root.querySelector<HTMLButtonElement>('[data-action="inspect-current"]')!.click();
+    await Promise.resolve(); await Promise.resolve(); refreshOverlay();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); refreshOverlay();
+    expect(root.querySelector('.finding-toggle')).toBe(control);
+    expect(control.isConnected).toBe(true);
+  });
+
+  it('keeps saved summary hover and click separate from live inspection', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'saved-summary', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    vi.mocked(canvas.getBoundingClientRect).mockClear();
+    const summary = root.querySelector<HTMLElement>('.canvas-summary')!;
+    summary.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    summary.click();
+    expect(canvas.getBoundingClientRect).not.toHaveBeenCalled();
+    refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>('.popover')?.hidden).toBe(true);
+    expect(root.querySelector('.outline[data-canvas-id="saved-summary"]')?.classList).not.toContain('locate');
+  });
+
+  it('reports one stable not-visible status for hidden Locate', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'hidden-locate', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const card = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="hidden-locate"]')!;
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click(); refreshOverlay();
+    canvas.style.visibility = 'hidden';
+    const locate = card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!;
+    locate.click(); locate.click(); refreshOverlay();
+    expect(card.querySelector('.finding-status')?.textContent).toBe('The canvas is connected but is not visible.');
+    expect(card.querySelectorAll('.finding-status')).toHaveLength(1);
+    expect(root.querySelectorAll('.outline[data-canvas-id="hidden-locate"]')).toHaveLength(1);
+    canvas.style.visibility = 'visible';
+    canvas.style.pointerEvents = 'none';
+    root.querySelector<HTMLButtonElement>('.inspect')!.click(); refreshOverlay();
+    locate.click(); refreshOverlay();
+    expect(card.querySelector('.finding-status')?.textContent).toBe('');
+    expect(root.querySelector('.outline[data-canvas-id="hidden-locate"]')?.classList).toContain('locate');
+  });
+
+  it('keeps retired evidence while current actions follow live connectivity', () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    startRecording();
+    emitReport(makeReport({ canvasId: 'retired-card', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitLifecycleEvent({ canvasId: 'retired-card', type: 'retired', windowIndex: 2, timestampMs: 20, connected: false, activeRegistrySize: 0, evidenceLevel: 'measured' });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const card = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="retired-card"]')!;
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click(); refreshOverlay();
+    expect(card.textContent).toContain('The recorded canvas retired. Saved evidence remains available.');
+    expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(true);
+    document.body.append(canvas);
+    emitReport(makeReport({ canvasId: 'retired-card', rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
+    refreshOverlay();
+    expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(false);
+    expect(card.textContent).toContain('The recorded canvas retired. Saved evidence remains available.');
+  });
+
+  it('supports finding keys and returns focus from both saved and live details', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'keyboard-a', rasterOperationCount: 2 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'keyboard-b', rasterOperationCount: 2 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const controls = [...root.querySelectorAll<HTMLButtonElement>('.finding-toggle')];
+    controls[0].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+    expect(root.activeElement).toBe(controls[1]);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }));
+    expect(root.activeElement).toBe(controls[0]);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'End' }));
+    expect(root.activeElement).toBe(controls.at(-1));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); refreshOverlay();
+    expect(controls.at(-1)?.getAttribute('aria-expanded')).toBe('true');
+    expect(root.activeElement).toBe(controls.at(-1));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' })); refreshOverlay();
+    expect(controls.at(-1)?.getAttribute('aria-expanded')).toBe('false');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(true);
+    expect(root.activeElement).toBe(root.querySelector('.counts'));
+
+    root.querySelector<HTMLButtonElement>('.counts')!.click(); refreshOverlay();
+    const row = root.querySelector<HTMLButtonElement>('.row')!;
+    row.click(); refreshOverlay();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); refreshOverlay();
+    expect(root.activeElement).toBe(row);
+  });
+
+  it('opens and focuses matching saved evidence from an inspect outline', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'saved-outline', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const control = root.querySelector<HTMLButtonElement>('.finding-toggle')!;
+    const session = JSON.stringify(getLastSession());
+    root.querySelector<HTMLButtonElement>('.counts')!.click(); refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>('.inspect')!.click(); refreshOverlay();
+    root.querySelector<HTMLElement>('.outline[data-canvas-id="saved-outline"]')!.click();
+    refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(false);
+    expect(control.getAttribute('aria-expanded')).toBe('true');
+    expect(root.activeElement).toBe(control);
+    expect(JSON.stringify(getLastSession())).toBe(session);
+  });
+
+  it('removes stale finding nodes on a new session and unmount', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stale-finding', rasterOperationCount: 2 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const control = getShadowRoot().querySelector<HTMLButtonElement>('.finding-toggle')!;
+    startRecording(); refreshOverlay();
+    expect(control.isConnected).toBe(false);
+    stopRecording(); refreshOverlay();
+    unmountOverlay();
+    expect(control.isConnected).toBe(false);
+  });
+
+  it('shows Copy failed when the Clipboard API is absent', () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    mountOverlay(); startRecording(); stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.session-copy')!.click(); refreshOverlay();
+    expect(root.querySelector('.session-copy-status')?.textContent).toBe('Copy failed');
+  });
+
+  it('shows Copy failed when the Clipboard promise rejects', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay(); startRecording(); stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.session-copy')!.click();
+    await Promise.resolve(); await Promise.resolve(); refreshOverlay();
+    expect(root.querySelector('.session-copy-status')?.textContent).toBe('Copy failed');
+  });
+
+  it('shows plain and raw collection-limit details', () => {
+    mountOverlay(); startRecording();
+    for (let index = 0; index < 2001; index++) mark(`limit ${index}`);
+    stopRecording(); refreshOverlay();
+    const coverage = getShadowRoot().querySelector('.session-coverage')?.textContent ?? '';
+    expect(coverage).toContain('user marks were dropped');
+    expect(coverage).toContain('droppedEntryCounts.userMarks=1');
+  });
+
+  it('keeps completed-session plain copy within the approved claim boundary', () => {
+    mountOverlay(); startRecording();
+    emitReport(makeReport({ canvasId: 'plain-copy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const copy = getShadowRoot().querySelector('.completed-session')!.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll('.raw-evidence').forEach(node => node.remove());
+    const text = copy.textContent ?? '';
+    expect(text).toContain('Canvas2D API self-time');
+    expect(text).toMatch(/review candidate/i);
+    expect(text).not.toMatch(/caused|wasted|pixel-identical/i);
+    expect(text.match(/avoidable/gi)?.length ?? 0).toBe(text.match(/does not establish[^.]*avoidable/gi)?.length ?? 0);
+  });
+
   it('shows associated evidence without causal language and shows unsupported browser features', () => {
     let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
     mountOverlay(); const canvas = makeCanvas(); startRecording(); clock = 20; mark(' shared mark '); clock = 35; mark(' hidden mark ');
@@ -258,7 +520,7 @@ describe('overlay flyout', () => {
     const text = root.querySelector('.flyout')!.textContent!;
     expect(text.match(/user-mark shared mark associated with/g)).toHaveLength(2); expect(text).toContain('overlapped');
     expect(text).not.toContain('hidden mark');
-    expect(text).toContain('Event Timing unsupported'); expect(text).toContain('Long Animation Frames unsupported');
+    expect(text).toContain('This browser did not provide Event Timing.'); expect(text).toContain('This browser did not provide Long Animation Frame entries.');
     expect(text).not.toMatch(/caused|triggered|responsible/i);
   });
 
@@ -275,7 +537,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="resize-seeded"]')!;
-    expect(card.textContent).toContain('Reset churn · review candidate');
+    expect(card.textContent).toContain('Resets during active work · Review candidate');
     expect(card.textContent).toContain('2 active resets of 2 observed resets');
     expect(card.textContent).toContain('width-setter (240×120)');
     expect(card.textContent).toContain('context-reset (240×120)');
@@ -284,10 +546,12 @@ describe('overlay flyout', () => {
     expect(card.textContent).toContain('Unknown reasons: canvas-reset 1');
     expect(card.textContent).toContain('does not show that resets made the application slow');
     expect(card.textContent).not.toMatch(/caused|wasted|avoidable|render time|GPU time|pixel/i);
-    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
+    refreshOverlay();
+    card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="resize-seeded"]')?.classList).toContain('locate');
-    card.click();
+    card.querySelector<HTMLButtonElement>('[data-action="inspect-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
   });
@@ -306,15 +570,17 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="backing-seeded"]')!;
-    expect(card.textContent).toContain('Backing store mismatch · candidate');
+    expect(card.textContent).toContain('Large canvas backing store · Review candidate');
     expect(card.textContent).toContain('Actual 400×200; expected 200×100; area ratio 4');
-    expect(card.textContent).toContain('2 affected windows');
+    expect(card.textContent).toContain('2 affected frames');
     expect(card.textContent).toContain('GPU cost');
     expect(card.textContent).toContain('required image quality');
-    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
+    refreshOverlay();
+    card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="backing-seeded"]')?.classList).toContain('locate');
-    card.click();
+    card.querySelector<HTMLButtonElement>('[data-action="inspect-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
   });
@@ -333,7 +599,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-resize"]')!;
-    expect(card.textContent).toContain('Reset churn');
+    expect(card.textContent).toContain('Resets during active work');
     card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="detached-resize"]')).toBeNull();
@@ -351,19 +617,22 @@ describe('overlay flyout', () => {
     const root = getShadowRoot();
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
-    const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="seeded"]')!;
-    expect(card.textContent).toContain('Repeated commands');
-    expect(card.textContent).toContain('review candidate');
-    expect(card.textContent).toContain('2 repeated windows');
-    expect(card.textContent).toContain('5 repeated raster operations');
+    const card = [...root.querySelectorAll<HTMLElement>('.repeated-finding[data-canvas-id="seeded"]')]
+      .find(candidate => candidate.textContent?.includes('type=repeated-draw-work'))!;
+    expect(card.textContent).toContain('Repeated draw commands');
+    expect(card.textContent).toContain('Review candidate');
+    expect(card.textContent).toContain('2 repeated frames');
+    expect(card.textContent).toContain('Repeated raster operations: 5');
     expect(card.textContent).toContain('Canvas2D API self-time: 3.5 ms');
     expect(card.textContent).toContain('Comparison gaps: 3, 2');
-    expect(card.textContent).toContain('Unknown coverage: 1 of 3 active windows');
+    expect(card.textContent).toContain('Unknown coverage: 1 of 3 active frames');
     expect(card.textContent).not.toMatch(/wasted|pixel-identical|avoidable/i);
-    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
+    refreshOverlay();
+    card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="seeded"]')?.classList).toContain('locate');
-    card.click();
+    card.querySelector<HTMLButtonElement>('[data-action="inspect-current"]')!.click();
     refreshOverlay();
     expect(root.querySelector('.popover-owner')?.textContent).toBe('EffectCanvas');
   });
@@ -378,7 +647,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-repeated"]')!;
-    expect(card.textContent).toContain('Repeated commands');
+    expect(card.textContent).toContain('Repeated draw commands');
     card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="detached-repeated"]')).toBeNull();
