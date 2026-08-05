@@ -15,7 +15,10 @@
     "probe:backing-store": "node v04-06-backing-store-probe.mjs",
     "probe:lifecycle": "node v04-07-lifecycle-probe.mjs",
     "probe:associations": "node v04-08-associations-probe.mjs",
-    "probe:findings": "node v04-09-findings-probe.mjs"
+    "probe:findings": "node v04-09-findings-probe.mjs",
+    "lab:v0.4": "node lab-v04.mjs",
+    "lab:v0.4:check": "node lab-v04.mjs --check-evidence",
+    "lab:v0.4:test": "node --test lab-v04.test.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"
