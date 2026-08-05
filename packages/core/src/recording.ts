@@ -1,6 +1,7 @@
-import { copyReport, getCurrentWindowIndex, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
+import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
 import { drainAttributeRecords, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
+import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
 import type {
   CanvasMethodEvidence,
   CanvasScanOptions,
@@ -19,6 +20,8 @@ import type {
   BackingStoreMismatchFinding,
   RecordingState,
   RecordingStopReason,
+  RecordedBrowserEvidenceEntry,
+  RecordedEpisodeAssociation,
 } from './types';
 
 const MAX_DURATION_MS = 30000;
@@ -73,6 +76,10 @@ let unsubscribeLifecycleEvents: (() => void) | undefined;
 let recordingStartWindowIndex = 0;
 let minRepeatedRasterOps = 2;
 let recordingStartOffsets = new Map<string, { rasterOperationCount: number; canvasApiSelfTimeMs: number }>();
+let browserEntries: RecordedBrowserEvidenceEntry[] = [];
+let episodeAssociations: RecordedEpisodeAssociation[] = [];
+let browserFeatures = { eventTiming: false, longAnimationFrames: false };
+let browserDropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
 const listeners = new Set<(state: RecordingState) => void>();
 
 function now(): number {
@@ -80,8 +87,9 @@ function now(): number {
 }
 
 function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
-  return { ...copyReport(window), windowIndex: window.windowIndex, timestampMs: window.timestampMs, geometry: { ...window.geometry } };
+  return { ...copyReport(window), windowIndex: window.windowIndex, timestampMs: window.timestampMs, startedAtTimestampMs: window.startedAtTimestampMs, endedAtTimestampMs: window.endedAtTimestampMs, geometry: { ...window.geometry } };
 }
+function copyBrowserEntry(entry: RecordedBrowserEvidenceEntry): RecordedBrowserEvidenceEntry { return JSON.parse(JSON.stringify(entry)); }
 
 function copyResetEvent(event: RecordedResetEvent): RecordedResetEvent { return { ...event }; }
 function copyLifecycleEvent(event: RecordedCanvasLifecycleEvent): RecordedCanvasLifecycleEvent { return { ...event }; }
@@ -129,6 +137,8 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
     resetEvents: session.resetEvents.map(copyResetEvent),
     lifecycleEvents: session.lifecycleEvents.map(copyLifecycleEvent),
     episodes: session.episodes.map(episode => ({ ...episode, methodEvidence: copyEvidence(episode.methodEvidence), canvases: episode.canvases.map(canvas => ({ ...canvas, methodEvidence: copyEvidence(canvas.methodEvidence) })) })),
+    browserEntries: session.browserEntries.map(copyBrowserEntry),
+    episodeAssociations: session.episodeAssociations.map(association => ({ ...association })),
     findings: session.findings.map(finding => finding.type === 'heavy-canvas-work'
       ? { ...finding, topMethods: finding.topMethods.map(method => ({ ...method })), maximumWindow: { ...finding.maximumWindow, methodEvidence: copyEvidence(finding.maximumWindow.methodEvidence) }, claimBoundary: { ...finding.claimBoundary } }
       : finding.type === 'repeated-draw-work'
@@ -289,7 +299,7 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
     const canvases = [...reportsByCanvas].map(([canvasId, canvasReports]) => episodeCanvasSummary(canvasId, canvasReports, episodeResetEvents));
     const episodeId = `${sessionId}:episode:${index + 1}`;
     episodeMaximumWindows.set(episodeId, maximumWindows);
-    return { episodeId, firstWindowIndex: first.windowIndex, lastWindowIndex: last.windowIndex, startedAtTimestampMs: first.timestampMs, endedAtTimestampMs: last.timestampMs, activeWindowCount: new Set(reports.map(report => report.windowIndex)).size, rasterOperationCount, canvasApiSelfTimeMs: rounded(canvasApiSelfTimeMs), methodEvidence: roundedEvidence(methodEvidence), canvases, resetEventCount: episodeResetEvents.length };
+    return { episodeId, firstWindowIndex: first.windowIndex, lastWindowIndex: last.windowIndex, startedAtTimestampMs: Math.min(...reports.map(report => report.startedAtTimestampMs)), endedAtTimestampMs: Math.max(...reports.map(report => report.endedAtTimestampMs)), activeWindowCount: new Set(reports.map(report => report.windowIndex)).size, rasterOperationCount, canvasApiSelfTimeMs: rounded(canvasApiSelfTimeMs), methodEvidence: roundedEvidence(methodEvidence), canvases, resetEventCount: episodeResetEvents.length };
   });
   const findings: InvestigationFinding[] = [];
   for (const episode of episodes) for (const canvas of episode.canvases) if (canvas.canvasApiSelfTimeMs >= HEAVY_CANVAS_WORK_THRESHOLD_MS) {
@@ -349,10 +359,23 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
   return { episodes, findings };
 }
 
+function deriveAssociations(episodes: RecordedDrawEpisode[]): RecordedEpisodeAssociation[] {
+  const associations: RecordedEpisodeAssociation[] = [];
+  for (const entry of browserEntries) for (const episode of episodes) {
+    if (entry.startedAtTimestampMs > episode.endedAtTimestampMs || episode.startedAtTimestampMs > entry.endedAtTimestampMs) continue;
+    associations.push({ entryId: entry.entryId, entryKind: entry.kind, episodeId: episode.episodeId, startedAtTimestampMs: Math.max(entry.startedAtTimestampMs, episode.startedAtTimestampMs), endedAtTimestampMs: Math.min(entry.endedAtTimestampMs, episode.endedAtTimestampMs), evidenceLevel: 'associated' });
+  }
+  return associations;
+}
+
 function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undefined {
   if (state !== 'recording') return undefined;
   drainAttributeRecords();
   const endedMonotonic = now();
+  const browser = stopBrowserEvidence(endedMonotonic);
+  browserEntries = browser.entries;
+  browserFeatures = browser.features;
+  browserDropped = browser.dropped;
   const pendingWindowIndex = getCurrentWindowIndex() + 1;
   for (const record of records) {
     const pending = takeResetEvents(record);
@@ -372,6 +395,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   }
   setMethodEvidenceCollectionEnabled(false);
   setResetEventCollectionEnabled(false);
+  setRecordingWindowRangeTracking(false);
   recordingStartOffsets.clear();
   if (timer) clearTimeout(timer);
   timer = undefined;
@@ -382,13 +406,14 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   unsubscribeLifecycleEvents?.();
   unsubscribeLifecycleEvents = undefined;
   const derived = episodesAndFindings();
+  episodeAssociations = deriveAssociations(derived.episodes);
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
-    stopReason, canvasScanVersion: '0.3.1', browserFeatures: { monotonicTime: typeof performance !== 'undefined' },
-    canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, findings: derived.findings,
-    collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000 },
-    droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents },
+    stopReason, canvasScanVersion: '0.3.1', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
+    collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
+    droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
   state = 'complete';
   notify();
@@ -416,8 +441,14 @@ export function startRecording(): void {
   droppedResetEvents = 0;
   droppedLifecycleEvents = 0;
   state = 'recording';
+  setRecordingWindowRangeTracking(true, startedMonotonic);
+  browserEntries = [];
+  episodeAssociations = [];
+  browserFeatures = startBrowserEvidence(startedMonotonic);
+  browserDropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
   unsubscribe = subscribeToReports((report, canvas, metadata) => {
     if (!metadata) return;
+    if (metadata.windowIndex <= recordingStartWindowIndex) return;
     const offset = recordingStartOffsets.get(report.canvasId);
     recordingStartOffsets.delete(report.canvasId);
     const copied = copyReport(report);
@@ -425,7 +456,7 @@ export function startRecording(): void {
       copied.rasterOperationCount = Math.max(0, copied.rasterOperationCount - offset.rasterOperationCount);
       copied.canvasApiSelfTimeMs = rounded(Math.max(0, copied.canvasApiSelfTimeMs - offset.canvasApiSelfTimeMs));
     }
-    capture({ ...copied, ...metadata, geometry: collectCanvasGeometry(canvas) });
+    capture({ ...copied, ...metadata, startedAtTimestampMs: metadata.startedAtTimestampMs ?? metadata.timestampMs, endedAtTimestampMs: metadata.endedAtTimestampMs ?? metadata.timestampMs, geometry: collectCanvasGeometry(canvas) });
   });
   unsubscribeResetEvents = subscribeToResetEvents(event => {
     if (state !== 'recording' || event.windowIndex <= recordingStartWindowIndex) return;
@@ -448,6 +479,7 @@ export function configureRecording(options: CanvasScanOptions): void {
 }
 
 export function stopRecording(): InvestigationSessionV1 | undefined { return finish('manual'); }
+export function mark(label: string): void { markBrowserEvidence(label); }
 export function getLastSession(): InvestigationSessionV1 | undefined { return lastSession ? copySession(lastSession) : undefined; }
 export function getRecordingState(): RecordingState { return state; }
 export function subscribeToRecordingState(listener: (next: RecordingState) => void): () => void {
@@ -456,8 +488,10 @@ export function subscribeToRecordingState(listener: (next: RecordingState) => vo
 }
 
 export function resetRecordingForTests(): void {
+  resetBrowserEvidence();
   setMethodEvidenceCollectionEnabled(false);
   setResetEventCollectionEnabled(false);
+  setRecordingWindowRangeTracking(false);
   if (timer) clearTimeout(timer);
   timer = undefined;
   unsubscribe?.();
@@ -471,6 +505,10 @@ export function resetRecordingForTests(): void {
   windows = [];
   resetEvents = [];
   lifecycleEvents = [];
+  browserEntries = [];
+  episodeAssociations = [];
+  browserFeatures = { eventTiming: false, longAnimationFrames: false };
+  browserDropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
   canvasIds = [];
   droppedWindows = 0;
   droppedCanvases = 0;

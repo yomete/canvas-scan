@@ -47,7 +47,70 @@ export type RecordingState = 'idle' | 'recording' | 'complete';
 export interface RecordedCanvasWindow extends DrawBatchReport {
   windowIndex: number;
   timestampMs: number;
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
   geometry: RecordedCanvasGeometry;
+}
+
+export interface RecordedDocumentEvent {
+  entryId: string;
+  kind: 'document-event';
+  eventType: string;
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  targetTagName: string;
+}
+
+export interface RecordedEventTiming {
+  entryId: string;
+  kind: 'event-timing';
+  eventType: string;
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  targetTagName: string;
+  durationMs: number;
+  interactionId: number | null;
+}
+
+export interface RecordedUserMark {
+  entryId: string;
+  kind: 'user-mark';
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  label: string;
+}
+
+export interface RecordedLongAnimationFrameScript {
+  invoker: string | null;
+  invokerType: string | null;
+  sourceURL: string | null;
+  sourceFunctionName: string | null;
+  executionStartTimestampMs: number | null;
+  durationMs: number | null;
+  forcedStyleAndLayoutDurationMs: number | null;
+  pauseDurationMs: number | null;
+}
+
+export interface RecordedLongAnimationFrame {
+  entryId: string;
+  kind: 'long-animation-frame';
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  durationMs: number;
+  blockingDurationMs: number;
+  scripts: RecordedLongAnimationFrameScript[];
+  droppedScriptAttributionCount: number;
+}
+
+export type RecordedBrowserEvidenceEntry = RecordedDocumentEvent | RecordedEventTiming | RecordedUserMark | RecordedLongAnimationFrame;
+
+export interface RecordedEpisodeAssociation {
+  entryId: string;
+  entryKind: RecordedBrowserEvidenceEntry['kind'];
+  episodeId: string;
+  startedAtTimestampMs: number;
+  endedAtTimestampMs: number;
+  evidenceLevel: 'associated';
 }
 
 export type CanvasGeometryUnavailableReason = 'disconnected' | 'hidden' | 'zero-size' | 'unavailable';
@@ -209,12 +272,14 @@ export interface InvestigationSessionV1 {
   durationMs: number;
   stopReason: RecordingStopReason;
   canvasScanVersion: string;
-  browserFeatures: { monotonicTime: boolean };
+  browserFeatures: { monotonicTime: boolean; eventTiming: boolean; longAnimationFrames: boolean };
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
   resetEvents: RecordedResetEvent[];
   lifecycleEvents: RecordedCanvasLifecycleEvent[];
   episodes: RecordedDrawEpisode[];
+  browserEntries: RecordedBrowserEvidenceEntry[];
+  episodeAssociations: RecordedEpisodeAssociation[];
   findings: InvestigationFinding[];
   collectionLimits: {
     maxDurationMs: 30000;
@@ -222,6 +287,8 @@ export interface InvestigationSessionV1 {
     maxCanvasLifetimes: 128;
     maxResetEvents: 10000;
     maxLifecycleEvents: 10000;
+    maxBrowserEvidenceEntries: 2000;
+    maxLongFrameScriptAttributions: 20;
   };
-  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number; lifecycleEvents: number };
+  droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number; lifecycleEvents: number; documentEvents: number; eventTiming: number; userMarks: number; longAnimationFrames: number };
 }

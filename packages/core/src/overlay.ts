@@ -934,6 +934,23 @@ function renderFlyout(): void {
     note.textContent = EXPLAINER;
   }
   flyout.append(note);
+  flyout.querySelectorAll('.episode-evidence').forEach(line => line.remove());
+  const sessionEvidence = getLastSession();
+  if (sessionEvidence) {
+    if (!sessionEvidence.browserFeatures.eventTiming || !sessionEvidence.browserFeatures.longAnimationFrames) {
+      const unsupported = document.createElement('div');
+      unsupported.className = 'episode-evidence';
+      unsupported.textContent = [!sessionEvidence.browserFeatures.eventTiming ? 'Event Timing unsupported' : '', !sessionEvidence.browserFeatures.longAnimationFrames ? 'Long Animation Frames unsupported' : ''].filter(Boolean).join(' · ');
+      flyout.append(unsupported);
+    }
+    for (const association of sessionEvidence.episodeAssociations) {
+      const entry = sessionEvidence.browserEntries.find(item => item.entryId === association.entryId);
+      const line = document.createElement('div');
+      line.className = 'episode-evidence';
+      line.textContent = `${entry?.kind ?? association.entryKind}${entry?.kind === 'user-mark' ? ` ${entry.label}` : ''} associated with ${association.episodeId} · overlapped ${association.startedAtTimestampMs.toFixed(1)}–${association.endedAtTimestampMs.toFixed(1)} ms`;
+      flyout.append(line);
+    }
+  }
   flyout.querySelectorAll('.repeated-finding').forEach(card => card.remove());
   const repeatedFindings = getLastSession()?.findings.filter((finding): finding is RepeatedDrawWorkFinding => finding.type === 'repeated-draw-work') ?? [];
   for (const finding of repeatedFindings) appendRepeatedFinding(finding);

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { emitLifecycleEvent, emitReport, emitResetEvent, getCurrentWindowIndex } from '../src/frame-loop';
-import { getLastSession, getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { emitLifecycleEvent, emitReport, emitResetEvent, getCurrentWindowIndex, latestReports, startFrameLoop, subscribeToReports } from '../src/frame-loop';
+import { getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 import { getResetEvents, records, type CanvasRecord } from '../src/wrap-context';
 
@@ -15,7 +15,16 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
   unknownReason: status === 'unknown' ? 'first-window' : null, sampled: false,
   comparisonGap: status === 'unknown' ? null : 1, methodEvidence: {}, ...overrides,
 });
-const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: index, timestampMs: index * 100 });
+const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: getCurrentWindowIndex() + index, timestampMs: index * 100 });
+const makeLoopRecord = (): CanvasRecord => ({
+  canvas: {}, contentDirty: false, contentSig: { hash: 0x811c9dc5, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+  id: 'recording-range', serial: 1, sig: { hash: 0x1234, unknown: false, opCount: 3, unknownReason: null }, rasterOps: 2, selfTimeMs: 0.5,
+  activeInWindow: true, prev: null, attribution: { nearestReactOwner: 'Fake', attributionKind: 'jsx-owner' }, lastStatus: null, props: new Map(),
+  matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0x811c9dc5, pathUnknown: false, clipHash: 0x811c9dc5,
+  clipUnknown: false, resetPendingReason: null, modelUntrusted: false, resetVersion: 0, continuityLost: false, sourceResetVersions: new Map(),
+  attributeObservationUnavailable: false, contextActivityInWindow: false, exactResetDepth: 0, inactiveBoundaries: 0, retired: false,
+  lastConnected: false, activeLifecycleRecorded: false, pendingLifecycleEvents: [], stateStack: [],
+});
 const publishLifecycle = (
   canvasId: string,
   timestampMs: number,
@@ -29,6 +38,16 @@ const publishLifecycle = (
   activeRegistrySize: 1,
   evidenceLevel: 'measured',
 });
+function installPerformanceEntries(entriesByType: Record<string, Array<Record<string, unknown>>>): void {
+  class FakePerformanceObserver {
+    static supportedEntryTypes = ['event', 'long-animation-frame'];
+    type = '';
+    observe(options: { type: string }): void { this.type = options.type; }
+    takeRecords(): Array<Record<string, unknown>> { return entriesByType[this.type] ?? []; }
+    disconnect(): void {}
+  }
+  vi.stubGlobal('PerformanceObserver', FakePerformanceObserver);
+}
 
 afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -75,6 +94,76 @@ describe('recording', () => {
     expect(second.windows.map(window => window.canvasId)).toEqual(['two']);
   });
 
+  it('keeps browser evidence in one session, deep-copies nested scripts, and produces JSON-only output', () => {
+    installPerformanceEntries({ 'long-animation-frame': [{ startTime: 5, duration: 10, blockingDuration: 3, scripts: [{ invoker: 'handler', sourceURL: 'https://x.test/app.js?q=private', duration: 7 }] }] });
+    let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    mark('outside'); startRecording(); clock = 10; mark(' inside '); clock = 20; const first = stopRecording()!;
+    const firstLoaf = first.browserEntries.find(entry => entry.kind === 'long-animation-frame');
+    if (!firstLoaf || firstLoaf.kind !== 'long-animation-frame') throw new Error('missing long frame');
+    firstLoaf.scripts[0].invoker = 'changed';
+    const storedLoaf = getLastSession()!.browserEntries.find(entry => entry.kind === 'long-animation-frame');
+    if (!storedLoaf || storedLoaf.kind !== 'long-animation-frame') throw new Error('missing stored long frame');
+    expect(storedLoaf.scripts[0].invoker).toBe('handler');
+    startRecording(); const second = stopRecording()!;
+    expect(first.browserEntries.find(entry => entry.kind === 'user-mark')).toMatchObject({ kind: 'user-mark', label: 'inside' });
+    expect(second.browserEntries).toEqual([]);
+    expect(getLastSession()!.browserEntries).toEqual([]);
+    expect(JSON.parse(JSON.stringify(first))).toEqual(first);
+  });
+
+  it('associates one inclusive entry with every overlap without changing it or a nearby entry', () => {
+    installPerformanceEntries({ event: [
+      { name: 'pointerdown', startTime: 20, duration: 10, interactionId: 77, target: { tagName: 'BUTTON' } },
+      { name: 'wheel', startTime: 20.1, duration: 9.8, interactionId: 0, target: { tagName: 'DIV' } },
+      { name: 'keyup', startTime: -20, duration: 5, interactionId: 0 },
+    ] });
+    let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    startRecording(); const firstWindow = getCurrentWindowIndex() + 1;
+    emitReport(makeReport('episode-a'), {}, { windowIndex: firstWindow, timestampMs: 20, startedAtTimestampMs: 10, endedAtTimestampMs: 20 });
+    emitReport(makeReport('episode-b'), {}, { windowIndex: firstWindow + 3, timestampMs: 40, startedAtTimestampMs: 30, endedAtTimestampMs: 40 });
+    clock = 50;
+    const session = stopRecording()!;
+    const exact = session.browserEntries.find(entry => entry.kind === 'event-timing' && entry.eventType === 'pointerdown');
+    const nearby = session.browserEntries.find(entry => entry.kind === 'event-timing' && entry.eventType === 'wheel');
+    expect(exact).toMatchObject({ startedAtTimestampMs: 20, endedAtTimestampMs: 30, durationMs: 10, interactionId: 77, targetTagName: 'button' });
+    expect(nearby?.startedAtTimestampMs).toBeCloseTo(20.1); expect(nearby?.endedAtTimestampMs).toBeCloseTo(29.9);
+    expect(session.browserEntries.some(entry => entry.kind === 'event-timing' && entry.eventType === 'keyup')).toBe(false);
+    expect(session.episodeAssociations.filter(item => item.entryId === exact?.entryId)).toMatchObject([
+      { episodeId: session.episodes[0].episodeId, startedAtTimestampMs: 20, endedAtTimestampMs: 20, evidenceLevel: 'associated' },
+      { episodeId: session.episodes[1].episodeId, startedAtTimestampMs: 30, endedAtTimestampMs: 30, evidenceLevel: 'associated' },
+    ]);
+    expect(session.episodeAssociations.some(item => item.entryId === nearby?.entryId)).toBe(false);
+    expect(exact).toMatchObject({ startedAtTimestampMs: 20, endedAtTimestampMs: 30 });
+  });
+
+  it('clears frame-loop range tracking for stops, resets, and later sessions', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; } });
+    let clock = 1; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const record = makeLoopRecord(); records.add(record);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      startRecording(); startFrameLoop({}); callbacks.shift()!(10);
+      expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 1, endedAtTimestampMs: 10 });
+      record.activeInWindow = true; callbacks.shift()!(20);
+      clock = 30; startRecording(); record.activeInWindow = true; callbacks.shift()!(40);
+      expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 30, endedAtTimestampMs: 40 });
+      clock = 50; startRecording(); resetRecordingForTests(); record.activeInWindow = true; callbacks.shift()!(60);
+      clock = 70; startRecording(); record.activeInWindow = true; callbacks.shift()!(80);
+      expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 70, endedAtTimestampMs: 80 });
+      vi.useFakeTimers(); vi.spyOn(performance, 'now').mockImplementation(() => clock);
+      clock = 90; startRecording(); vi.advanceTimersByTime(30000);
+      expect(getLastSession()?.stopReason).toBe('max-duration');
+      record.activeInWindow = true; callbacks.shift()!(100);
+      clock = 110; startRecording(); record.activeInWindow = true; callbacks.shift()!(120);
+      expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 110, endedAtTimestampMs: 120 });
+    } finally {
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+    }
+  });
+
   it('reads geometry only for reports during recording and deep-copies it', () => {
     vi.stubGlobal('getComputedStyle', () => ({ display: 'block', visibility: 'visible' })); vi.stubGlobal('devicePixelRatio', 2);
     const rect = vi.fn(() => ({ width: 240, height: 120 }));
@@ -82,13 +171,43 @@ describe('recording', () => {
     publish(makeReport('geometry'), 1);
     expect(rect).not.toHaveBeenCalled();
     startRecording();
-    emitReport(makeReport('geometry'), canvas, { windowIndex: 3, timestampMs: 300 });
+    emitReport(makeReport('geometry'), canvas, { windowIndex: getCurrentWindowIndex() + 1, timestampMs: 300 });
     const stopped = stopRecording()!;
     expect(rect).toHaveBeenCalledTimes(1);
     stopped.windows[0].geometry.backingWidth = 1;
     expect(getLastSession()!.windows[0].geometry.backingWidth).toBe(480);
-    emitReport(makeReport('geometry'), canvas, { windowIndex: 4, timestampMs: 400 });
+    emitReport(makeReport('geometry'), canvas, { windowIndex: getCurrentWindowIndex() + 2, timestampMs: 400 });
     expect(rect).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a report that starts a restarted recording', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; } });
+    const getStyle = vi.fn(() => ({ display: 'block', visibility: 'visible' }));
+    vi.stubGlobal('getComputedStyle', getStyle); vi.stubGlobal('devicePixelRatio', 2);
+    const canvas = { isConnected: true, width: 200, height: 100, getBoundingClientRect: () => ({ width: 100, height: 50 }) };
+    const record = makeLoopRecord(); record.id = 'restart'; record.canvas = canvas; record.activeInWindow = false;
+    let first: ReturnType<typeof stopRecording>; let runs = 0; let unsubscribeRestart = () => {};
+    records.add(record);
+    try {
+      startFrameLoop({}); callbacks.shift()!(1);
+      startRecording();
+      unsubscribeRestart = subscribeToReports(() => {
+        runs++; unsubscribeRestart(); first = stopRecording(); startRecording();
+      });
+      callbacks.shift()!(2);
+      record.activeInWindow = true; record.rasterOps = 5; record.selfTimeMs = 1.5;
+      emitReport(makeReport('restart', 'same', { rasterOperationCount: 5, canvasApiSelfTimeMs: 1.5 }), canvas, { windowIndex: getCurrentWindowIndex(), timestampMs: 2 });
+      expect(runs).toBe(1); expect(first?.windows).toHaveLength(1); expect(getStyle).toHaveBeenCalledTimes(1);
+      record.rasterOps = 8; record.selfTimeMs = 2.5;
+      callbacks.shift()!(3);
+      const second = stopRecording()!;
+      expect(second.windows).toHaveLength(1);
+      expect(second.windows[0]).toMatchObject({ canvasId: 'restart', windowIndex: getCurrentWindowIndex(), rasterOperationCount: 3, canvasApiSelfTimeMs: 1 });
+      expect(getStyle).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribeRestart(); records.delete(record); latestReports.delete(record.id);
+    }
   });
 
   it('keeps reset-only events and deep-copies them from stopped sessions', () => {
@@ -180,9 +299,9 @@ describe('recording', () => {
   });
 
   it('keeps FIFO published metadata and evicts whole reports at 10000', () => {
-    startRecording(); for (let index = 1; index <= 10001; index++) publish(makeReport('one'), index);
+    const startWindowIndex = getCurrentWindowIndex(); startRecording(); for (let index = 1; index <= 10001; index++) publish(makeReport('one'), index);
     const session = stopRecording()!;
-    expect(session.windows).toHaveLength(10000); expect(session.windows[0].windowIndex).toBe(2);
+    expect(session.windows).toHaveLength(10000); expect(session.windows[0].windowIndex).toBe(startWindowIndex + 2);
     expect(session.windows.at(-1)?.timestampMs).toBe(1000100);
     expect(session.droppedEntryCounts.canvasWindowReports).toBe(1);
   });
@@ -279,7 +398,7 @@ describe('recording', () => {
   });
 
   it('evicts whole canvas lifetimes and treats re-entry as new', () => {
-    startRecording(); for (let index = 0; index < 129; index++) publish(makeReport(`canvas-${index}`), index);
+    startRecording(); for (let index = 1; index <= 129; index++) publish(makeReport(`canvas-${index}`), index);
     publish(makeReport('canvas-0'), 130); const session = stopRecording()!;
     expect(session.canvases).toHaveLength(128); expect(session.canvases[0].canvasId).toBe('canvas-0');
     expect(session.windows.every(window => session.canvases.some(canvas => canvas.canvasId === window.canvasId))).toBe(true);

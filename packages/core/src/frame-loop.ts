@@ -30,6 +30,8 @@ const sourceLocations = new Map<string, SourceLocation | null>();
 export interface PublishedWindowMetadata {
   windowIndex: number;
   timestampMs: number;
+  startedAtTimestampMs?: number;
+  endedAtTimestampMs?: number;
 }
 
 export type ReportListener = (
@@ -45,6 +47,14 @@ const lifecycleEventListeners = new Set<(event: RecordedCanvasLifecycleEvent) =>
 export const INACTIVE_BOUNDARIES_BEFORE_RETIREMENT = 120;
 
 let windowIndex = 0;
+let recordingWindowStartTimestampMs: number | undefined;
+
+export function setRecordingWindowRangeTracking(
+  enabled: boolean,
+  startedAtTimestampMs?: number,
+): void {
+  recordingWindowStartTimestampMs = enabled ? startedAtTimestampMs : undefined;
+}
 
 export function getCurrentWindowIndex(): number {
   return windowIndex;
@@ -282,6 +292,8 @@ export function startFrameLoop(options: CanvasScanOptions): void {
   setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
   const tick = (timestampMs: number) => {
+    const recordedStart = recordingWindowStartTimestampMs;
+    if (recordedStart !== undefined) recordingWindowStartTimestampMs = timestampMs;
     windowIndex++;
     drainAttributeRecords();
 
@@ -345,7 +357,14 @@ export function startFrameLoop(options: CanvasScanOptions): void {
         }
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
-      emitReport(copyReport(processed.report), record.canvas, { windowIndex, timestampMs });
+      emitReport(copyReport(processed.report), record.canvas, recordedStart === undefined
+        ? { windowIndex, timestampMs }
+        : {
+            windowIndex,
+            timestampMs,
+            startedAtTimestampMs: recordedStart,
+            endedAtTimestampMs: timestampMs,
+          });
     }
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 

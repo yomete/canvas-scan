@@ -840,6 +840,48 @@ describe('published metadata', () => {
     } finally { unsubscribe(); records.delete(record); latestReports.delete(record.id); debug.mockRestore(); vi.unstubAllGlobals(); }
   });
 
+  it('uses the frame loop as the only recording clock and preserves a restarted boundary', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; } });
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const record = makeRecord({ id: 'recording-clock' });
+    const metadata: Array<{ windowIndex: number; timestampMs: number; startedAtTimestampMs?: number; endedAtTimestampMs?: number }> = [];
+    const restart = vi.fn(() => {
+      stopRecording();
+      clock = 30;
+      startRecording();
+    });
+    const unsubscribe = subscribeToReports((_, __, value) => {
+      if (value?.startedAtTimestampMs !== undefined) metadata.push(value);
+      if (metadata.length === 2) restart();
+    });
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    records.add(record);
+    try {
+      startRecording();
+      expect(callbacks).toHaveLength(0);
+      startFrameLoop({});
+      expect(callbacks).toHaveLength(1);
+      callbacks.shift()!(10);
+      record.activeInWindow = true;
+      callbacks.shift()!(20);
+      record.activeInWindow = true;
+      callbacks.shift()!(40);
+      expect(metadata[0]).toMatchObject({ startedAtTimestampMs: 0, endedAtTimestampMs: 10, timestampMs: 10 });
+      expect(metadata[1]).toMatchObject({ startedAtTimestampMs: 10, endedAtTimestampMs: 20, timestampMs: 20 });
+      expect(restart).toHaveBeenCalledOnce();
+      expect(metadata[2]).toMatchObject({ startedAtTimestampMs: 30, endedAtTimestampMs: 40, timestampMs: 40 });
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      latestReports.delete(record.id);
+      resetRecordingForTests();
+      debug.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('uses the animation timestamp for reset evidence', () => {
     const callbacks: FrameRequestCallback[] = [];
     vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => callbacks.push(callback) });
@@ -880,6 +922,7 @@ describe('published metadata', () => {
     try {
       startFrameLoop({});
       callbacks.shift()!(10);
+      callbacks.shift()!(10);
       expect(stopRecording()).toBeUndefined();
       expect(getLastSession()?.resetEvents).toMatchObject([{ canvasId: 'stop-order', timestampMs: 10 }]);
     } finally {
@@ -905,6 +948,7 @@ describe('published metadata', () => {
     startRecording();
     try {
       startFrameLoop({});
+      callbacks.shift()!(10);
       callbacks.shift()!(10);
       expect(stopRecording()).toBeUndefined();
       expect(getLastSession()?.lifecycleEvents).toMatchObject([

@@ -10,7 +10,7 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
 import { emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
-import { getRecordingState, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
 function makeReport(
@@ -248,6 +248,20 @@ describe('overlay toolbar', () => {
 });
 
 describe('overlay flyout', () => {
+  it('shows associated evidence without causal language and shows unsupported browser features', () => {
+    let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    mountOverlay(); const canvas = makeCanvas(); startRecording(); clock = 20; mark(' shared mark '); clock = 35; mark(' hidden mark ');
+    emitReport(makeReport({ canvasId: 'association-a' }), canvas, { windowIndex: 1, timestampMs: 20, startedAtTimestampMs: 10, endedAtTimestampMs: 20 });
+    emitReport(makeReport({ canvasId: 'association-b' }), canvas, { windowIndex: 4, timestampMs: 30, startedAtTimestampMs: 20, endedAtTimestampMs: 30 });
+    clock = 40;
+    stopRecording(); refreshOverlay(); const root = getShadowRoot(); root.querySelector<HTMLButtonElement>('.counts')!.click(); refreshOverlay();
+    const text = root.querySelector('.flyout')!.textContent!;
+    expect(text.match(/user-mark shared mark associated with/g)).toHaveLength(2); expect(text).toContain('overlapped');
+    expect(text).not.toContain('hidden mark');
+    expect(text).toContain('Event Timing unsupported'); expect(text).toContain('Long Animation Frames unsupported');
+    expect(text).not.toMatch(/caused|triggered|responsible/i);
+  });
+
   it('shows reset-churn evidence and opens the connected canvas', () => {
     mountOverlay();
     const canvas = makeCanvas();

@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Episode associations probe</title>
+<link rel="icon" href="data:," />
+<script>window.__CANVAS_SCAN_OPTS = { overlay: false };</script>
+<script src="/canvas-scan.iife.js"></script>
+<button id="burst">Draw burst</button><canvas id="probe" width="40" height="40"></canvas>
+<script>
+  const canvas = document.querySelector('#probe'); const context = canvas.getContext('2d');
+  document.querySelector('#burst').addEventListener('pointerdown', () => {
+    const end = performance.now() + 85;
+    while (performance.now() < end) context.fillRect((performance.now() * 3) % 40, 0, 1, 1);
+  });
+  window.__V04_08__ = { canvas: 'probe' };
+</script>

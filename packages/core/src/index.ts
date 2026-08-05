@@ -7,7 +7,7 @@ import {
   startFrameLoop,
 } from './frame-loop';
 import { mountOverlay } from './overlay';
-import { configureRecording, getLastSession, startRecording, stopRecording } from './recording';
+import { configureRecording, getLastSession, mark, startRecording, stopRecording } from './recording';
 import type {
   CanvasScanOptions,
   DrawBatchReport,
@@ -40,6 +40,7 @@ export function start(options: CanvasScanOptions = {}): void {
     getReports,
     startRecording,
     stopRecording,
+    mark,
     getLastSession,
   };
 }
@@ -71,6 +72,13 @@ export type {
   RecordedRepeatedWindow,
   RecordingState,
   RecordingStopReason,
+  RecordedDocumentEvent,
+  RecordedEventTiming,
+  RecordedUserMark,
+  RecordedLongAnimationFrameScript,
+  RecordedLongAnimationFrame,
+  RecordedBrowserEvidenceEntry,
+  RecordedEpisodeAssociation,
 } from './types';
 
-export { getLastSession, startRecording, stopRecording } from './recording';
+export { getLastSession, mark, startRecording, stopRecording } from './recording';

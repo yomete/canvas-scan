@@ -22,6 +22,7 @@ const FINDING_FORBIDDEN = [
   /\bavoidable work\b/i,
 ];
 const FINDING_DISCLAIMER = /does not establish/i;
+const ASSOCIATION_FORBIDDEN = /\b(caused|causes|triggered|responsible for)\b/i;
 
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -56,6 +57,14 @@ describe('claim discipline', () => {
     expect(overlayOffendingLines(source)).toEqual([]);
     expect(source).toContain('repeated commands');
     expect(source).toContain('review candidate');
+  });
+
+  it('keeps browser evidence and association copy non-causal', () => {
+    for (const file of ['src/browser-evidence.ts', 'src/recording.ts', 'src/overlay.ts']) {
+      const source = readFileSync(join(packageDir, file), 'utf8');
+      expect(source.split('\n').filter(line => ASSOCIATION_FORBIDDEN.test(line))).toEqual([]);
+    }
+    expect(readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8')).toMatch(/associated with|overlapped/);
   });
 
   it('keeps forbidden claims out of the package description', () => {
