@@ -410,7 +410,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
-    stopReason, canvasScanVersion: '0.3.1', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    stopReason, canvasScanVersion: '0.4.0', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },

@@ -35,11 +35,14 @@ const run = async mode => {
       const root = document.querySelector('[data-canvas-scan]')?.shadowRoot;
       const element = [...(root?.querySelectorAll('.repeated-finding') ?? [])].find(card => card.dataset.canvasId === id);
       if (!(element instanceof HTMLElement)) return null;
-      element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      element.click();
       return element.textContent ?? '';
     }, finding.canvasId) : null;
-    if (finding) await page.waitForTimeout(300);
+    if (finding) {
+      await page.evaluate(id => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="locate-current"]')].find(element => element.dataset.canvasId === id)?.click(), finding.canvasId);
+      await page.waitForFunction(id => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector(`.outline[data-canvas-id="${id}"]`)?.classList.contains('locate'), finding.canvasId);
+      await page.evaluate(id => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="inspect-current"]')].find(element => element.dataset.canvasId === id)?.click(), finding.canvasId);
+      await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.popover-owner')?.textContent);
+    }
     const actions = finding ? await page.evaluate(id => {
       const root = document.querySelector('[data-canvas-scan]')?.shadowRoot;
       return {
@@ -66,7 +69,7 @@ const checks = {
   idleHasNoFinding: bad?.facts?.idleTracked === true && !idleWindow && !idleFinding,
   fixedNoFinding: !fixed?.session?.findings.some(item => item.type === 'backing-store-mismatch' && item.canvasId.startsWith('seeded-canvas#')) && fixedWindow?.geometry?.backingWidth === 480 && fixedWindow?.geometry?.backingHeight === 240 && fixedWindow?.geometry?.expectedBackingWidth === 480 && fixedWindow?.geometry?.expectedBackingHeight === 240 && fixedWindow?.geometry?.expectedPixelArea === 115200 && fixedWindow?.geometry?.actualToExpectedAreaRatio === 1,
   plainJson: bad?.facts?.plainJson === true && fixed?.facts?.plainJson === true,
-  safeCard: Boolean(bad?.cardText.includes('candidate') && bad?.cardText.includes(`${bad?.finding?.affectedWindowCount} affected windows`) && bad?.cardText.includes('Actual 960×480') && bad?.cardText.includes('expected 480×240') && bad?.cardText.includes('area ratio 4') && bad?.cardText.includes('Raster operations') && bad?.cardText.includes('Canvas2D API self-time') && bad?.cardText.includes('GPU cost') && bad?.cardText.includes('Check the canvas sizing policy and the required image quality.')),
+  safeCard: Boolean(bad?.cardText.includes('Review candidate') && bad?.cardText.includes(`${bad?.finding?.affectedWindowCount} affected frames`) && bad?.cardText.includes('Actual 960×480') && bad?.cardText.includes('expected 480×240') && bad?.cardText.includes('area ratio 4') && bad?.cardText.includes('Raster operations') && bad?.cardText.includes('Canvas2D API self-time') && bad?.cardText.includes('GPU cost') && bad?.cardText.includes('Check the canvas sizing policy and the required image quality.')),
   actionsWork: bad?.locateWorks === true && bad?.inspectWorks === true,
   noWarningsOrPageErrors: warnings.length === 0 && consoleErrors.length === 0 && pageErrors.length === 0, browserVersionCaptured: Boolean(browserVersion), bundleHashCaptured: Boolean(bundleHash),
 };

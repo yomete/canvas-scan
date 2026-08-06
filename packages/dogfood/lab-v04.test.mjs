@@ -172,7 +172,7 @@ function negativeArtifactData(scenario) {
 test('evidence payload validates run IDs, order, pass state, freshness, and screenshot dimensions', () => {
   const now = Date.now(); const timestamp = new Date(now).toISOString();
   const completeRows = expectedMatrixRows().map(item => ({ ...item, expectations: item.expectations.map(expectation => ({ ...expectation, actual: expectation.expected, pass: true, unsupported: false })), pass: true, ...(item.mode === 'negative' ? negativeArtifactData(item.scenario) : {}) }));
-  const primary = buildLabResult({ runId: 'run-1', startedAt: timestamp, endedAt: timestamp, scenarios: completeRows, browser: { name: 'Chrome', version: 'Chrome 140', channel: 'chrome', headless: true }, product: { name: 'canvas-scan', version: '0.3.1', bundleSha256: 'a'.repeat(64) } });
+  const primary = buildLabResult({ runId: 'run-1', startedAt: timestamp, endedAt: timestamp, scenarios: completeRows, browser: { name: 'Chrome', version: 'Chrome 140', channel: 'chrome', headless: true }, product: { name: 'canvas-scan', version: '0.4.0', bundleSha256: 'a'.repeat(64) } });
   const matrix = buildMatrixArtifact('run-1', completeRows); const negatives = buildNearestNegativeArtifact('run-1', completeRows);
   const summaryText = [`runId=run-1`, ...completeRows.map(item => `${item.scenario}:${item.variant}:${item.mode}: PASS`), ...normalPaths].join('\n');
   const input = { primary, matrix, negatives, summary: summaryText, continuousPng: png(), burstPng: png(), now };

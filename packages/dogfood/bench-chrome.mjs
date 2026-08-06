@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -254,6 +254,7 @@ if (failures.length === 0) {
 }
 const pass = failures.length === 0;
 const result = {
+  schemaVersion: 1,
   when: when.toISOString(),
   selfContained,
   baseUrl,
@@ -268,17 +269,20 @@ const result = {
     cores: os.cpus().length,
   },
   thresholds,
+  harnessSha256: await hashFile(fileURLToPath(import.meta.url)),
   failures,
   raw: blocks,
   perBlock,
   gates: { ...gateValues, pass },
 };
 
-const resultsDir = path.join(scriptDir, 'results');
-await mkdir(resultsDir, { recursive: true });
 const stamp = when.toISOString().replace(/[:.]/g, '-');
+const artifactPath = path.join(
+  '/private/tmp',
+  `sidproj-56-bench-${stream}-${stamp}.json`,
+);
 await writeFile(
-  path.join(resultsDir, `bench-chrome-${stamp}.json`),
+  artifactPath,
   `${JSON.stringify(result, null, 2)}\n`,
 );
 
@@ -300,5 +304,6 @@ if (perBlock.length > 0) {
 console.log(
   pass ? 'RELEASE GATE: PASS' : `RELEASE GATE: FAIL (reason '${failures.join('; ')}')`,
 );
+console.log(`BENCH_ARTIFACT: ${artifactPath}`);
 
 process.exitCode = pass ? 0 : 1;

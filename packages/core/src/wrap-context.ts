@@ -208,6 +208,10 @@ export function setMethodEvidenceCollectionEnabled(enabled: boolean): void {
   methodEvidenceByRecord = enabled ? new Map() : null;
 }
 
+export function isMethodEvidenceCollectionEnabled(): boolean {
+  return methodEvidenceByRecord !== null;
+}
+
 export function setResetEventCollectionEnabled(enabled: boolean): void {
   resetEventsByRecord = enabled ? new Map() : null;
 }

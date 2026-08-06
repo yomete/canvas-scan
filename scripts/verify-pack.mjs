@@ -1,10 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertLabBoundary,
   assertManifestEntries,
+  assertPublicContract,
   assertPackedVersion,
 } from './pack-manifest.mjs';
 
@@ -17,10 +20,17 @@ const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), 'canvas-scan-verify-pack-'),
 );
 const summaries = [];
+let packDetails = {};
+const summaryPath = '/private/tmp/sidproj-56-pack-summary.json';
+const manualReleasePath = '/private/tmp/sidproj-56-manual-release-test.json';
+const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 function run(command, args, cwd) {
-  console.log(`\n$ ${command} ${args.join(' ')}`);
-  const result = spawnSync(command, args, {
+  const effectiveArgs = command === 'npm' && args[0] === 'install'
+    ? [...args, '--cache', path.join(temporaryRoot, 'npm-cache')]
+    : args;
+  console.log(`\n$ ${command} ${effectiveArgs.join(' ')}`);
+  const result = spawnSync(command, effectiveArgs, {
     cwd,
     stdio: 'inherit',
   });
@@ -105,13 +115,51 @@ async function verifyVite(tarball) {
   });
   fs.writeFileSync(
     path.join(fixture, 'index.html'),
-    '<div id="root"></div><script type="module" src="/src/main.jsx"></script>\n',
+    '<div id="root"></div><script>window.__CANVAS_SCAN_OPTS={overlay:false,minFlashRasterOps:3}</script><script type="module" src="/src/main.jsx"></script>\n',
   );
   fs.writeFileSync(
     path.join(fixture, 'src/main.jsx'),
     `import 'canvas-scan/auto';
 import { StrictMode, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+const settle = async count => { for (let index = 0; index < count; index++) await nextFrame(); };
+const continuousCanvas = document.createElement('canvas');
+const continuousContext = continuousCanvas.getContext('2d');
+const burstCanvas = document.createElement('canvas');
+burstCanvas.width = 900;
+burstCanvas.height = 500;
+const burstContext = burstCanvas.getContext('2d');
+document.body.append(continuousCanvas, burstCanvas);
+
+window.__MANUAL_RELEASE__ = {
+  earlyLoad: Boolean(window.__CANVAS_SCAN__),
+  async recordContinuous() {
+    window.__CANVAS_SCAN__.startRecording();
+    for (let frame = 0; frame < 7; frame++) {
+      continuousContext.clearRect(0, 0, 300, 150);
+      continuousContext.fillRect(10, 10, 20, 20);
+      continuousContext.strokeRect(10, 10, 20, 20);
+      await nextFrame();
+    }
+    await settle(2);
+    return window.__CANVAS_SCAN__.stopRecording();
+  },
+  async recordBurst() {
+    window.__CANVAS_SCAN__.startRecording();
+    await settle(2);
+    for (let pass = 0; pass < 5; pass++) {
+      burstContext.clearRect(0, 0, 900, 500);
+      for (let index = 0; index < 18000; index++) {
+        burstContext.fillStyle = index & 1 ? '#2563eb' : '#7c3aed';
+        burstContext.fillRect((index * 13) % 900, (index * 17) % 487, 9, 2 + (index % 8));
+      }
+    }
+    await settle(3);
+    return window.__CANVAS_SCAN__.stopRecording();
+  },
+};
 
 function App() {
   const canvas = useRef(null);
@@ -153,7 +201,7 @@ createRoot(document.getElementById('root')).render(
     process.execPath,
     [
       '-e',
-      "import('canvas-scan').then(m => { if (typeof m.start !== 'function') process.exit(1) })",
+      "import('canvas-scan').then(m => { if (!['start','startRecording','stopRecording','getLastSession','mark'].every(key => typeof m[key] === 'function')) process.exit(1) })",
     ],
     fixture,
   );
@@ -166,6 +214,19 @@ createRoot(document.getElementById('root')).render(
       if (!body.includes('id="root"')) throw new Error('vite preview served unexpected body');
     },
   );
+}
+
+async function verifyManualRelease(tarball) {
+  const gitSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+  run(process.execPath, [
+    path.join(repoRoot, 'packages/dogfood/manual-release-v04.mjs'),
+    `--fixture=${path.join(temporaryRoot, 'vite-fixture')}`,
+    `--tarball=${tarball}`,
+    `--tarball-sha256=${sha256(fs.readFileSync(tarball))}`,
+    `--iife-sha256=${packDetails.iifeSha256}`,
+    `--git-sha=${gitSha}`,
+  ], repoRoot);
+  packDetails.manualReleaseTestSha256 = sha256(fs.readFileSync(manualReleasePath));
 }
 
 async function verifyNext(tarball) {
@@ -283,19 +344,38 @@ try {
       }
       return extracted.stdout;
     };
-    const chunk = entries.find((entry) => /dist\/chunk-/.test(entry));
+    const esmEntry = readEntry('package/dist/index.js');
+    const chunkName = esmEntry.match(/from ["']\.\/(chunk-[A-Z0-9]+\.js)["']/)?.[1];
+    if (!chunkName) throw new Error('ESM entry does not import the packed runtime chunk');
+    const esmRuntime = readEntry(`package/dist/${chunkName}`);
+    const iife = readEntry('package/dist/canvas-scan.iife.js');
+    const declarations = readEntry('package/dist/index.d.ts');
+    const readme = readEntry('package/README.md');
+    const manifest = readEntry('package/package.json');
     assertPackedVersion(
       {
-        esm: readEntry(chunk),
-        iife: readEntry('package/dist/canvas-scan.iife.js'),
-        readme: readEntry('package/README.md'),
+        manifest,
+        esm: esmRuntime,
+        iife,
+        readme,
       },
       version,
     );
+    assertPublicContract({ runtime: esmRuntime, declarations, iife });
+    const contentEntries = entries.filter((entry) => /^(package\/(?:dist\/.*\.(?:js|d\.ts)|package\.json|README\.md|bin\/.*))$/.test(entry));
+    assertLabBoundary(entries, Object.fromEntries(contentEntries.map((entry) => [entry, readEntry(entry)])));
+    const sourceIndex = fs.readFileSync(path.join(packageDir, 'src/index.ts'), 'utf8');
+    const sourceRecording = fs.readFileSync(path.join(packageDir, 'src/recording.ts'), 'utf8');
+    assertPackedVersion({ iife: sourceIndex, recording: sourceRecording }, version);
+    summaries.push({ name: 'public contract', status: 'PASS' });
+    summaries.push({ name: 'lab boundary', status: 'PASS' });
+    packDetails = { tarballSha256: sha256(fs.readFileSync(tarball)), esmSha256: sha256(esmEntry), runtimeSha256: sha256(esmRuntime), iifeSha256: sha256(iife), packageManifestVersion: JSON.parse(manifest).version, declarationHashes: Object.fromEntries(entries.filter((entry) => /^package\/dist\/.*\.d\.ts$/.test(entry)).map((entry) => [entry, sha256(readEntry(entry))])), manifestEntries: entries, publicContract: 'PASS', labBoundary: 'PASS' };
   });
 
   if (packed) {
-    await verify('Vite fixture', () => verifyVite(tarball));
+    const vitePassed = await verify('Vite fixture', () => verifyVite(tarball));
+    if (vitePassed) await verify('manual release test', () => verifyManualRelease(tarball));
+    else summaries.push({ name: 'manual release test', status: 'FAIL', reason: 'Vite fixture failed' });
     await verify('Next fixture', () => verifyNext(tarball));
   } else {
     summaries.push({
@@ -308,12 +388,34 @@ try {
       status: 'FAIL',
       reason: 'package step failed',
     });
+    summaries.push({
+      name: 'manual release test',
+      status: 'FAIL',
+      reason: 'package step failed',
+    });
   }
 } finally {
+  const failed = summaries.some((summary) => summary.status === 'FAIL');
+  const environmentErrors = summaries
+    .filter((summary) => summary.status === 'FAIL' && /fixture|EPERM|EACCES|network|ECONNREFUSED|EADDRINUSE|server|cache|exit 255/i.test(`${summary.name} ${summary.reason ?? ''}`))
+    .map((summary) => summary.reason);
+  writeJson(summaryPath, {
+    schemaVersion: 1,
+    packageVersion: version,
+    baseGitSha: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim(),
+    dirty: spawnSync('git', ['status', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim().length > 0,
+    ...packDetails,
+    fixtureResults: summaries,
+    publicContractResults: summaries.filter((summary) => ['public contract', 'lab boundary'].includes(summary.name)),
+    labBoundaryResults: summaries.filter((summary) => summary.name === 'lab boundary'),
+    environmentErrors,
+    finalStatus: failed ? 'FAIL' : 'PASS',
+  });
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
 console.log('\nPack verification summary');
+console.log(`PACK_SUMMARY: ${summaryPath}`);
 for (const summary of summaries) {
   const reason = summary.reason ? ` — ${summary.reason}` : '';
   console.log(`${summary.name}: ${summary.status}${reason}`);

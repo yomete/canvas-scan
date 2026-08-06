@@ -10,6 +10,8 @@ export const MANIFEST_REQUIRED = [
   'package/dist/canvas-scan.iife.js',
   'package/dist/index.d.ts',
   'package/dist/auto.d.ts',
+  'package/dist/recording.d.ts',
+  'package/dist/types.d.ts',
 ];
 
 export const MANIFEST_ALLOW = [
@@ -25,21 +27,73 @@ export const MANIFEST_ALLOW = [
 // and the packed README must agree with package.json.
 export function assertPackedVersion(sources, version) {
   // The IIFE ships minified, so the space after the key is not guaranteed.
-  const literal = new RegExp(`version:\\s*"${version.replace(/\./g, '\\.')}"`);
+  const literal = new RegExp(`version:\\s*['"]${version.replace(/\./g, '\\.')}['"]`);
   const wrong = [];
   for (const [name, text] of Object.entries(sources)) {
+    if (name === 'manifest') {
+      try {
+        if (JSON.parse(text).version !== version) wrong.push(`packed manifest version is not ${version}`);
+      } catch {
+        wrong.push('packed manifest is not valid JSON');
+      }
+      continue;
+    }
     if (name === 'readme') {
       if (!text.includes(`canvas-scan@${version}`)) {
         wrong.push(`packed README does not mention canvas-scan@${version}`);
       }
       continue;
     }
-    if (!literal.test(text)) {
+    const required = name === 'recording'
+      ? new RegExp(`canvasScanVersion:\\s*['"]${version.replace(/\./g, '\\.')}['"]`)
+      : literal;
+    if (!required.test(text)) {
       wrong.push(`${name} does not carry runtime version ${version}`);
     }
   }
   if (wrong.length > 0) {
     throw new Error(`packed version mismatch: ${wrong.join('; ')}`);
+  }
+}
+
+const recordingExports = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark'];
+const labMarkers = ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth'];
+
+function exportedNames(source) {
+  const names = new Set();
+  for (const match of source.matchAll(/export\s+(?:declare\s+)?function\s+(\w+)/g)) names.add(match[1]);
+  for (const match of source.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const item of match[1].split(',')) {
+      const value = item.trim().replace(/^type\s+/, '');
+      const alias = value.match(/\bas\s+(\w+)$/)?.[1];
+      const direct = value.match(/^(\w+)/)?.[1];
+      if (alias ?? direct) names.add(alias ?? direct);
+    }
+  }
+  return names;
+}
+
+function iifeOperations(source) {
+  const body = source.match(/(?:window|globalThis)\.__CANVAS_SCAN__=\{([^}]*)\}/)?.[1] ?? '';
+  return new Set(body.split(',').map((item) => item.trim().match(/^(\w+)/)?.[1]).filter(Boolean));
+}
+
+export function assertPublicContract({ runtime, declarations, iife }) {
+  const runtimeExports = exportedNames(runtime);
+  const declarationExports = exportedNames(declarations);
+  const missing = recordingExports.filter((name) => !runtimeExports.has(name) || !declarationExports.has(name));
+  if (missing.length) throw new Error(`missing ESM or declaration exports: ${missing.join(', ')}`);
+  const operations = iifeOperations(iife);
+  const iifeMissing = recordingExports.slice(1).filter((name) => !operations.has(name));
+  if (iifeMissing.length) throw new Error(`missing IIFE recording operations: ${iifeMissing.join(', ')}`);
+}
+
+export function assertLabBoundary(entries, sources) {
+  const entry = entries.find((name) => /lab-v04|lab-v04-truth|v0\.4.*fixture/i.test(name));
+  if (entry) throw new Error(`lab-only tarball entry: ${entry}`);
+  for (const [name, text] of Object.entries(sources)) {
+    const marker = labMarkers.find((value) => text.includes(value));
+    if (marker) throw new Error(`lab-only marker ${marker} in ${name}`);
   }
 }
 

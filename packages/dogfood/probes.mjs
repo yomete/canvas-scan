@@ -5,9 +5,43 @@
 // baseline (mode=off); exits nonzero on any divergence.
 //
 // Usage: node probes.mjs [baseUrl]
+import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
-const baseUrl = process.argv[2] ?? 'http://localhost:5174';
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptDir, '../..');
+const sourceBundle = path.join(repoRoot, 'packages/core/dist/canvas-scan.iife.js');
+const workbenchBundle = path.join(repoRoot, 'apps/workbench/public/canvas-scan.iife.js');
+const selfContained = process.argv[2] == null;
+const baseUrl = process.argv[2] ?? 'http://127.0.0.1:5174';
+let server;
+let browserVersion = null;
+let bundleSha256 = null;
+const environmentErrors = [];
+
+const waitForServer = async () => {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (server.exitCode != null) throw new Error(`workbench server exited with ${server.exitCode}`);
+    try { if ((await fetch(baseUrl)).ok) return; } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('workbench server did not start');
+};
+
+const stopServer = async () => {
+  if (!server?.pid) return;
+  try { process.kill(-server.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  if (server.exitCode == null) await Promise.race([once(server, 'exit'), new Promise((resolve) => setTimeout(resolve, 5000))]);
+  if (server.exitCode == null) {
+    try { process.kill(-server.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  }
+};
 
 const probe = () => {
   const canvas = document.createElement('canvas');
@@ -220,8 +254,23 @@ const resetProbe = async () => {
   };
 };
 
-const browser = await chromium.launch({ channel: 'chrome', headless: true });
-const page = await browser.newPage();
+let browser;
+let page;
+let off;
+let full;
+let resets;
+const failures = [];
+try {
+  if (selfContained) {
+    execFileSync('pnpm', ['--filter', 'canvas-scan', 'run', 'build'], { cwd: repoRoot, stdio: 'inherit' });
+    await copyFile(sourceBundle, workbenchBundle);
+    bundleSha256 = createHash('sha256').update(await readFile(sourceBundle)).digest('hex');
+    server = spawn('pnpm', ['--filter', 'workbench', 'exec', 'vite', '--host', '127.0.0.1', '--port', '5174', '--strictPort'], { cwd: repoRoot, stdio: 'inherit', detached: true });
+    await waitForServer();
+  }
+  browser = await chromium.launch({ channel: 'chrome', headless: true });
+  browserVersion = browser.version();
+  page = await browser.newPage();
 
 async function run(mode) {
   const url = new URL('/bench.html', baseUrl);
@@ -231,12 +280,26 @@ async function run(mode) {
   return page.evaluate(probe);
 }
 
-const off = await run('off');
-const full = await run('full');
-const resets = await page.evaluate(resetProbe);
-await browser.close();
+  off = await run('off');
+  full = await run('full');
+  resets = await page.evaluate(resetProbe);
+} catch (error) {
+  environmentErrors.push(error instanceof Error ? error.message : String(error));
+} finally {
+  try { await browser?.close(); } catch (error) { environmentErrors.push(String(error)); }
+  try { await stopServer(); } catch (error) { environmentErrors.push(String(error)); }
+}
 
-const failures = [];
+failures.push(...environmentErrors);
+off ??= { scanLoaded: false, inheritedReads: 0 };
+full ??= { scanLoaded: false, shadowCalls: 0, nativeDash: [], inheritedReads: 0 };
+resets ??= {
+  direct: {},
+  bypass: {},
+  source: {},
+  contextReset: null,
+  reentrant: { calls: 0, reports: null },
+};
 if (!full.scanLoaded) failures.push('canvas-scan did not load in mode=full');
 if (off.scanLoaded) failures.push('mode=off unexpectedly loaded canvas-scan');
 if (full.shadowCalls !== 0) {
@@ -350,6 +413,8 @@ if (resets.reentrant.reports !== null) {
     'canvas-state-unmodeled',
   );
 }
+const result = { schemaVersion: 1, status: failures.length === 0 ? 'PASS' : 'FAIL', gitSha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(), dirty: execFileSync('git', ['status', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' }).trim().length > 0, bundleSha256, browserVersion, checks: { off, full, resets }, measurements: resets, failures, environmentErrors };
+await writeFile('/private/tmp/sidproj-56-reset-probe.json', `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ off, full, resets, failures }, null, 2));
 console.log(failures.length === 0 ? 'PROBES: PASS' : 'PROBES: FAIL');
 process.exitCode = failures.length === 0 ? 0 : 1;

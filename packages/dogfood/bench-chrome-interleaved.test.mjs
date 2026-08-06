@@ -6,6 +6,9 @@ import test from 'node:test';
 import {
   experimentVerdict,
   captureAndClose,
+  captureFailureMessage,
+  candidateHashMatches,
+  exitCodeForVerdict,
   interleavedPairs,
   modeOrderForPair,
   pairDeltas,
@@ -96,6 +99,16 @@ test('capture and close preserve each error in order', async () => {
   );
 });
 
+test('capture failures include the exact benchmark position and page state', () => {
+  const message = captureFailureMessage(
+    { stream: 'mixed', pairIndex: 2, variant: 'baseline', ops: 10000, mode: 'full' },
+    new Error('timeout'),
+    { readyState: 'complete', bench: { done: false, frameCount: 17 } },
+  );
+  assert.match(message, /timeout \[stream=mixed pair=2 variant=baseline ops=10000 mode=full/);
+  assert.match(message, /"frameCount":17/);
+});
+
 test('absolute limits are strict and paired full-capture tolerances include boundaries', () => {
   const absolute = streamVerdict(Array.from({ length: 6 }, () => ({
     baseline: { summary: summary(0) },
@@ -141,17 +154,26 @@ test('both streams must pass and incomplete blocks are errors', () => {
   assert.equal(streamVerdict(pairs().slice(0, 4)).status, 'ERROR');
 });
 
+test('candidate argument equality and CLI outcomes fail closed', () => {
+  const hash = 'a'.repeat(64);
+  assert.equal(candidateHashMatches(hash, hash), true);
+  assert.equal(candidateHashMatches(hash, 'b'.repeat(64)), false);
+  assert.equal(exitCodeForVerdict('COMPLETE', true), 0);
+  assert.equal(exitCodeForVerdict('COMPLETE', false), 1);
+  assert.equal(exitCodeForVerdict('ERROR', false), 1);
+});
+
 test('artifact writes are immutable and paths are constrained', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'sidproj-53-interleaved-test-'));
-  const artifact = path.join('/private/tmp', `sidproj-53-interleaved-${path.basename(directory)}.json`);
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'sidproj-56-bench-interleaved-test-'));
+  const artifact = path.join('/private/tmp', `sidproj-56-bench-interleaved-${path.basename(directory)}.json`);
   try {
     await writeArtifact(artifact, { value: 1 });
     const first = await readFile(artifact, 'utf8');
     await assert.rejects(() => writeArtifact(artifact, { value: 2 }));
     assert.equal(await readFile(artifact, 'utf8'), first);
-    assert.throws(() => validateArtifactPath('../sidproj-53-interleaved-test.json'));
-    assert.throws(() => validateArtifactPath('/private/tmp/nested/../sidproj-53-interleaved-test.json'));
-    assert.throws(() => validateArtifactPath('/tmp/sidproj-53-interleaved-test.json'));
+    assert.throws(() => validateArtifactPath('../sidproj-56-bench-interleaved-test.json'));
+    assert.throws(() => validateArtifactPath('/private/tmp/nested/../sidproj-56-bench-interleaved-test.json'));
+    assert.throws(() => validateArtifactPath('/tmp/sidproj-56-bench-interleaved-test.json'));
     assert.throws(() => validateArtifactPath('/private/tmp/not-interleaved.json'));
   } finally {
     await rm(artifact, { force: true });

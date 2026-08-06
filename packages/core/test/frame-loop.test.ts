@@ -145,6 +145,16 @@ describe('processRecord', () => {
     }
   });
 
+  it('reuses frozen empty method evidence while collection is disabled', () => {
+    setMethodEvidenceCollectionEnabled(false);
+    const first = processRecord(makeRecord({ id: 'first' }), 1, 1)!.report.methodEvidence;
+    const second = processRecord(makeRecord({ id: 'second' }), 1, 1)!.report.methodEvidence;
+
+    expect(first).toBe(second);
+    expect(first).toEqual({});
+    expect(Object.isFrozen(first)).toBe(true);
+  });
+
   it('stamps captured and reset-only evidence without borrowing raster work from another window', () => {
     const record = makeRecord({ resetPendingReason: 'canvas-reset' });
     const events: import('../src/types').RecordedResetEvent[] = [];
@@ -789,6 +799,28 @@ describe('report subscribers', () => {
     emitReport(report, canvas);
 
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('isolates stored method evidence from listener mutations', () => {
+    const source = {
+      ...report,
+      methodEvidence: {
+        fillRect: { count: 2, canvasApiSelfTimeMs: 0.5 },
+      },
+    };
+    const listener = vi.fn((published: DrawBatchReport) => {
+      published.methodEvidence.fillRect.count = 99;
+    });
+    const unsubscribe = subscribeToReports(listener);
+
+    try {
+      emitReport(source, {});
+
+      expect(listener.mock.calls[0][0]).not.toBe(source);
+      expect(source.methodEvidence.fillRect.count).toBe(2);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('removes a throwing listener without interrupting other listeners', () => {

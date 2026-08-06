@@ -12,6 +12,7 @@ import {
   clearMethodEvidence,
   drainAttributeRecords,
   getMethodEvidence,
+  isMethodEvidenceCollectionEnabled,
   refreshContentToken,
   records,
   getConnectionState,
@@ -26,6 +27,7 @@ const MAX_TRACKED_CANVASES = 64;
 const histories = new Map<string, DrawBatchReport[]>();
 const lastReportedWindows = new Map<string, number>();
 const sourceLocations = new Map<string, SourceLocation | null>();
+const EMPTY_METHOD_EVIDENCE = Object.freeze({}) as DrawBatchReport['methodEvidence'];
 
 export interface PublishedWindowMetadata {
   windowIndex: number;
@@ -111,10 +113,12 @@ export function emitReport(
   canvas: unknown,
   metadata?: PublishedWindowMetadata,
 ): void {
+  if (reportListeners.size === 0) return;
+  const published = copyReport(report);
   for (const listener of reportListeners) {
     try {
-      if (metadata === undefined) listener(report, canvas);
-      else listener(report, canvas, metadata);
+      if (metadata === undefined) listener(published, canvas);
+      else listener(published, canvas, metadata);
     } catch (error) {
       reportListeners.delete(listener);
       console.warn('[canvas-scan] report listener removed after error', error);
@@ -211,7 +215,9 @@ export function processRecord(
           : null,
       sampled: captureEvery > 1,
       comparisonGap,
-      methodEvidence: Object.fromEntries(Object.entries(getMethodEvidence(record)).map(([method, evidence]) => [method, { ...evidence, canvasApiSelfTimeMs: evidence.canvasApiSelfTimeMs === null ? null : Number(evidence.canvasApiSelfTimeMs.toFixed(3)) }])),
+      methodEvidence: isMethodEvidenceCollectionEnabled()
+        ? Object.fromEntries(Object.entries(getMethodEvidence(record)).map(([method, evidence]) => [method, { ...evidence, canvasApiSelfTimeMs: evidence.canvasApiSelfTimeMs === null ? null : Number(evidence.canvasApiSelfTimeMs.toFixed(3)) }]))
+        : EMPTY_METHOD_EVIDENCE,
     };
     const shouldLog =
       record.lastStatus === null || record.lastStatus !== signatureStatus;
@@ -357,7 +363,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
         }
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
-      emitReport(copyReport(processed.report), record.canvas, recordedStart === undefined
+      emitReport(processed.report, record.canvas, recordedStart === undefined
         ? { windowIndex, timestampMs }
         : {
             windowIndex,

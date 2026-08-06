@@ -14,6 +14,7 @@ const sourceBundle = path.join(repoRoot, 'packages/core/dist/canvas-scan.iife.js
 const workbenchBundle = path.join(repoRoot, 'apps/workbench/public/canvas-scan.iife.js');
 let server; let browser; let browserVersion = null; let bundleHash = null;
 const failures = []; const pageErrors = []; const warnings = [];
+const capturedModes = {};
 
 const wait = timeout => new Promise(resolve => setTimeout(resolve, timeout));
 const waitForServer = async () => {
@@ -69,24 +70,32 @@ const runMode = async mode => {
     await page.waitForFunction(() => window.__CANVAS_SCAN__ && window.__CONTINUOUS_PROBE__);
     await page.waitForFunction(() => window.__CONTINUOUS_PROBE__.frameCount >= 6);
     await shadow(page, '.record');
+    const recordingStartFrame = await page.evaluate(() => window.__CONTINUOUS_PROBE__.frameCount);
     await page.click('#interact');
-    await page.waitForFunction(() => window.__CONTINUOUS_PROBE__.frameCount >= 12);
+    await page.waitForFunction(startFrame => window.__CONTINUOUS_PROBE__.frameCount >= startFrame + 6, recordingStartFrame);
     await shadow(page, '.stop-recording');
     const session = await page.evaluate(() => window.__CANVAS_SCAN__.getLastSession());
     const visibleHash = await imageHash(page);
     const facts = await page.evaluate(() => window.__CONTINUOUS_PROBE__);
+    capturedModes[mode] = { facts, session, visibleHash, cardText: '', cardCanvasId: '', popoverOwner: '' };
     await shadow(page, '.counts');
-    if (mode === 'bad') await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.repeated-finding'));
+    if (mode === 'bad') {
+      try { await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.repeated-finding')); }
+      catch (error) { throw new Error(`repeated finding did not appear: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     const cardText = await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.repeated-finding')?.textContent ?? '');
     const cardCanvasId = await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.repeated-finding')?.getAttribute('data-canvas-id') ?? '');
+    capturedModes[mode] = { ...capturedModes[mode], cardText, cardCanvasId };
     if (mode === 'bad' && cardCanvasId) {
-      await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.repeated-finding').dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+      await page.evaluate(id => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="locate-current"]')].find(element => element.dataset.canvasId === id)?.click(), cardCanvasId);
       await page.waitForFunction(id => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector(`.outline[data-canvas-id="${id}"]`)?.classList.contains('locate'), cardCanvasId);
       await page.screenshot({ path: '/private/tmp/sidproj-49-overlay-finding-card.png' });
-      await shadow(page, '.repeated-finding');
-      await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.popover-owner')?.textContent);
+      await page.evaluate(id => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="inspect-current"]')].find(element => element.dataset.canvasId === id)?.click(), cardCanvasId);
+      try { await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.popover-owner')?.textContent); }
+      catch (error) { throw new Error(`finding details did not appear: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    return { facts, session, visibleHash, cardText, cardCanvasId, popoverOwner: await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.popover-owner')?.textContent ?? '') };
+    capturedModes[mode].popoverOwner = await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.popover-owner')?.textContent ?? '');
+    return capturedModes[mode];
   } finally { await page.close(); }
 };
 let bad; let fixed;
@@ -105,13 +114,15 @@ try {
   try { await browser?.close(); } catch (error) { failures.push(String(error)); }
   try { await stopServer(); } catch (error) { failures.push(String(error)); }
 }
+bad ??= capturedModes.bad;
+fixed ??= capturedModes.fixed;
 const badFinding = bad?.session?.findings?.find(finding => finding.type === 'repeated-draw-work' && finding.canvasId === bad?.cardCanvasId);
 const cardEvidence = badFinding && [
-  `${badFinding.repeatedWindowCount} repeated windows`,
-  `${badFinding.rasterOperationCount} repeated raster operations`,
+  `${badFinding.repeatedWindowCount} repeated frames`,
+  `Repeated raster operations: ${badFinding.rasterOperationCount}`,
   `Canvas2D API self-time: ${badFinding.canvasApiSelfTimeMs} ms`,
   `Comparison gaps: ${badFinding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`,
-  `Unknown coverage: ${badFinding.unknownCoverage.unknownWindowCount} of ${badFinding.unknownCoverage.activeWindowCount} active windows`,
+  `Unknown coverage: ${badFinding.unknownCoverage.unknownWindowCount} of ${badFinding.unknownCoverage.activeWindowCount} active frames`,
   badFinding.claimBoundary.nonEstablishedFacts,
   badFinding.nextCheck,
 ];
@@ -124,7 +135,7 @@ const checks = {
   changedAndUnknownExcluded: Boolean(badFinding && badFinding.repeatedWindows.every(entry => bad.session.windows.find(window => window.windowIndex === entry.windowIndex && window.canvasId === badFinding.canvasId)?.signatureStatus === 'same')),
   wakeUpHasNoFinding: !bad?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('wake-up-canvas#')) && !fixed?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('wake-up-canvas#')),
   fixedHasNoSeededFinding: !fixed?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('seeded-canvas#')),
-  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Repeated commands.*review candidate/.test(bad?.cardText ?? '') && !/wasted|pixel-identical|avoidable/i.test(bad?.cardText ?? '')),
+  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Repeated draw commands.*Review candidate/.test(bad?.cardText ?? '') && !/wasted|pixel-identical|avoidable/i.test(bad?.cardText ?? '')),
   cardOpensSeededCanvas: bad?.popoverOwner === bad?.cardCanvasId,
   noWarningsOrPageErrors: warnings.length === 0 && pageErrors.length === 0,
   instrumentationStayedEnabled: !warnings.some(warning => /disabled|kill/i.test(warning)),

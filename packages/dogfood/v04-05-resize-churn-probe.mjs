@@ -109,21 +109,19 @@ const runScenario = async (name, mode, action) => {
     let popoverOwner = '';
     let located = false;
     if (finding) {
-      await page.waitForFunction(canvasId => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].some(card => card.getAttribute('data-canvas-id') === canvasId && card.textContent.includes('Reset churn')), finding.canvasId);
+      await page.waitForFunction(canvasId => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].some(card => card.getAttribute('data-canvas-id') === canvasId && card.textContent.includes('Resets during active work')), finding.canvasId);
       ({ cardText, cardCanvasId } = await page.evaluate(canvasId => {
-        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Reset churn'));
+        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Resets during active work'));
         return { cardText: card?.textContent ?? '', cardCanvasId: card?.getAttribute('data-canvas-id') ?? '' };
       }, finding.canvasId));
       await page.evaluate(canvasId => {
-        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Reset churn'));
-        card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="locate-current"]')].find(item => item.dataset.canvasId === canvasId)?.click();
       }, finding.canvasId);
       await page.waitForFunction(canvasId => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector(`.outline[data-canvas-id="${canvasId}"]`)?.classList.contains('locate'), finding.canvasId);
       located = true;
       if (name === 'bad') await page.screenshot({ path: '/private/tmp/sidproj-48-bad-card.png' });
       await page.evaluate(canvasId => {
-        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Reset churn'));
-        card.click();
+        [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('[data-action="inspect-current"]')].find(item => item.dataset.canvasId === canvasId)?.click();
       }, finding.canvasId);
       await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.popover-owner')?.textContent);
       popoverOwner = await page.evaluate(() => document.querySelector('[data-canvas-scan]').shadowRoot.querySelector('.popover-owner')?.textContent ?? '');
@@ -178,7 +176,7 @@ const checks = {
   fixedGuardsRemoveFinding: !fixed?.session?.findings.some(item => item.type === 'resize-churn') && fixed?.session?.resetEvents.filter(event => event.canvasId.startsWith('seeded-canvas#')).length === 0,
   oneSetupResetDoesNotFind: setupEvents.length === 1 && setupEvents[0].source === 'width-setter' && setupEvents[0].activeRasterOverlap && !setup?.session?.findings.some(item => item.type === 'resize-churn'),
   outsideResetsStayIdleEvidence: outsideEvents.length === 2 && outsideEvents.map(event => event.source).join(',') === 'width-setter,height-setter' && outsideEvents.every(event => !event.activeRasterOverlap && event.rasterOperationCount === 0) && !outside?.session?.findings.some(item => item.type === 'resize-churn'),
-  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Reset churn.*review candidate/.test(bad?.cardText ?? '') && !/caused|wasted|avoidable|render time|GPU time|pixel/i.test(bad?.cardText ?? '')),
+  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Resets during active work.*Review candidate/.test(bad?.cardText ?? '') && !/caused|wasted|avoidable|render time|GPU time|pixel/i.test(bad?.cardText ?? '')),
   locateAndInspect: bad?.located && bad?.cardCanvasId === bad?.finding?.canvasId && bad?.popoverOwner === bad?.finding?.canvasId,
   noWarningsOrPageErrors: warnings.length === 0 && pageErrors.length === 0,
   browserVersionCaptured: Boolean(browserVersion),

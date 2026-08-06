@@ -3,12 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bench:chrome": "pnpm run bench:chrome:mixed && pnpm run bench:chrome:tracked",
-    "bench:chrome:mixed": "node bench-chrome.mjs",
+    "bench:chrome": "pnpm run bench:chrome:mixed; mixed=$?; pnpm run bench:chrome:tracked; tracked=$?; test $mixed -eq 0 -a $tracked -eq 0",
+    "bench:chrome:mixed": "node bench-chrome.mjs --stream=mixed",
     "bench:chrome:tracked": "node bench-chrome.mjs --stream=tracked-source",
     "bench:chrome:interleaved": "node bench-chrome-interleaved.mjs",
     "collect": "node collect.mjs",
     "probe:recording": "node recording-probe.mjs",
+    "probe:reset": "node probes.mjs",
     "probe:burst-heavy": "node burst-heavy-probe.mjs",
     "probe:continuous-repeated": "node v04-04-continuous-probe.mjs",
     "probe:resize-churn": "node v04-05-resize-churn-probe.mjs",
@@ -16,9 +17,12 @@
     "probe:lifecycle": "node v04-07-lifecycle-probe.mjs",
     "probe:associations": "node v04-08-associations-probe.mjs",
     "probe:findings": "node v04-09-findings-probe.mjs",
+    "probe:v0.4": "node probe-v04.mjs",
     "lab:v0.4": "node lab-v04.mjs",
     "lab:v0.4:check": "node lab-v04.mjs --check-evidence",
-    "lab:v0.4:test": "node --test lab-v04.test.mjs"
+    "lab:v0.4:test": "node --test lab-v04.test.mjs",
+    "release:v0.4:test": "node --test bench-chrome-interleaved.test.mjs release-v04.test.mjs",
+    "release:v0.4:check": "node release-v04.mjs --check-evidence"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

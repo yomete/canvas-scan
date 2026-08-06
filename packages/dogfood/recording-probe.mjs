@@ -1,6 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { writeFile } from 'node:fs/promises';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -8,13 +9,17 @@ import { chromium } from 'playwright-core';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../..');
 const port = 5187;
-const url = `http://127.0.0.1:${port}`;
+const baseUrl = `http://127.0.0.1:${port}`;
+const url = `${baseUrl}/v04-02-recording.html`;
+const sourceBundle = path.join(repoRoot, 'packages/core/dist/canvas-scan.iife.js');
+const workbenchBundle = path.join(repoRoot, 'apps/workbench/public/canvas-scan.iife.js');
 let server;
 let browser;
 let browserVersion = null;
+let bundleSha256 = null;
 let failures = [];
 const checks = {
-  publicApi: false, manualStop: false, jsonRoundTrip: false, deepCopy: false,
+  servedCandidateBundle: false, publicApi: false, manualStop: false, jsonRoundTrip: false, deepCopy: false,
   overlayHydration: false, maxDuration: false, secondSession: false, jsonOnly: false,
 };
 const sessions = { manual: null, maxDuration: null, second: null };
@@ -45,16 +50,27 @@ const stopServer = async () => {
 };
 
 try {
-  server = spawn('pnpm', ['--filter', 'demo', 'exec', 'vite', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
+  execFileSync('pnpm', ['--filter', 'canvas-scan', 'run', 'build'], { cwd: repoRoot, stdio: 'inherit' });
+  await copyFile(sourceBundle, workbenchBundle);
+  server = spawn('pnpm', ['--filter', 'workbench', 'exec', 'vite', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
     cwd: repoRoot, stdio: 'inherit', detached: true,
   });
   await waitForServer();
+  const [sourceBytes, servedResponse] = await Promise.all([
+    readFile(sourceBundle),
+    fetch(`${baseUrl}/canvas-scan.iife.js`),
+  ]);
+  if (!servedResponse.ok) throw new Error(`served bundle returned ${servedResponse.status}`);
+  const servedBytes = Buffer.from(await servedResponse.arrayBuffer());
+  const sourceSha256 = createHash('sha256').update(sourceBytes).digest('hex');
+  bundleSha256 = createHash('sha256').update(servedBytes).digest('hex');
+  checks.servedCandidateBundle = bundleSha256 === sourceSha256;
   browser = await chromium.launch({ channel: 'chrome', headless: true });
   browserVersion = browser.version();
   const page = await browser.newPage();
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__CANVAS_SCAN__ != null, null, { timeout: 15000 });
-  checks.publicApi = await page.evaluate(() => ['startRecording', 'stopRecording', 'getLastSession'].every(key => typeof window.__CANVAS_SCAN__[key] === 'function'));
+  checks.publicApi = await page.evaluate(() => ['startRecording', 'stopRecording', 'getLastSession', 'mark'].every(key => typeof window.__CANVAS_SCAN__[key] === 'function'));
   const draw = () => page.evaluate(async () => {
     const canvas = document.createElement('canvas');
     document.body.append(canvas);
@@ -108,7 +124,8 @@ try {
 
 const pass = failures.length === 0 && Object.values(checks).every(Boolean);
 if (!pass && failures.length === 0) failures.push(`failed checks: ${Object.entries(checks).filter(([, value]) => !value).map(([key]) => key).join(', ')}`);
-const result = { probeVersion: 1, status: pass ? 'PASS' : 'FAIL', browserVersion, gitSha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(), checks, sessions, failures };
+const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' }).trim().length > 0;
+const result = { schemaVersion: 1, probeVersion: 1, status: pass ? 'PASS' : 'FAIL', browserVersion, gitSha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(), dirty, bundleSha256, bundleUrl: `${baseUrl}/canvas-scan.iife.js`, checks, sessions, failures, environmentErrors: failures.filter((failure) => /Chrome|EADDRINUSE|server|ECONNREFUSED/i.test(failure)) };
 await writeFile('/private/tmp/sidproj-47-recording-probe.json', `${JSON.stringify(result, null, 2)}\n`);
 if (pass) console.log('CANVAS_RECORDING_V04_02: PASS');
 else console.error(`CANVAS_RECORDING_V04_02: FAIL ${failures.join('; ')}`);

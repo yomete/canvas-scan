@@ -18,8 +18,7 @@ import { chromium } from 'playwright-core';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../..');
 const tmpRoot = '/private/tmp';
-const baselineCommit = '6c80da3eb2f3f9958aefaffaf9647a56f5908efb';
-const expectedCandidateSha256 = '26e3694c1647e5627d4fa906d0d939ed889b25c79781e8b25e1dee4c98a043b7';
+const baselineCommit = '4d6d700c2982be7e06eb827f5bb9996a98995f6e';
 const streams = ['mixed', 'tracked-source'];
 const pairCountPerStream = 6;
 const opsLevels = [100, 1000, 10000];
@@ -55,8 +54,8 @@ export const interleavedPairs = (count) => Array.from({ length: count }, (_, ind
 export const validateArtifactPath = (artifactPath) => {
   if (!artifactPath || !path.isAbsolute(artifactPath)) throw new Error('artifact path must be absolute');
   if (path.dirname(artifactPath) !== tmpRoot) throw new Error(`artifact path must be under ${tmpRoot}`);
-  if (!/^sidproj-53-interleaved-[^.]+\.json$/.test(path.basename(artifactPath))) {
-    throw new Error('artifact basename must match sidproj-53-interleaved-*.json');
+  if (!/^sidproj-56-bench-interleaved-[^.]+\.json$/.test(path.basename(artifactPath))) {
+    throw new Error('artifact basename must match sidproj-56-bench-interleaved-*.json');
   }
   if (path.resolve(artifactPath) !== artifactPath) throw new Error('artifact path must not contain traversal');
   return artifactPath;
@@ -134,6 +133,9 @@ export const experimentVerdict = (streamResults, errors) => {
   return { status: 'COMPLETE', pass: reasons.length === 0, reasons };
 };
 
+export const candidateHashMatches = (actual, expected) => actual === expected;
+export const exitCodeForVerdict = (status, pass) => status === 'COMPLETE' && pass ? 0 : 1;
+
 export const serverOwnership = (listenerPids, processGroupIds, expectedProcessGroupId, childAlive, priorListenerPids) => {
   if (!childAlive) return { ok: false, error: 'workbench server exited' };
   if (!Array.isArray(listenerPids) || listenerPids.length === 0 || listenerPids.some((pid) => !Number.isInteger(pid))) {
@@ -160,6 +162,9 @@ export const captureAndClose = async (capture, close) => {
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) throw new AggregateError(errors, 'page capture and close failed');
 };
+
+export const captureFailureMessage = ({ stream, pairIndex, variant, ops, mode }, error, state) =>
+  `${errorText(error)} [stream=${stream} pair=${pairIndex} variant=${variant} ops=${ops} mode=${mode} state=${JSON.stringify(state)}]`;
 
 const hashFile = async (file) => createHash('sha256').update(await readFile(file)).digest('hex');
 const errorText = (error) => error instanceof Error ? error.message : String(error);
@@ -227,12 +232,12 @@ const stopServer = async (server) => {
 };
 
 const expectedPaths = (artifactPath) => {
-  const suffix = path.basename(artifactPath).slice('sidproj-53-interleaved-'.length, -'.json'.length);
+  const suffix = path.basename(artifactPath).slice('sidproj-56-bench-interleaved-'.length, -'.json'.length);
   return {
-    snapshot: path.join(tmpRoot, `sidproj-53-interleaved-baseline-source-${suffix}`),
-    archive: path.join(tmpRoot, `sidproj-53-interleaved-baseline-source-${suffix}.tar`),
-    baselineBundle: path.join(tmpRoot, `sidproj-53-interleaved-baseline-bundle-${suffix}.js`),
-    candidateBundle: path.join(tmpRoot, `sidproj-53-interleaved-candidate-bundle-${suffix}.js`),
+    snapshot: path.join(tmpRoot, `sidproj-56-bench-interleaved-baseline-source-${suffix}`),
+    archive: path.join(tmpRoot, `sidproj-56-bench-interleaved-baseline-source-${suffix}.tar`),
+    baselineBundle: path.join(tmpRoot, `sidproj-56-bench-interleaved-baseline-bundle-${suffix}.js`),
+    candidateBundle: path.join(tmpRoot, `sidproj-56-bench-interleaved-candidate-bundle-${suffix}.js`),
   };
 };
 
@@ -274,7 +279,12 @@ const collectBlock = async (browser, stream, pairIndex, bundle, block) => {
         if ((mode === 'full' || mode === 'countonly') && !loaded) throw new Error('canvas-scan did not load');
         if ((mode === 'off' || mode === 'passthrough') && loaded) throw new Error(`canvas-scan loaded in ${mode} mode`);
         if ((mode === 'full' || mode === 'countonly') ? bundleRequests !== 1 : bundleRequests !== 0) throw new Error(`unexpected bundle requests in ${mode}: ${bundleRequests}`);
-        await page.waitForFunction(() => window.__BENCH?.done, null, { timeout: 60_000 });
+        try {
+          await page.waitForFunction(() => window.__BENCH?.done, null, { timeout: 60_000 });
+        } catch (error) {
+          const state = await page.evaluate(() => ({ href: location.href, readyState: document.readyState, bench: window.__BENCH ? { done: window.__BENCH.done, frameCount: Array.isArray(window.__BENCH.frames) ? window.__BENCH.frames.length : null } : null })).catch((stateError) => ({ readError: errorText(stateError) }));
+          throw new Error(captureFailureMessage({ stream, pairIndex, variant: block.variant, ops, mode }, error, state));
+        }
         const frames = await page.evaluate(() => window.__BENCH.frames);
         if (!Array.isArray(frames) || frames.length !== 240 || frames.some((frame) => !Number.isFinite(frame))) throw new Error(`invalid frame capture for ${ops}/${mode}`);
         raw[ops][mode] = frames;
@@ -287,8 +297,11 @@ const collectBlock = async (browser, stream, pairIndex, bundle, block) => {
 
 const main = async () => {
   const artifactArg = process.argv.slice(2).find((arg) => arg.startsWith('--artifact='));
+  const candidateArg = process.argv.slice(2).find((arg) => arg.startsWith('--candidate-sha256='));
+  const expectedCandidateSha256 = candidateArg?.slice('--candidate-sha256='.length);
   const artifactPath = validateArtifactPath(artifactArg?.slice('--artifact='.length));
   if (process.argv.slice(2).filter((arg) => arg.startsWith('--artifact=')).length !== 1) throw new Error('exactly one --artifact option is required');
+  if (!/^[a-f0-9]{64}$/.test(expectedCandidateSha256 ?? '')) throw new Error('a 64-character --candidate-sha256 is required');
   const paths = expectedPaths(artifactPath);
   await ensureAbsent(artifactPath);
   for (const target of Object.values(paths)) await ensureAbsent(target);
@@ -300,7 +313,7 @@ const main = async () => {
     status: 'ERROR',
     startedAt,
     endedAt: null,
-    purpose: 'method-corrected interleaved SIDPROJ-53 A/B',
+    purpose: 'SIDPROJ-56 v0.4 release fallback interleaved A/B',
     baselineCommit,
     activeHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
     activeWorktreeDirty: execFileSync('git', ['status', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' }).trim().length > 0,
@@ -329,7 +342,7 @@ const main = async () => {
     artifact.hashes.candidateBundleSha256 = await hashFile(paths.candidateBundle);
     artifact.hashes.harnessSha256 = await hashFile(fileURLToPath(import.meta.url));
     artifact.hashes.benchPageSha256 = await hashFile(path.join(repoRoot, 'apps/workbench/public/bench.html'));
-    if (artifact.hashes.candidateBundleSha256 !== expectedCandidateSha256) throw new Error(`candidate bundle hash mismatch: ${artifact.hashes.candidateBundleSha256}`);
+    if (!candidateHashMatches(artifact.hashes.candidateBundleSha256, expectedCandidateSha256)) throw new Error(`candidate bundle hash mismatch: ${artifact.hashes.candidateBundleSha256}`);
     server = spawn('pnpm', ['--filter', 'workbench', 'exec', 'vite', '--host', '127.0.0.1', '--port', '5199', '--strictPort'], { cwd: repoRoot, stdio: 'inherit', detached: true });
     artifact.environment.server = await waitForServer(server);
     browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -373,8 +386,9 @@ const main = async () => {
   artifact.verdict = { pass: verdict.pass, reasons: verdict.reasons };
   artifact.endedAt = new Date().toISOString();
   await writeArtifact(artifactPath, artifact);
+  console.log(`BENCH_ARTIFACT: ${artifactPath}`);
   console.log(`${artifactPath} ${artifact.status === 'COMPLETE' ? (artifact.verdict.pass ? 'PASS' : 'FAIL') : 'ERROR'}`);
-  if (artifact.status === 'ERROR') process.exitCode = 1;
+  process.exitCode = exitCodeForVerdict(artifact.status, artifact.verdict.pass);
 };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
