@@ -160,6 +160,10 @@ async function runFindingsCase() {
   check(await page.locator('.completed-session > .finding-line').count() === 0, 'noGlobalAssociations');
 
   const controls = page.locator('.finding-toggle');
+  if (await controls.first().getAttribute('aria-expanded') === 'true') {
+    await controls.first().click();
+    await settleOverlay(page);
+  }
   await controls.first().focus();
   const firstKey = await controls.first().getAttribute('data-finding-id');
   await page.keyboard.press('ArrowDown');

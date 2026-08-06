@@ -267,8 +267,10 @@ export function restoreRetirement(record: CanvasRecord): void {
 }
 
 function markRecordActive(record: CanvasRecord): void {
+  const firstActivity = !record.activeInWindow;
   record.activeInWindow = true;
   record.contextActivityInWindow = true;
+  if (!firstActivity) return;
   record.inactiveBoundaries = 0;
   if (!record.activeLifecycleRecorded) {
     record.activeLifecycleRecorded = true;
@@ -1112,7 +1114,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const record = recordByContext.get(this);
       if (!record || killed) return original.apply(this, args);
 
-      const reactivated = reactivateRecord(record);
+      const reactivated = record.retired && reactivateRecord(record);
       const firstActivity = !record.activeInWindow;
       const headEntries =
         !resetsContext && windowCaptured && firstActivity
@@ -1158,7 +1160,8 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'context-reset',
         );
       } else {
-        markRecordActive(record);
+        if (record.activeInWindow) record.contextActivityInWindow = true;
+        else markRecordActive(record);
         if (rasterOperation) {
           record.rasterOps++;
           if (!record.contentDirty) {
@@ -1239,11 +1242,12 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             : null;
         originalSet.call(this, value);
         if (!record || killed) return;
-        reactivateRecord(record);
+        if (record.retired) reactivateRecord(record);
         if (methodEvidenceByRecord) {
           addMethodEvidence(methodEvidenceByRecord, record, name, null);
         }
-        markRecordActive(record);
+        if (record.activeInWindow) record.contextActivityInWindow = true;
+        else markRecordActive(record);
         if (headEntries) {
           try {
             captureHeadState(record.sig, headEntries.entries);
