@@ -1,6 +1,6 @@
 # canvas-scan
 
-`canvas-scan@0.4.0` is a release candidate. It is not published on npm.
+`canvas-scan@0.4.0` is on npm.
 
 canvas-scan is a drop-in Canvas2D investigation tool. It observes main-thread
 Canvas2D work. React owner data is optional attribution, not the product
@@ -8,7 +8,7 @@ boundary.
 
 ## Status
 
-The release candidate records a bounded investigation session. It reports
+The release records a bounded investigation session. It reports
 measured Canvas2D API self-time, associated browser evidence, and review
 candidates. It does not claim GPU time, render time, causality, wasted work,
 or pixel identity. Repeated commands are a review candidate only.
