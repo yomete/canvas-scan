@@ -35,6 +35,7 @@ export function evaluateCapture(manifest, capture = {}) {
   const limits = capture.session?.droppedEntryCounts;
   const dropped = limits ? Object.entries(limits).filter(([, count]) => count !== 0).map(([name, count]) => `${name}:${count}`) : [];
   const failures = [...checked.failures, ...prohibited, ...dropped.map(item => `dropped evidence:${item}`)];
+  if (manifest.scenario !== 'integrated-burst' && capture.acceptedRunCount !== 1) failures.push(`fixture accepted run count must equal 1 (received ${capture.acceptedRunCount ?? 0})`);
   if (unsupportedInvalid) failures.push('unapproved unsupported evidence');
   return { pass: failures.length === 0, failures, diagnostics, expectationResults: checked.expectationResults };
 }
@@ -190,6 +191,18 @@ async function triggerKnown(page, source) {
     }, 0);
   }, source);
 }
+async function checkPointerClick(browser) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(`${baseUrl}/v04-lab.html?scenario=heavy-burst&variant=variant-a&mode=bad`, { waitUntil: 'load' });
+    await page.waitForFunction(() => window.__CANVAS_LAB_FIXTURE__?.ready, undefined, { timeout: 10_000 });
+    await page.locator('#lab-trigger').click();
+    await page.waitForFunction(() => window.__CANVAS_LAB_FIXTURE__?.snapshot().interactionComplete === true, undefined, { timeout: 30_000 });
+    const fixture = await page.evaluate(() => window.__CANVAS_LAB_FIXTURE__.snapshot());
+    assert(fixture.acceptedRunCount === 1, `pointer click accepted run count must equal 1 (received ${fixture.acceptedRunCount})`);
+  } finally { await context.close(); }
+}
 function supportingCanvas(session, manifest) {
   const findingTypes = new Set(manifest.expectations.filter(item => item.kind === 'finding').map(item => item.findingType));
   const finding = session.findings.find(item => findingTypes.has(item.type));
@@ -283,7 +296,7 @@ async function captureRow(browser, browserVersion, manifest, screenshot) {
     });
     const fixture = await page.evaluate(() => window.__CANVAS_LAB_FIXTURE__.snapshot(true));
     if (manifest.scenario === 'interaction-association' && manifest.mode === 'bad' && session.browserFeatures.longAnimationFrames === false) diagnostics.unsupportedEvidence.push({ feature: 'long-animation-frame', browserVersion, reason: 'Chrome did not expose Long Animation Frame entries', expectation: manifest.expectations[0].id });
-    const evaluated = evaluateCapture(manifest, { session, idleDrawCount: idle.drawCount, interactionStartedAt: fixture.interactionStartedAt, fixtureBoundaryCount: fixture.boundaryCount, diagnostics });
+    const evaluated = evaluateCapture(manifest, { session, idleDrawCount: idle.drawCount, interactionStartedAt: fixture.interactionStartedAt, fixtureBoundaryCount: fixture.boundaryCount, acceptedRunCount: fixture.acceptedRunCount, diagnostics });
     if (screenshot) { await showFindings(page); await page.screenshot({ path: screenshot }); }
     const negative = negativeEvidence(session, manifest, fixture);
     return {
@@ -345,6 +358,7 @@ async function run() {
   await copyFile(bundleSource, bundleTarget);
   const runId = randomUUID(); const startedAt = new Date().toISOString();
   const captured = await launchLab(async (browser, browserVersion) => {
+    await checkPointerClick(browser);
     const rows = [];
     for (const manifest of orderedRuns()) {
       const screenshot = manifest.scenario === 'integrated-continuous' && manifest.mode === 'bad' ? normalPaths[4] : manifest.scenario === 'integrated-burst' && manifest.mode === 'bad' ? normalPaths[5] : undefined;

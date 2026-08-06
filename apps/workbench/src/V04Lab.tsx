@@ -12,6 +12,7 @@ type Factors = {
 };
 type FixtureSnapshot = {
   actions: string[];
+  acceptedRunCount: number;
   drawCount: number;
   interactionComplete: boolean;
   interactionStartedAt: number | null;
@@ -107,7 +108,7 @@ export function V04Lab() {
   const reactPrimary = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const state = { actions: [] as string[], drawCount: 0, interactionComplete: false, interactionStartedAt: null as number | null, boundaryCount: null as number | null, phase: 'ready' };
+    const state = { actions: [] as string[], acceptedRunCount: 0, drawCount: 0, interactionComplete: false, interactionStartedAt: null as number | null, boundaryCount: null as number | null, phase: 'ready' };
     let resolveCompletion!: () => void;
     const completed = new Promise<void>(resolve => { resolveCompletion = resolve; });
     const complete = () => { if (state.interactionComplete) return; state.interactionComplete = true; resolveCompletion(); };
@@ -235,10 +236,18 @@ export function V04Lab() {
       complete();
     }
     let pending = Promise.resolve();
-    const trigger = document.querySelector<HTMLButtonElement>('#lab-trigger')!;
+    const trigger = document.querySelector<HTMLButtonElement>('#lab-trigger');
     const eventName = factors.eventSource === 'keyboard' ? 'keydown' : factors.eventSource === 'wheel' ? 'wheel' : 'pointerdown';
-    const onTrigger = (event: Event) => { if (eventName === 'keydown' && (event as KeyboardEvent).key !== 'Enter') return; state.interactionStartedAt ??= performance.now(); pending = pending.then(knownScenario).catch(error => { console.error(error); complete(); }); };
-    trigger.addEventListener(eventName, onTrigger);
+    const activate = () => {
+      if (state.acceptedRunCount) return;
+      state.acceptedRunCount++;
+      state.interactionStartedAt ??= performance.now();
+      pending = pending.then(knownScenario).catch(error => { console.error(error); complete(); });
+    };
+    const onTrigger = (event: Event) => { if (eventName === 'keydown' && (event as KeyboardEvent).key !== 'Enter') return; activate(); };
+    const onClick = () => activate();
+    trigger?.addEventListener(eventName, onTrigger);
+    trigger?.addEventListener('click', onClick);
 
     const burstButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-burst-action]')];
     async function runBurstAction(name: string) {
@@ -260,13 +269,14 @@ export function V04Lab() {
     const burstListeners = burstButtons.map(button => { const listener = () => { pending = pending.then(() => runBurstAction(button.dataset.burstAction!)).catch(error => { console.error(error); complete(); }); }; button.addEventListener('click', listener); return [button, listener] as const; });
 
     const snapshot = (includeImage = false): FixtureSnapshot => ({
-      actions: [...state.actions], drawCount: state.drawCount, interactionComplete: state.interactionComplete, interactionStartedAt: state.interactionStartedAt, boundaryCount: state.boundaryCount, phase: state.phase,
+      actions: [...state.actions], acceptedRunCount: state.acceptedRunCount, drawCount: state.drawCount, interactionComplete: state.interactionComplete, interactionStartedAt: state.interactionStartedAt, boundaryCount: state.boundaryCount, phase: state.phase,
       visibleChecksum: `${controls.scenario}|${controls.variant}|${scene.join(',')}`,
       visibleImageHash: includeImage ? canvasHash(scenarioCanvases.map(canvas => canvas === primary ? activePrimary : canvas).filter(canvas => canvas.isConnected)) : '',
     });
     window.__CANVAS_LAB_FIXTURE__ = { ready: true, completed, snapshot };
     return () => {
-      trigger.removeEventListener(eventName, onTrigger);
+      trigger?.removeEventListener(eventName, onTrigger);
+      trigger?.removeEventListener('click', onClick);
       for (const [button, listener] of burstListeners) button.removeEventListener('click', listener);
       for (const canvas of directCanvases) canvas.remove();
       outsideReact?.remove();
@@ -277,7 +287,7 @@ export function V04Lab() {
   const reactOrder = factors.identityOrder === 'first' ? ['primary', 'decoy-a', 'decoy-b'] : factors.identityOrder === 'middle' ? ['decoy-a', 'primary', 'decoy-b'] : ['decoy-a', 'decoy-b', 'primary'];
   return <main className="lab-shell">
     <header><p className="eyebrow">Canvas Performance Lab v0.4</p><h1>{controls.scenario}</h1><p>{controls.variant} · {controls.mode}</p></header>
-    <button id="lab-trigger" type="button">Run fixture</button>
+    {controls.scenario !== 'integrated-burst' && <button id="lab-trigger" type="button">Run fixture</button>}
     {controls.scenario === 'integrated-burst' && <section aria-label="Flamegraph actions">{burstActions.map(action => <button type="button" key={action} data-burst-action={action}>{action}</button>)}</section>}
     <div ref={host} className="lab-canvases">{factors.ownership === 'react' && reactOrder.map(role => <canvas key={role} ref={role === 'primary' ? reactPrimary : undefined} data-lab-role={role} className={role === 'primary' ? 'primary-canvas' : 'decoy-canvas'} />)}</div>
   </main>;

@@ -282,6 +282,62 @@ describe('overlay flyout', () => {
     expect(children.indexOf(root.querySelector('.live-heading')!)).toBeLessThan(children.indexOf(root.querySelector('.row')!));
   });
 
+  it('opens only the first completed finding and keeps it closed after refresh', () => {
+    mountOverlay();
+    const heavy = makeCanvas();
+    const repeated = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'first-finding', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), heavy, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'second-finding', rasterOperationCount: 2, comparisonGap: 3 }), repeated, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'second-finding', rasterOperationCount: 3, comparisonGap: 2 }), repeated, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const controls = [...root.querySelectorAll<HTMLButtonElement>('.finding-toggle')];
+    expect(controls.length).toBeGreaterThanOrEqual(2);
+    expect(controls[0].getAttribute('aria-expanded')).toBe('true');
+    expect(controls[0].closest('.finding-card')?.querySelector<HTMLElement>('.finding-evidence')?.hidden).toBe(false);
+    expect(controls[1].getAttribute('aria-expanded')).toBe('false');
+    expect(controls[1].closest('.finding-card')?.querySelector<HTMLElement>('.finding-evidence')?.hidden).toBe(true);
+    controls[0].click(); refreshOverlay(); refreshOverlay();
+    expect(controls[0].getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('labels saved and current evidence scopes with owner-first copy', () => {
+    mountOverlay();
+    const attributed = makeCanvas();
+    const unattributed = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'saved-attributed', canvasApiSelfTimeMs: 9 }), attributed, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'saved-unattributed', nearestReactOwner: null, attributionKind: 'unattributed', canvasApiSelfTimeMs: 9 }), unattributed, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    emitReport(makeReport({ canvasId: 'current-attributed' }), makeCanvas(), { windowIndex: 2, timestampMs: 20 });
+    refreshOverlay();
+    const root = getShadowRoot();
+    const text = root.querySelector<HTMLElement>('.flyout')!.textContent!;
+    expect(text.indexOf('SAVED RECORDING')).toBeLessThan(text.indexOf('CANVAS WORK'));
+    expect(text.indexOf('SAVED RECORDING')).toBeLessThan(text.indexOf('FINDINGS'));
+    expect(text.indexOf('CURRENT CANVAS ACTIVITY')).toBeLessThan(text.indexOf('Owner: EffectCanvas · Canvas ID: current-attributed'));
+    const attributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-attributed"]')!.textContent!;
+    expect(attributedSummary.indexOf('Owner: EffectCanvas')).toBeLessThan(attributedSummary.indexOf('Canvas ID: saved-attributed'));
+    const unattributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-unattributed"]')!.textContent!;
+    expect(unattributedSummary.indexOf('Owner: Not attributed')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
+  });
+
+  it('uses review-candidate copy and a neutral focus background', () => {
+    mountOverlay(); startRecording();
+    emitReport(makeReport({ canvasId: 'candidate-copy', canvasApiSelfTimeMs: 9 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    const card = root.querySelector<HTMLElement>('.finding-card')!;
+    expect(card.textContent).toContain('Review candidate — inspect evidence');
+    expect(card.textContent).not.toMatch(/confirmed problem|confirmed defect/i);
+    expect(root.querySelector('.findings-list')?.textContent).toContain('A review candidate is a place to inspect. It is not a confirmed problem.');
+    const style = root.querySelector('style')?.textContent ?? '';
+    const focusRule = style.match(/\.finding-card:focus-visible,[\s\S]*?\.canvas-summary:focus-visible \{[^}]*\}/)?.[0] ?? '';
+    expect(focusRule).toContain('background: rgba(255, 255, 255, 0.18)');
+    expect(focusRule).not.toContain('#ef4444');
+  });
+
   it('renders every finding type in the canonical saved order', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     mountOverlay();

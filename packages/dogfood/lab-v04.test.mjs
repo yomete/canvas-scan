@@ -144,7 +144,7 @@ test('non-React and integrated scenarios verify their complete evidence sets', (
 });
 
 test('diagnostics, idle draws, dropped evidence, and unapproved skips fail', () => {
-  const manifest = row('heavy-burst'); const capture = { session: findingSession(manifest) };
+  const manifest = row('heavy-burst'); const capture = { session: findingSession(manifest), acceptedRunCount: 1 };
   for (const key of ['warnings', 'consoleErrors', 'pageErrors', 'requestFailures', 'instrumentationKills']) assert.equal(evaluateCapture(manifest, { ...capture, diagnostics: { [key]: ['bad'] } }).pass, false);
   assert.equal(evaluateCapture(manifest, { ...capture, idleDrawCount: 1 }).pass, false);
   assert.equal(evaluateCapture(manifest, { session: { ...capture.session, droppedEntryCounts: { ...capture.session.droppedEntryCounts, resetEvents: 1 } } }).pass, false);
@@ -152,9 +152,19 @@ test('diagnostics, idle draws, dropped evidence, and unapproved skips fail', () 
   assert.deepEqual(collectDiagnostics(), { warnings: [], consoleErrors: [], pageErrors: [], requestFailures: [], instrumentationKills: [], unsupportedEvidence: [] });
 });
 
+test('non-integrated captures accept exactly one fixture run', () => {
+  const manifest = row('heavy-burst'); const capture = { session: findingSession(manifest) };
+  assert.equal(evaluateCapture(manifest, { ...capture, acceptedRunCount: 1 }).failures.some(failure => failure.includes('fixture accepted run count')), false);
+  for (const acceptedRunCount of [0, 2]) {
+    const result = evaluateCapture(manifest, { ...capture, acceptedRunCount });
+    assert.equal(result.pass, false);
+    assert(result.failures.includes(`fixture accepted run count must equal 1 (received ${acceptedRunCount})`));
+  }
+});
+
 test('mutation is narrow and fails only because the heavy finding is missing', () => {
   const mutated = applyMutation(rows, 'heavy-burst-seed-off').find(item => item.mutation);
-  const result = evaluateCapture(mutated, { session: session() });
+  const result = evaluateCapture(mutated, { session: session(), acceptedRunCount: 1 });
   assert.equal(result.pass, false); assert.deepEqual(result.failures, ['heavy-burst:heavy-canvas-work: missing finding']);
   assert.throws(() => applyMutation(rows, 'other'), /unknown mutation/);
 });

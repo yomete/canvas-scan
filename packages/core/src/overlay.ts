@@ -242,9 +242,11 @@ button { font: inherit; }
 .finding-toggle:focus-visible,
 .session-copy:focus-visible,
 .current-action:focus-visible,
-.canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: #ef4444; }
+.canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
 .finding-line, .session-line, .raw-evidence { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
+.session-owner { color: #fff; }
+.session-identifier { color: rgba(255, 255, 255, 0.48); }
 .raw-evidence { color: rgba(255, 255, 255, 0.48); font-size: 10px; line-height: 14px; }
 .finding-actions { display: flex; gap: 4px; margin-top: 5px; }
 .finding-toggle, .current-action, .session-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
@@ -967,12 +969,15 @@ function createFinding(
   control.type = 'button';
   control.dataset.findingId = key;
   control.setAttribute('aria-controls', `${id}-evidence`);
-  control.textContent = `${index + 1}  ${findingLabel(finding.type)} · Review candidate`;
+  control.textContent = `${index + 1}  ${findingLabel(finding.type)} · Review candidate — inspect evidence`;
   card.append(control);
 
   const owner = session.canvases.find(canvas => canvas.canvasId === finding.canvasId)?.nearestReactOwner;
-  appendLine(card, '', `${owner ?? 'Canvas'} · canvasId=${finding.canvasId}`);
-  appendLine(card, '', `Episode ${episodes.join(', ') || 'none'}`);
+  appendLine(card, '', `Owner: ${owner ?? 'Not attributed'}`);
+  const identifiers = document.createElement('div');
+  identifiers.className = 'finding-line session-identifier';
+  identifiers.textContent = `Canvas ID: ${finding.canvasId} · Episode ID: ${episodes.join(', ') || 'none'}`;
+  card.append(identifiers);
 
   const evidence = document.createElement('div');
   evidence.className = 'finding-evidence';
@@ -1063,8 +1068,13 @@ function coverageLabel(name: string): string {
 }
 
 function createSessionView(session: InvestigationSessionV1): HTMLElement {
+  if (session.findings.length && expandedFindingId === null) expandedFindingId = findingKey(session.findings[0]);
   const root = document.createElement('div');
   root.className = 'completed-session';
+  const scope = document.createElement('div');
+  scope.className = 'session-heading session-section';
+  scope.textContent = 'SAVED RECORDING';
+  root.append(scope);
   const header = document.createElement('div');
   header.className = 'session-section session-header';
   const heading = document.createElement('div');
@@ -1111,7 +1121,13 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
       line.tabIndex = 0;
       line.dataset.summaryIndex = String(index);
       line.dataset.sessionCanvasId = canvas.canvasId;
-      line.textContent = `${canvas.nearestReactOwner ?? 'Canvas'} · ${canvas.canvasApiSelfTimeMs} ms Canvas2D API self-time · ${canvas.maxWindowSelfTimeMs} ms maximum frame · ${canvas.rasterOperationCount} raster operations · ${canvas.evidenceLevel} · canvasId=${canvas.canvasId}`;
+      const owner = document.createElement('div');
+      owner.className = 'session-owner';
+      owner.textContent = `Owner: ${canvas.nearestReactOwner ?? 'Not attributed'} · ${canvas.canvasApiSelfTimeMs} ms Canvas2D API self-time · ${canvas.maxWindowSelfTimeMs} ms maximum frame · ${canvas.rasterOperationCount} raster operations · ${canvas.evidenceLevel}`;
+      const identifier = document.createElement('div');
+      identifier.className = 'session-identifier';
+      identifier.textContent = `Canvas ID: ${canvas.canvasId}`;
+      line.append(owner, identifier);
       summaries.append(line);
     }
     const more = document.createElement('button');
@@ -1128,6 +1144,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   findingsHeading.className = 'session-heading';
   findingsHeading.textContent = 'FINDINGS';
   findings.append(findingsHeading);
+  appendLine(findings, '', 'A review candidate is a place to inspect. It is not a confirmed problem.');
   if (session.findings.length === 0) appendLine(findings, '', 'No review candidates met the finding thresholds in this recording.');
   for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
   root.append(findings);
@@ -1244,9 +1261,9 @@ function renderFlyout(): void {
     badge.textContent = badgeText(canvasStats.kind);
     badge.title = badgeTitle(canvasStats.kind);
     const text = row.querySelector<HTMLElement>('.row-text')!;
-    const owner = canvasStats.owner ?? canvasId;
+    const owner = canvasStats.owner ?? 'Not attributed';
     let content =
-      `${owner} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
+      `Owner: ${owner} · Canvas ID: ${canvasId} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
     // The row ellipsizes, so the title carries the whole sentence.
     let title =
       `${owner} sent the same draw commands in ${aggregate.same} of the ` +
@@ -1757,7 +1774,10 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   (document.body ?? document.documentElement).append(host);
   document.addEventListener('keydown', handleKeydown);
   unsubscribe = subscribeToReports(handleReport);
-  if (getRecordingState() === 'complete') shownSession = getLastSession() ?? null;
+  if (getRecordingState() === 'complete') {
+    shownSession = getLastSession() ?? null;
+    expandedFindingId = shownSession?.findings[0] ? findingKey(shownSession.findings[0]) : null;
+  }
   unsubscribeRecording = subscribeToRecordingState((state) => {
     if (state === 'recording') {
       shownSession = null;
@@ -1767,6 +1787,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
       findingNodes.clear();
     } else if (state === 'complete') {
       shownSession = getLastSession() ?? null;
+      expandedFindingId = shownSession?.findings[0] ? findingKey(shownSession.findings[0]) : null;
       showAllSessionCanvases = false;
     }
     renderRecordingState();
