@@ -96,7 +96,7 @@ const runScenario = async (name, mode, action) => {
     await shadow(page, '.record');
     await page.click(`#${action}`);
     if (action === 'interact') await page.waitForFunction(() => window.__RESIZE_CHURN_PROBE__.resizeCount >= 3);
-    if (action === 'setup') await page.waitForFunction(frame => window.__RESIZE_CHURN_PROBE__.setupRuns === 1 && window.__RESIZE_CHURN_PROBE__.frameCount >= frame + 2, startFrame);
+    if (action === 'setup') await page.waitForFunction(() => window.__RESIZE_CHURN_PROBE__.setupRuns === 3 && window.__RESIZE_CHURN_PROBE__.frameCount >= window.__RESIZE_CHURN_PROBE__.setupFrame + 125);
     if (action === 'outside') await page.waitForFunction(frame => window.__RESIZE_CHURN_PROBE__.outsideStage === 3 && window.__RESIZE_CHURN_PROBE__.frameCount >= frame + 4, startFrame);
     await shadow(page, '.stop-recording');
     const session = await page.evaluate(() => window.__CANVAS_SCAN__.getLastSession());
@@ -156,7 +156,14 @@ try {
 }
 
 const sources = new Set(bad?.session?.resetEvents.filter(event => event.canvasId === bad?.finding?.canvasId).map(event => event.source));
-const setupEvents = setup?.session?.resetEvents.filter(event => event.canvasId.startsWith('seeded-canvas#')) ?? [];
+const oneShotInputs = [
+  { id: 'one-shot-width-first#', events: [{ source: 'width-setter', width: 91, height: 150 }, { source: 'height-setter', width: 91, height: 37 }] },
+  { id: 'one-shot-height-first#', events: [{ source: 'height-setter', width: 300, height: 44 }, { source: 'width-setter', width: 180, height: 44 }] },
+  { id: 'one-shot-wide#', events: [{ source: 'width-setter', width: 300, height: 150 }, { source: 'height-setter', width: 300, height: 88 }] },
+];
+const setupCanvases = setup?.session?.canvases.filter(canvas => canvas.canvasId.startsWith('one-shot-')) ?? [];
+const setupEvents = setup?.session?.resetEvents.filter(event => event.canvasId.startsWith('one-shot-')) ?? [];
+const setupWindows = setup?.session?.windows.filter(window => window.canvasId.startsWith('one-shot-')) ?? [];
 const outsideEvents = outside?.session?.resetEvents.filter(event => event.canvasId.startsWith('outside-canvas#')) ?? [];
 const cardEvidence = bad?.finding && [
   `${bad.finding.activeResetCount} active resets of ${bad.finding.observedResetCount} observed resets`,
@@ -174,7 +181,14 @@ const checks = {
   exactSourcesAndDimensions: ['width-setter', 'height-setter', 'width-attribute', 'context-reset'].every(source => sources.has(source)) && bad?.session?.resetEvents.filter(event => event.canvasId === bad?.finding?.canvasId).every(event => event.width === 240 && event.height === 120),
   activeFlagsAndFindingTotals: Boolean(bad?.finding && bad.session.resetEvents.filter(event => event.canvasId === bad.finding.canvasId).every(event => event.activeRasterOverlap) && findingMatchesSession(bad.session, bad.finding)),
   fixedGuardsRemoveFinding: !fixed?.session?.findings.some(item => item.type === 'resize-churn') && fixed?.session?.resetEvents.filter(event => event.canvasId.startsWith('seeded-canvas#')).length === 0,
-  oneSetupResetDoesNotFind: setupEvents.length === 1 && setupEvents[0].source === 'width-setter' && setupEvents[0].activeRasterOverlap && !setup?.session?.findings.some(item => item.type === 'resize-churn'),
+  oneShotSetupDoesNotFind: setupCanvases.length === 3 && new Set(setupCanvases.map(canvas => canvas.canvasId)).size === 3 && oneShotInputs.every(input => {
+    const canvas = setupCanvases.find(item => item.canvasId.startsWith(input.id));
+    const events = setupEvents.filter(event => event.canvasId === canvas?.canvasId);
+    const windows = setupWindows.filter(window => window.canvasId === canvas?.canvasId);
+    const retired = setup?.session?.lifecycleEvents.filter(event => event.canvasId === canvas?.canvasId && event.type === 'retired') ?? [];
+    return canvas?.rasterOperationCount === 1 && windows.length === 1 && windows[0].rasterOperationCount === 1 && events.length === 2 && events.every(event => event.activeRasterOverlap && event.windowIndex === windows[0].windowIndex) && new Set(events.map(event => event.windowIndex)).size === 1 && JSON.stringify(events.map(event => ({ source: event.source, width: event.width, height: event.height }))) === JSON.stringify(input.events) && retired.length === 1;
+  }) && setupEvents.length === 6 && setupWindows.length === 3 && !setup?.session?.findings.some(item => item.type === 'resize-churn'),
+  badSpansTwoActiveWindows: new Set(bad?.finding?.resetEvents.map(event => event.windowIndex)).size >= 2,
   outsideResetsStayIdleEvidence: outsideEvents.length === 2 && outsideEvents.map(event => event.source).join(',') === 'width-setter,height-setter' && outsideEvents.every(event => !event.activeRasterOverlap && event.rasterOperationCount === 0) && !outside?.session?.findings.some(item => item.type === 'resize-churn'),
   cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Resets during active work.*Review candidate/.test(bad?.cardText ?? '') && !/caused|wasted|avoidable|render time|GPU time|pixel/i.test(bad?.cardText ?? '')),
   locateAndInspect: bad?.located && bad?.cardCanvasId === bad?.finding?.canvasId && bad?.popoverOwner === bad?.finding?.canvasId,

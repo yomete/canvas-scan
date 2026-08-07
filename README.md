@@ -68,7 +68,7 @@ prove. `nextCheck` states the next useful check.
 - `repeated-draw-work` means captured windows sent the same commands. This is a
   review candidate. This does not claim unchanged pixels or wasted work. Check whether
   the scene and interaction require those repeated commands.
-- `resize-churn` means repeated canvas resets overlapped active raster work. It
+- `resize-churn` means reset events span repeated active raster-work windows. It
   does not prove that resets caused slowness. Check whether sizing and reset
   calls can run only when dimensions or state change.
 - `backing-store-mismatch` means the recorded backing area is larger than the

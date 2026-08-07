@@ -351,7 +351,8 @@ describe('overlay flyout', () => {
     emitReport(makeReport({ canvasId: 'repeated', canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), repeated, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 1, timestampMs: 10 });
     emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'height-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 2, timestampMs: 20 });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 2, timestampMs: 20, source: 'height-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 2 }), backing, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 3 }), backing, { windowIndex: 2, timestampMs: 20 });
     const session = stopRecording()!;
@@ -586,7 +587,7 @@ describe('overlay flyout', () => {
     startRecording();
     emitReport(makeReport({ canvasId: 'resize-seeded', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3, canvasApiSelfTimeMs: 2 }), canvas, { windowIndex: 101, timestampMs: 10 });
     emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'context-reset', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 102, timestampMs: 20, source: 'context-reset', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();
@@ -598,8 +599,8 @@ describe('overlay flyout', () => {
     expect(card.textContent).toContain('width-setter (240×120)');
     expect(card.textContent).toContain('context-reset (240×120)');
     expect(card.textContent).toContain('Affected episodes:');
-    expect(card.textContent).toContain('Command statuses: same 0, changed 0, unknown 1');
-    expect(card.textContent).toContain('Unknown reasons: canvas-reset 1');
+    expect(card.textContent).toContain('Command statuses: same 0, changed 0, unknown 2');
+    expect(card.textContent).toContain('Unknown reasons: canvas-reset 2');
     expect(card.textContent).toContain('does not show that resets made the application slow');
     expect(card.textContent).not.toMatch(/caused|wasted|avoidable|render time|GPU time|pixel/i);
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
@@ -646,9 +647,9 @@ describe('overlay flyout', () => {
     const canvas = makeCanvas(false);
     startRecording();
     emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 101, timestampMs: 10 });
-    for (const source of ['width-setter', 'height-setter'] as const) {
-      emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source, width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    }
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 102, timestampMs: 20 });
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 102, timestampMs: 20, source: 'height-setter', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();

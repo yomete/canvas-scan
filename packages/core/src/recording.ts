@@ -320,7 +320,7 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
   for (const canvasId of [...new Set(resetEvents.map(event => event.canvasId))]) {
     const observed = resetEvents.filter(event => event.canvasId === canvasId);
     const qualifying = observed.filter(event => event.activeRasterOverlap);
-    if (qualifying.length < 2) continue;
+    if (new Set(qualifying.map(event => event.windowIndex)).size < 2) continue;
     const reportedWindows = new Map(windows.filter(window => window.canvasId === canvasId).map(window => [window.windowIndex, window]));
     const qualifyingWindows = [...new Map(qualifying.map(event => {
       const key = event.windowIndex;

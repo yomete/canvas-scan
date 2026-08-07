@@ -21,11 +21,11 @@ const finding = (type, canvasId = 'canvas-1', overrides = {}) => {
   const common = { type, canvasId, evidenceLevel: 'candidate', canvasApiSelfTimeMs: 9, rasterOperationCount: 10, claimBoundary: { observation: approved.observation, explanation: approved.explanation, nonEstablishedFacts: approved.nonEstablishedFacts }, nextCheck: approved.nextCheck };
   if (type === 'heavy-canvas-work') return { ...common, episodeId: 'episode-1', topMethods: [{ method: 'fillRect', count: 10, canvasApiSelfTimeMs: 9 }], maximumWindow: { canvasApiSelfTimeMs: 9, rasterOperationCount: 10, methodEvidence: { fillRect: { count: 10, canvasApiSelfTimeMs: 9 } } }, ...overrides };
   if (type === 'repeated-draw-work') return { ...common, episodeId: 'episode-1', repeatedWindowCount: 1, repeatedWindows: [{ rasterOperationCount: 2 }], rasterOperationCount: 2, ...overrides };
-  if (type === 'resize-churn') return { ...common, observedResetCount: 2, activeResetCount: 2, resetEvents: [{}, {}], affectedEpisodeIds: ['episode-1'], ...overrides };
+  if (type === 'resize-churn') return { ...common, observedResetCount: 2, activeResetCount: 2, resetEvents: [{ windowIndex: 1 }, { windowIndex: 2 }], affectedEpisodeIds: ['episode-1'], ...overrides };
   return { ...common, affectedWindowCount: 2, affectedWindows: [{ actualToExpectedAreaRatio: 2 }, { actualToExpectedAreaRatio: 2 }], affectedEpisodeIds: ['episode-1'], ...overrides };
 };
-const session = ({ canvases = [summary()], findings = [], lifecycleEvents = [], browserEntries = [], episodeAssociations = [], episodes = [], browserFeatures = { longAnimationFrames: true }, droppedEntryCounts } = {}) => ({
-  canvases, findings, lifecycleEvents, browserEntries, episodeAssociations, episodes, browserFeatures,
+const session = ({ canvases = [summary()], findings = [], windows = [], resetEvents = [], lifecycleEvents = [], browserEntries = [], episodeAssociations = [], episodes = [], browserFeatures = { longAnimationFrames: true }, droppedEntryCounts } = {}) => ({
+  canvases, findings, windows, resetEvents, lifecycleEvents, browserEntries, episodeAssociations, episodes, browserFeatures,
   droppedEntryCounts: droppedEntryCounts ?? { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 },
 });
 
@@ -53,7 +53,12 @@ function negativeCapture(scenario) {
   if (scenario === 'heavy-burst') return { session: session({ canvases: [summary('canvas-1', { canvasApiSelfTimeMs: 7 })] }) };
   if (scenario === 'non-react-burst') return { session: session({ canvases: [summary('canvas-1', { canvasApiSelfTimeMs: 7, nearestReactOwner: null, attributionKind: 'unattributed' })] }) };
   if (scenario === 'repeated-continuous') return { session: { ...session(), windows: [{ signatureStatus: 'changed', rasterOperationCount: 1 }, { signatureStatus: 'same', rasterOperationCount: 1 }] } };
-  if (scenario === 'resize-churn') return { session: { ...session(), resetEvents: [{ activeRasterOverlap: true }] } };
+  if (scenario === 'resize-churn') return { session: session({
+    canvases: [summary('setup')],
+    resetEvents: [{ canvasId: 'setup', windowIndex: 1, activeRasterOverlap: true }, { canvasId: 'setup', windowIndex: 1, activeRasterOverlap: true }],
+    windows: [{ canvasId: 'setup', rasterOperationCount: 1 }],
+    lifecycleEvents: [{ canvasId: 'setup', type: 'retired' }],
+  }) };
   if (scenario === 'backing-store-mismatch') return { session: { ...session(), windows: [{ rasterOperationCount: 1, geometry: { actualToExpectedAreaRatio: 2 } }, { rasterOperationCount: 1, geometry: { actualToExpectedAreaRatio: 1.999 } }] } };
   if (scenario === 'lifecycle-reactivation') return { session: session(), fixtureBoundaryCount: 119 };
   return { session: associationSession(row('interaction-association', 'negative'), false, false) };
@@ -89,7 +94,7 @@ test('numeric truth boundaries accept the threshold and reject the nearest value
   const cases = [
     ['heavy-burst', finding('heavy-canvas-work', 'canvas-1', { canvasApiSelfTimeMs: 8 }), finding('heavy-canvas-work', 'canvas-1', { canvasApiSelfTimeMs: 7.999 })],
     ['repeated-continuous', finding('repeated-draw-work'), finding('repeated-draw-work', 'canvas-1', { rasterOperationCount: 1, repeatedWindows: [{ rasterOperationCount: 1 }] })],
-    ['resize-churn', finding('resize-churn'), finding('resize-churn', 'canvas-1', { activeResetCount: 1, resetEvents: [{}] })],
+    ['resize-churn', finding('resize-churn'), finding('resize-churn', 'canvas-1', { resetEvents: [{ windowIndex: 1 }, { windowIndex: 1 }] })],
     ['backing-store-mismatch', finding('backing-store-mismatch'), finding('backing-store-mismatch', 'canvas-1', { affectedWindows: [{ actualToExpectedAreaRatio: 2 }, { actualToExpectedAreaRatio: 1.999 }] })],
   ];
   for (const [scenario, at, below] of cases) {
@@ -97,6 +102,13 @@ test('numeric truth boundaries accept the threshold and reject the nearest value
     assert.equal(checkScenarioResult(row(scenario), { session: sessionWithFinding(below) }).pass, false, `${scenario} below threshold`);
     assert.equal(checkScenarioResult(row(scenario, 'negative'), negativeCapture(scenario)).pass, true, `${scenario} negative`);
   }
+});
+
+test('resize nearest negative keeps paired setup evidence and retirement', () => {
+  const capture = negativeCapture('resize-churn');
+  assert.equal(checkScenarioResult(row('resize-churn', 'negative'), capture).pass, true);
+  assert.equal(checkScenarioResult(row('resize-churn', 'negative'), { session: { ...capture.session, resetEvents: [] } }).pass, false);
+  assert.equal(checkScenarioResult(row('resize-churn', 'negative'), { session: { ...capture.session, lifecycleEvents: [] } }).pass, false);
 });
 
 test('fixed and negative rows reject seeded and unexpected findings', () => {
@@ -174,7 +186,7 @@ function negativeArtifactData(scenario) {
   const supportingCanvas = summary('support', scenario === 'non-react-burst' ? { canvasApiSelfTimeMs: 7, nearestReactOwner: null, attributionKind: 'unattributed' } : { canvasApiSelfTimeMs: 7 });
   if (scenario === 'heavy-burst' || scenario === 'non-react-burst') return { boundary: { threshold: 8 }, observations: { maximumCanvasApiSelfTimeMs: 7 }, supportingCanvas };
   if (scenario === 'repeated-continuous') return { boundary: { threshold: 2 }, observations: { sameWindowRasterOperationCounts: [1] }, supportingCanvas };
-  if (scenario === 'resize-churn') return { boundary: { threshold: 2 }, observations: { activeResetCount: 1 }, supportingCanvas };
+  if (scenario === 'resize-churn') return { boundary: { threshold: 2 }, observations: { activeResetCount: 2, activeResetWindowCount: 1, measuredWorkCount: 1, retiredCount: 1 }, supportingCanvas };
   if (scenario === 'backing-store-mismatch') return { boundary: { threshold: 2 }, observations: { affectedWindowCount: 1, activeWindowAreaRatios: [2, 1.999] }, supportingCanvas };
   if (scenario === 'lifecycle-reactivation') return { boundary: { threshold: 120 }, observations: { inactiveBoundaries: 119, retiredCount: 0 }, supportingCanvas };
   return { boundary: { metric: 'overlap' }, observations: { gapMs: 1, associationCount: 0 }, supportingCanvas };

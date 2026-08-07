@@ -214,8 +214,9 @@ describe('recording', () => {
     startRecording();
     const firstWindowIndex = getCurrentWindowIndex() + 1;
     publish(makeReport('reset', 'unknown', { rasterOperationCount: 2, unknownReason: 'canvas-reset' }), firstWindowIndex);
+    publish(makeReport('reset', 'unknown', { rasterOperationCount: 2, unknownReason: 'canvas-reset' }), firstWindowIndex + 1);
     emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'width-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'height-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex + 1, timestampMs: 20, source: 'height-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const stopped = stopRecording()!;
     stopped.resetEvents[0].width = 1;
     const finding = stopped.findings.find(item => item.type === 'resize-churn');
@@ -229,8 +230,8 @@ describe('recording', () => {
     const storedFinding = stored.findings.find(item => item.type === 'resize-churn');
     expect(storedFinding?.resetEvents[0].width).toBe(300);
     expect(storedFinding?.affectedEpisodeIds[0]).not.toBe('changed');
-    expect(storedFinding?.commandStatuses.unknown).toBe(1);
-    expect(storedFinding?.unknownReasons['canvas-reset']).toBe(1);
+    expect(storedFinding?.commandStatuses.unknown).toBe(2);
+    expect(storedFinding?.unknownReasons['canvas-reset']).toBe(2);
   });
 
   it('keeps measured lifecycle history without creating a finding', () => {

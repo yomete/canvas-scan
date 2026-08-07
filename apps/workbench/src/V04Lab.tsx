@@ -192,8 +192,22 @@ export function V04Lab() {
     }
     async function resizeChurn() {
       const context = contextFor(activePrimary);
-      if (controls.mode === 'bad') { activePrimary.width = activePrimary.width; activePrimary.height = activePrimary.height; activePrimary.setAttribute('width', String(activePrimary.width)); context.reset(); }
-      else if (controls.mode === 'negative') activePrimary.width = activePrimary.width;
+      if (controls.mode === 'bad') {
+        for (let index = 0; index < 2; index++) {
+          activePrimary.width = activePrimary.width; activePrimary.height = activePrimary.height; activePrimary.setAttribute('width', String(activePrimary.width)); context.reset();
+          paint(); await nextFrame();
+        }
+        await frames(2);
+        return;
+      }
+      if (controls.mode === 'negative') {
+        const setup = makeCanvas('resize-setup');
+        canvasHost.append(setup); directCanvases.push(setup);
+        const setupContext = contextFor(setup);
+        setup.width = 91; setup.height = 37; setupContext.fillRect(0, 0, 1, 1); state.drawCount++;
+        await frames(121);
+        return;
+      }
       paint(); await frames(3);
     }
     async function backingMismatch() {
@@ -263,7 +277,12 @@ export function V04Lab() {
         const replacement = makeCanvas('replacement'); configureCanvas(replacement, factors); activePrimary.replaceWith(replacement); directCanvases.push(replacement); activePrimary = replacement;
         prepared.set(replacement, makePrepared(cssWidth, cssHeight)); paint(replacement, 4); await nextFrame();
       } else if (name !== 'Load') { paint(activePrimary, burstActions.indexOf(name) + 1); await nextFrame(); }
-      if (name === 'Resize' && controls.mode === 'bad') { activePrimary.width = activePrimary.width; activePrimary.height = activePrimary.height; paint(activePrimary, 9); await nextFrame(); }
+      if (name === 'Resize' && controls.mode === 'bad') {
+        for (let index = 0; index < 2; index++) {
+          activePrimary.width = activePrimary.width; activePrimary.height = activePrimary.height;
+          paint(activePrimary, 9 + index); await nextFrame();
+        }
+      }
       if (name === 'Resize') { await frames(3); complete(); }
     }
     const burstListeners = burstButtons.map(button => { const listener = () => { pending = pending.then(() => runBurstAction(button.dataset.burstAction!)).catch(error => { console.error(error); complete(); }); }; button.addEventListener('click', listener); return [button, listener] as const; });

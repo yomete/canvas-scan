@@ -84,7 +84,7 @@ const findingEvidence = (type, finding) => {
   if (!validClaim(finding)) return false;
   if (type === 'heavy-canvas-work') return finding.canvasApiSelfTimeMs >= 8 && finding.rasterOperationCount > 0 && finding.maximumWindow?.canvasApiSelfTimeMs > 0 && finding.topMethods?.length > 0;
   if (type === 'repeated-draw-work') return finding.repeatedWindowCount > 0 && finding.rasterOperationCount >= finding.repeatedWindowCount * 2 && finding.repeatedWindows?.every(window => window.rasterOperationCount >= 2);
-  if (type === 'resize-churn') return finding.activeResetCount >= 2 && finding.resetEvents?.length === finding.activeResetCount;
+  if (type === 'resize-churn') return finding.activeResetCount >= 2 && finding.resetEvents?.length === finding.activeResetCount && new Set(finding.resetEvents.map(event => event.windowIndex)).size >= 2;
   if (type === 'backing-store-mismatch') return finding.affectedWindowCount >= 2 && finding.affectedWindows?.length === finding.affectedWindowCount && finding.affectedWindows.every(window => window.actualToExpectedAreaRatio >= 2);
   return false;
 };
@@ -128,8 +128,12 @@ function negativeBoundaryFailures(manifest, capture) {
     return same.length > 0 && Math.max(...same) === 1 ? [] : ['nearest-negative repeated window is not one operation below threshold'];
   }
   if (manifest.scenario === 'resize-churn') {
-    const active = (capture.session?.resetEvents ?? []).filter(event => event.activeRasterOverlap).length;
-    return active === 1 ? [] : ['nearest-negative active reset count is not 1'];
+    const session = capture.session ?? {};
+    const active = (session.resetEvents ?? []).filter(event => event.activeRasterOverlap);
+    const canvasId = active[0]?.canvasId;
+    const retired = (session.lifecycleEvents ?? []).filter(event => event.canvasId === canvasId && event.type === 'retired');
+    const work = (session.windows ?? []).filter(window => window.canvasId === canvasId && window.rasterOperationCount > 0);
+    return active.length === 2 && new Set(active.map(event => event.windowIndex)).size === 1 && work.length === 1 && retired.length === 1 && !findings(capture).some(item => item.type === 'resize-churn') ? [] : ['nearest-negative setup evidence is invalid'];
   }
   if (manifest.scenario === 'backing-store-mismatch') {
     const ratios = (capture.session?.windows ?? []).filter(window => window.rasterOperationCount > 0).map(window => window.geometry?.actualToExpectedAreaRatio).filter(value => typeof value === 'number');

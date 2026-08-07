@@ -3,7 +3,7 @@
 <title>Canvas resize churn probe</title>
 <script src="/canvas-scan.iife.js"></script>
 <button id="interact">Run interaction</button>
-<button id="setup">One setup reset</button>
+<button id="setup">One-shot canvas setup</button>
 <button id="outside">Reset outside drawing</button>
 <canvas id="seeded-canvas" width="240" height="120"></canvas>
 <canvas id="outside-canvas" width="40" height="20"></canvas>
@@ -19,6 +19,7 @@
   let interactions = 0;
   let resizeCount = 0;
   let setupRuns = 0;
+  let setupFrame = 0;
   let outsideStage = 0;
   let pending = false;
   const draw = () => { context.fillStyle = '#2563eb'; context.fillRect(scene[0], scene[1], scene[2], scene[2]); };
@@ -37,11 +38,28 @@
   const tick = () => {
     frameCount++;
     if (pending) { resize(); resizeCount++; draw(); }
-    window.__RESIZE_CHURN_PROBE__ = { mode, frameCount, checksum, interactions, resizeCount, setupRuns, outsideStage };
+    if (setupRuns) { draw(); outsideContext.fillRect(0, 0, 1, 1); }
+    window.__RESIZE_CHURN_PROBE__ = { mode, frameCount, checksum, interactions, resizeCount, setupRuns, setupFrame, outsideStage };
     requestAnimationFrame(tick);
   };
   document.querySelector('#interact').onclick = () => { interactions++; pending = true; };
-  document.querySelector('#setup').onclick = () => { seeded.width = seeded.width; draw(); setupRuns++; };
+  document.querySelector('#setup').onclick = () => {
+    const setups = [
+      { id: 'one-shot-width-first', width: 91, height: 37, order: ['width', 'height'] },
+      { id: 'one-shot-height-first', width: 180, height: 44, order: ['height', 'width'] },
+      { id: 'one-shot-wide', width: 300, height: 88, order: ['width', 'height'] },
+    ];
+    for (const setup of setups) {
+      const canvas = document.createElement('canvas');
+      canvas.id = setup.id;
+      document.body.append(canvas);
+      const setupContext = canvas.getContext('2d');
+      for (const dimension of setup.order) canvas[dimension] = setup[dimension];
+      setupContext.fillRect(0, 0, 1, 1);
+      setupRuns++;
+    }
+    setupFrame = frameCount;
+  };
   document.querySelector('#outside').onclick = () => {
     outside.width = outside.width;
     outsideStage = 1;

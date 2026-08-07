@@ -356,3 +356,48 @@ active windows must still produce the candidate.
 The published package works in current Excalidraw and completes the v0.4
 recording ritual. External dogfood found one reproducible candidate-quality
 defect. Fix that defect before work starts on deeper v0.5 explanations.
+
+---
+
+# SIDPROJ-60 post-release Excalidraw rerun (2026-08-07)
+
+## Commands
+
+```sh
+pnpm --filter canvas-scan run build
+cp packages/core/dist/canvas-scan.iife.js /private/tmp/sidproj-59-excalidraw.4YCqNA/repo/public/canvas-scan.iife.js
+cd /private/tmp/sidproj-59-excalidraw.4YCqNA/repo
+yarn --cwd excalidraw-app vite --host 127.0.0.1 --port 4385
+cd /Users/yomi/Documents/batcave/canvas-scan
+node packages/dogfood/excalidraw-v04.mjs http://127.0.0.1:4385 /private/tmp/sidproj-60-excalidraw-v04.json /private/tmp/sidproj-60-excalidraw-v04.png 219571a7187651c79648de08c9a98a3b2f7f607a post-release-one-shot-filter
+```
+
+The candidate IIFE SHA-256 is
+`f9fb166cab119d3157de617f7e6c54c07cb621c2f231ddcc4657847293199d31`.
+The JSON artifact SHA-256 is
+`1ce3fc23b709539b7da37e05f4d908d8a4d6c9f83f23df8347000aa8600fb0d4`.
+The session SHA-256 is
+`b99733ea5a8256043b7c6f449eb9d531546ffe8b8b65fcf38ff46e64a7704ba7`.
+The screenshot SHA-256 is
+`5411c49f56dcf419996d94b7454bd2365b76daa21dd251ca61e6fd6495e02e89`.
+Chrome was `151.0.7922.77`. Excalidraw was
+`219571a7187651c79648de08c9a98a3b2f7f607a`.
+
+The baseline artifact was `results/2026-08-06-excalidraw-v04.json`, SHA-256
+`e7b338ef848ff3eb76035508c38e39aecb4f19e2d52254f80348a2181a06b248`.
+
+The bounded interaction drew two rectangles and then panned. All harness
+checks passed. The session had zero dropped entries and zero `resize-churn`
+candidates. The prior 20 one-shot setup candidates did not return.
+
+The run kept two `repeated-draw-work` candidates. Both map to `StaticCanvas`.
+The full session keeps raw reset events, lifecycle events, and measured work.
+
+The least-specific explanation is that reset events in one setup window no
+longer meet the repeated-active-window rule. This result does not show that
+the removed canvas work is cheap, necessary, avoidable, or removable.
+
+## Next check
+
+Review the remaining `StaticCanvas` repeated-draw candidates with a controlled
+interaction and measured application evidence.

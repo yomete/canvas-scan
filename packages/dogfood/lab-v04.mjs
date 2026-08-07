@@ -90,7 +90,8 @@ function validNegativeRows(rows) {
   if (byScenario['non-react-burst'].supportingCanvas.nearestReactOwner !== null || byScenario['non-react-burst'].supportingCanvas.attributionKind !== 'unattributed') return false;
   const repeated = byScenario['repeated-continuous'].observations.sameWindowRasterOperationCounts;
   if (!Array.isArray(repeated) || repeated.length === 0 || Math.max(...repeated) !== 1) return false;
-  if (byScenario['resize-churn'].observations.activeResetCount !== 1) return false;
+  const resize = byScenario['resize-churn'].observations;
+  if (resize.activeResetCount !== 2 || resize.activeResetWindowCount !== 1 || resize.measuredWorkCount !== 1 || resize.retiredCount !== 1) return false;
   const backing = byScenario['backing-store-mismatch'].observations;
   if (backing.affectedWindowCount !== 1 || !backing.activeWindowAreaRatios.some(value => value < 2) || !backing.activeWindowAreaRatios.some(value => value >= 2)) return false;
   const lifecycle = byScenario['lifecycle-reactivation'].observations;
@@ -230,8 +231,12 @@ function negativeEvidence(session, manifest, fixture) {
     observations: { sameWindowRasterOperationCounts: session.windows.filter(window => window.signatureStatus === 'same').map(window => window.rasterOperationCount).sort((left, right) => left - right) },
   };
   if (manifest.scenario === 'resize-churn') return {
-    boundary: { metric: 'activeResetCount', threshold: 2, comparison: 'one-below' },
-    observations: { activeResetCount: session.resetEvents.filter(event => event.activeRasterOverlap).length, observedResetCount: session.resetEvents.length },
+    boundary: { metric: 'activeResetWindowCount', threshold: 2, comparison: 'one-below' },
+    observations: (() => {
+      const active = session.resetEvents.filter(event => event.activeRasterOverlap);
+      const canvasId = active[0]?.canvasId;
+      return { activeResetCount: active.length, activeResetWindowCount: new Set(active.map(event => event.windowIndex)).size, observedResetCount: session.resetEvents.length, measuredWorkCount: session.windows.filter(window => window.canvasId === canvasId && window.rasterOperationCount > 0).length, retiredCount: session.lifecycleEvents.filter(event => event.canvasId === canvasId && event.type === 'retired').length };
+    })(),
   };
   if (manifest.scenario === 'backing-store-mismatch') {
     const ratios = session.windows.filter(window => window.rasterOperationCount > 0).map(window => window.geometry.actualToExpectedAreaRatio).filter(value => typeof value === 'number').sort((left, right) => right - left);
@@ -275,6 +280,7 @@ async function captureRow(browser, browserVersion, manifest, screenshot) {
     await page.goto(`${baseUrl}/v04-lab.html?${query}`, { waitUntil: 'load' });
     try { await page.waitForFunction(() => window.__CANVAS_SCAN__ && window.__CANVAS_LAB_FIXTURE__?.ready, undefined, { timeout: 10_000 }); }
     catch (error) { throw new Error(`fixture readiness failed: ${error.message}; diagnostics=${JSON.stringify(diagnostics)}`); }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.evaluate(() => window.__CANVAS_SCAN__.startRecording());
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const idle = await page.evaluate(() => window.__CANVAS_LAB_FIXTURE__.snapshot());

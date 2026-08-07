@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 
@@ -7,14 +7,16 @@ const url = process.argv[2] ?? 'http://127.0.0.1:4385';
 const outputPath = process.argv[3] ?? '/private/tmp/sidproj-59-excalidraw-v04.json';
 const screenshotPath = process.argv[4] ?? '/private/tmp/sidproj-59-excalidraw-v04.png';
 const excalidrawRevision = process.argv[5];
+const profile = process.argv[6] ?? 'sidproj-59';
 
 const allowedPath = (file, extension) => path.isAbsolute(file)
   && path.resolve(file) === file
-  && new RegExp(`^/private/tmp/sidproj-59-[A-Za-z0-9_.-]+\\.${extension}$`).test(file);
+  && new RegExp(`^/private/tmp/${profile === 'post-release-one-shot-filter' ? 'sidproj-60' : 'sidproj-59'}-[A-Za-z0-9_.-]+\\.${extension}$`).test(file);
 
 if (!allowedPath(outputPath, 'json')) throw new Error(`unexpected output path: ${outputPath}`);
 if (!allowedPath(screenshotPath, 'png')) throw new Error(`unexpected screenshot path: ${screenshotPath}`);
 if (!/^[0-9a-f]{40}$/.test(excalidrawRevision ?? '')) throw new Error('expected an exact Excalidraw Git revision');
+if (!['sidproj-59', 'post-release-one-shot-filter'].includes(profile)) throw new Error('unexpected profile');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -140,6 +142,17 @@ try {
   await page.screenshot({ path: screenshotPath });
 
   const sessionText = JSON.stringify(session);
+  const candidateBundleSha256 = await page.evaluate(async () => {
+    const response = await fetch('/canvas-scan.iife.js');
+    return Array.from(new Uint8Array(await response.arrayBuffer())).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }).then(value => sha256(Buffer.from(value, 'hex')));
+  const repeatedCandidates = session.findings.filter(finding => finding.type === 'repeated-draw-work').map(finding => ({
+    canvasId: finding.canvasId,
+    owner: session.canvases.find(canvas => canvas.canvasId === finding.canvasId)?.nearestReactOwner ?? null,
+  }));
+  const postRelease = profile === 'post-release-one-shot-filter';
+  const baselineArtifactPath = path.resolve('packages/dogfood/results/2026-08-06-excalidraw-v04.json');
+  const baselineArtifactSha256 = postRelease ? sha256(await readFile(baselineArtifactPath)) : null;
   const checks = {
     publicPackageVersion: identity.version === '0.4.0',
     loadedBeforeReact: identity.earlyLoad?.scanLoaded === true
@@ -158,11 +171,16 @@ try {
     noDiagnostics: diagnostics.canvasScanWarnings.length === 0
       && diagnostics.consoleErrors.length === 0
       && diagnostics.pageErrors.length === 0,
+    ...(postRelease ? {
+      zeroResizeChurn: !session.findings.some(finding => finding.type === 'resize-churn'),
+      repeatedDrawRemains: repeatedCandidates.length > 0 && repeatedCandidates.every(candidate => candidate.owner === 'StaticCanvas'),
+      noDroppedEntries: Object.values(session.droppedEntryCounts).every(count => count === 0),
+    } : {}),
   };
 
   artifact = {
     schemaVersion: 1,
-    issue: 'SIDPROJ-59',
+    issue: postRelease ? 'SIDPROJ-60' : 'SIDPROJ-59',
     status: Object.values(checks).every(Boolean) ? 'PASS' : 'FAIL',
     capturedAt: new Date().toISOString(),
     app: {
@@ -174,17 +192,23 @@ try {
     package: {
       name: 'canvas-scan',
       version: '0.4.0',
-      registryTarball: 'https://registry.npmjs.org/canvas-scan/-/canvas-scan-0.4.0.tgz',
-      registryTarballSha256: '80ec1ccb685dccd93db19ff93832bb664ffe58a9411a1d6995b286fd9893cc0e',
-      loadedIifeSha256: '8e1773f85717275799d22abee05f7d03874615a5d350a79fe0f8e28a93dfe15c',
+      ...(postRelease ? { candidateIifeSha256: candidateBundleSha256 } : {
+        registryTarball: 'https://registry.npmjs.org/canvas-scan/-/canvas-scan-0.4.0.tgz',
+        registryTarballSha256: '80ec1ccb685dccd93db19ff93832bb664ffe58a9411a1d6995b286fd9893cc0e',
+        loadedIifeSha256: '8e1773f85717275799d22abee05f7d03874615a5d350a79fe0f8e28a93dfe15c',
+      }),
     },
     browser: { name: 'Google Chrome', version: browser.version() },
     url,
     commands: [
+      ...(postRelease ? [
+        'pnpm --filter canvas-scan run build',
+        'cp packages/core/dist/canvas-scan.iife.js /private/tmp/sidproj-59-excalidraw.4YCqNA/repo/public/canvas-scan.iife.js',
+      ] : []),
       'git clone --depth 1 https://github.com/excalidraw/excalidraw.git /private/tmp/sidproj-59-excalidraw.4YCqNA/repo',
       'yarn install --frozen-lockfile --ignore-scripts --network-timeout 600000',
       'yarn --cwd excalidraw-app vite --host 127.0.0.1 --port 4385',
-      `node packages/dogfood/excalidraw-v04.mjs ${url} ${outputPath} ${screenshotPath} ${excalidrawRevision}`,
+      `node packages/dogfood/excalidraw-v04.mjs ${url} ${outputPath} ${screenshotPath} ${excalidrawRevision}${postRelease ? ` ${profile}` : ''}`,
     ],
     disposableChanges: [
       'Removed examples/* from the Yarn workspace list before install.',
@@ -195,6 +219,7 @@ try {
     interactionEvidence,
     checks,
     diagnostics,
+    ...(postRelease ? { profile, baselineArtifactPath, baselineArtifactSha256, repeatedCandidates } : {}),
     evidence: summarize(session),
     sessionSha256: sha256(sessionText),
     screenshotPath,
