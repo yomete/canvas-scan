@@ -257,3 +257,102 @@ blind spot: `reset()` already clears the modelled state without poisoning the
 window, and a resize does the same thing plus a dimension change. The fix is to
 model the dimensions instead of refusing to compare. That work follows this
 run.
+
+---
+
+# Dogfood findings — published v0.4.0 on Excalidraw, 2026-08-06
+
+Setup: `canvas-scan@0.4.0` from the public npm tarball ran against
+excalidraw/excalidraw at `219571a7187651c79648de08c9a98a3b2f7f607a`.
+The test used Google Chrome `150.0.7871.189` and Excalidraw's React 19 app.
+The public IIFE loaded before the React entry.
+
+The disposable checkout removed the `examples/*` workspace before install.
+This change avoided unrelated example dependencies. It did not change the
+Excalidraw application or the Canvas2D path.
+
+Exact commands:
+
+```text
+git clone --depth 1 https://github.com/excalidraw/excalidraw.git /private/tmp/sidproj-59-excalidraw.4YCqNA/repo
+yarn install --frozen-lockfile --ignore-scripts --network-timeout 600000
+yarn --cwd excalidraw-app vite --host 127.0.0.1 --port 4385
+node packages/dogfood/excalidraw-v04.mjs http://127.0.0.1:4385 /private/tmp/sidproj-59-excalidraw-v04.json /private/tmp/sidproj-59-excalidraw-v04.png 219571a7187651c79648de08c9a98a3b2f7f607a
+```
+
+The disposable setup copied the public IIFE to
+`public/canvas-scan.iife.js`. It loaded that file and an early-load marker
+before `index.tsx`.
+
+The scenario recorded two rectangle draws and one pan. The screenshot shows
+both rectangles and the completed canvas-scan recording.
+
+Artifacts:
+
+- Raw session evidence: `results/2026-08-06-excalidraw-v04.json`.
+- Raw evidence SHA-256: `e7b338ef848ff3eb76035508c38e39aecb4f19e2d52254f80348a2181a06b248`.
+- Screenshot SHA-256: `790a0d1a5de0dbc3866ec61bba05865d6eb7e74319e8166e8f182acdc5ccaaef`.
+- Session SHA-256: `ee551261fd5c65df5d63696c91445f033000014382355d12650c7694e1212b74`.
+- Public tarball SHA-256: `80ec1ccb685dccd93db19ff93832bb664ffe58a9411a1d6995b286fd9893cc0e`.
+- Loaded IIFE SHA-256: `8e1773f85717275799d22abee05f7d03874615a5d350a79fe0f8e28a93dfe15c`.
+
+## Result
+
+The public package passed all harness checks. The public API reported version
+`0.4.0`, and the early-load marker found the React hook before React started.
+The saved session matched `getLastSession()`. The browser reported no page
+errors, console errors, or canvas-scan warnings.
+
+The harness found the rectangle tool active before each rectangle. The static
+scene hash changed after each draw. It then found the hand tool active, and the
+static scene hash changed after the pan.
+
+The recording observed 24 canvases, 75 active windows, and 34 draw episodes.
+It measured 144 raster operations and 3.3 ms of Canvas2D API self-time. The
+command statuses were 3 `same`, 28 `changed`, and 44 `unknown`.
+
+The recording saved 59 browser entries and 29 episode associations. Chrome
+provided Event Timing and long animation frame entries. The recording dropped
+no entries.
+
+The 44 `unknown` windows had explicit reasons. They were 4 `first-window`, 20
+`canvas-source-reset`, and 20 `canvas-reset` results. These results do not imply
+zero work or unchanged pixels.
+
+## Product finding
+
+The completed recording showed 22 review candidates. Twenty candidates were
+`resize-churn`; two candidates were `repeated-draw-work` on `StaticCanvas`.
+
+Each resize candidate had the same shape:
+
+- The canvas was unattributed.
+- The canvas had one active window.
+- The canvas sent one raster operation.
+- The canvas had two reset events.
+- The canvas retired during the recording.
+
+The least-specific explanation is that Excalidraw created a short-lived
+canvas, set its width and height, and drew once. The current finding rule
+counts the two setup resets as repeated reset work.
+
+The evidence does not establish the purpose of each short-lived canvas. It
+does not show that these canvases made Excalidraw slow. It also does not show
+that Excalidraw can remove their setup resets.
+
+This result is a product signal problem. The 20 one-shot setup candidates hide
+the two repeated-command candidates and make the result hard to review.
+
+## Next check
+
+Add a nearest-negative case that creates a canvas, sets its width and height
+once, draws once, and retires it. That case must not produce `resize-churn`.
+
+Keep the positive case separate. A live canvas that resets across multiple
+active windows must still produce the candidate.
+
+## Verdict
+
+The published package works in current Excalidraw and completes the v0.4
+recording ritual. External dogfood found one reproducible candidate-quality
+defect. Fix that defect before work starts on deeper v0.5 explanations.
