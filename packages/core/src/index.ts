@@ -7,7 +7,7 @@ import {
   startFrameLoop,
 } from './frame-loop';
 import { mountOverlay } from './overlay';
-import { configureRecording, getLastSession, mark, startRecording, stopRecording } from './recording';
+import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';
 import type {
   CanvasScanOptions,
   DrawBatchReport,
@@ -42,6 +42,9 @@ export function start(options: CanvasScanOptions = {}): void {
     stopRecording,
     mark,
     getLastSession,
+    startExplanation,
+    stopExplanation,
+    getLastExplanation,
   };
 }
 
@@ -79,6 +82,17 @@ export type {
   RecordedLongAnimationFrame,
   RecordedBrowserEvidenceEntry,
   RecordedEpisodeAssociation,
+  ExplanationSelection,
+  ExplanationStartResult,
+  ExplanationUnknownReason,
+  NormalizedCommandArgument,
+  NormalizedCanvasCommand,
+  ExplanationCommandWindow,
+  CommandDifference,
+  ExplanationWindowComparison,
+  ExplanationStackFrame,
+  ExplanationStackSample,
+  ExplanationArtifactV1,
 } from './types';
 
-export { getLastSession, mark, startRecording, stopRecording } from './recording';
+export { getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';

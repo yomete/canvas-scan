@@ -56,7 +56,7 @@ export function assertPackedVersion(sources, version) {
   }
 }
 
-const recordingExports = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark'];
+const publicOperations = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation'];
 const labMarkers = ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth'];
 
 function exportedNames(source) {
@@ -81,11 +81,11 @@ function iifeOperations(source) {
 export function assertPublicContract({ runtime, declarations, iife }) {
   const runtimeExports = exportedNames(runtime);
   const declarationExports = exportedNames(declarations);
-  const missing = recordingExports.filter((name) => !runtimeExports.has(name) || !declarationExports.has(name));
+  const missing = publicOperations.filter((name) => !runtimeExports.has(name) || !declarationExports.has(name));
   if (missing.length) throw new Error(`missing ESM or declaration exports: ${missing.join(', ')}`);
   const operations = iifeOperations(iife);
-  const iifeMissing = recordingExports.slice(1).filter((name) => !operations.has(name));
-  if (iifeMissing.length) throw new Error(`missing IIFE recording operations: ${iifeMissing.join(', ')}`);
+  const iifeMissing = publicOperations.slice(1).filter((name) => !operations.has(name));
+  if (iifeMissing.length) throw new Error(`missing IIFE public operations: ${iifeMissing.join(', ')}`);
 }
 
 export function assertLabBoundary(entries, sources) {

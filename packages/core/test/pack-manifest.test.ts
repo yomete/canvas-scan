@@ -73,22 +73,28 @@ describe('packed version rules', () => {
   });
 });
 
-describe('v0.4 public package rules', () => {
-  const api = 'export { start, startRecording, stopRecording, getLastSession, mark };';
-  const iife = 'window.__CANVAS_SCAN__={startRecording,stopRecording,getLastSession,mark};';
+describe('public package rules', () => {
+  const api = 'export { start, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation };';
+  const iife = 'window.__CANVAS_SCAN__={startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation};';
 
   it('accepts every required public operation', () => {
     expect(() => assertPublicContract({ runtime: api, declarations: api, iife })).not.toThrow();
   });
 
-  it('rejects a missing recording operation in every packed surface', () => {
+  it.each(['startExplanation', 'stopExplanation', 'getLastExplanation'])('rejects %s from every packed surface', (operation) => {
+    expect(() => assertPublicContract({ runtime: api.replace(operation, ''), declarations: api, iife })).toThrow(new RegExp(operation));
+    expect(() => assertPublicContract({ runtime: api, declarations: api.replace(operation, ''), iife })).toThrow(new RegExp(operation));
+    expect(() => assertPublicContract({ runtime: api, declarations: api, iife: iife.replace(operation, '') })).toThrow(new RegExp(operation));
+  });
+
+  it('keeps the v0.4 mark operation mandatory on every packed surface', () => {
     expect(() => assertPublicContract({ runtime: api.replace('mark', ''), declarations: api, iife })).toThrow(/mark/);
     expect(() => assertPublicContract({ runtime: api, declarations: api.replace('mark', ''), iife })).toThrow(/mark/);
     expect(() => assertPublicContract({ runtime: api, declarations: api, iife: iife.replace('mark', '') })).toThrow(/mark/);
   });
 
   it('rejects public names that exist but are not exported', () => {
-    const unexported = 'const start = startRecording = stopRecording = getLastSession = mark = () => {}; export {};';
+    const unexported = 'const start = startRecording = stopRecording = getLastSession = mark = startExplanation = stopExplanation = getLastExplanation = () => {}; export {};';
     expect(() => assertPublicContract({ runtime: unexported, declarations: api, iife })).toThrow(/missing ESM/);
     expect(() => assertPublicContract({ runtime: api, declarations: unexported, iife })).toThrow(/missing ESM/);
   });

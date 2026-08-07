@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "explanationId": "canvas-scan-explanation-1786096800000-1",
+  "startedAt": "2026-08-07T10:00:00.000Z",
+  "endedAt": "2026-08-07T10:00:01.000Z",
+  "durationMs": 1000,
+  "stopReason": "manual",
+  "canvasScanVersion": "0.4.0",
+  "source": {
+    "sessionId": "canvas-scan-1786096800000-1",
+    "findingIndex": 0,
+    "findingType": "repeated-draw-work",
+    "canvasId": "source-canvas"
+  },
+  "followUp": {
+    "sessionId": "canvas-scan-1786096800000-2",
+    "canvasId": "source-canvas"
+  },
+  "windows": [],
+  "comparisons": [],
+  "firstDifference": null,
+  "stacks": [],
+  "collectionLimits": {
+    "maxDurationMs": 10000,
+    "maxSelectedCanvases": 1,
+    "maxActiveWindows": 120,
+    "maxCommandEntries": 5000,
+    "maxArgumentsPerCommand": 20,
+    "maxValueTokens": 1024,
+    "maxStackSamples": 8,
+    "maxFramesPerStack": 20,
+    "maxSourceMapLookups": 8,
+    "maxSourceMapResponseBytes": 2097152
+  },
+  "droppedEntryCounts": {
+    "activeWindows": 0,
+    "commandEntries": 0,
+    "commandArguments": 0,
+    "valueTokens": 0,
+    "stackSamples": 0,
+    "stackFrames": 0,
+    "sourceMapLookups": 0
+  },
+  "firstGap": null
+}

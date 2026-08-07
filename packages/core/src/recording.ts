@@ -1,5 +1,5 @@
 import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
-import { drainAttributeRecords, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents } from './wrap-context';
+import { drainAttributeRecords, isKilled, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
 import type {
@@ -22,9 +22,13 @@ import type {
   RecordingStopReason,
   RecordedBrowserEvidenceEntry,
   RecordedEpisodeAssociation,
+  ExplanationArtifactV1,
+  ExplanationSelection,
+  ExplanationStartResult,
 } from './types';
 
 const MAX_DURATION_MS = 30000;
+const EXPLANATION_MAX_DURATION_MS = 10000;
 const MAX_WINDOWS = 10000;
 const MAX_CANVASES = 128;
 const MAX_RESET_EVENTS = 10000;
@@ -70,6 +74,16 @@ let droppedCanvases = 0;
 let droppedResetEvents = 0;
 let droppedLifecycleEvents = 0;
 let sequence = 0;
+let explanationSequence = 0;
+let lastExplanation: ExplanationArtifactV1 | undefined;
+let activeExplanation: {
+  explanationId: string;
+  sessionId: string;
+  findingIndex: number;
+  findingType: InvestigationFinding['type'];
+  canvasId: string;
+  record: CanvasRecord;
+} | undefined;
 let unsubscribe: (() => void) | undefined;
 let unsubscribeResetEvents: (() => void) | undefined;
 let unsubscribeLifecycleEvents: (() => void) | undefined;
@@ -90,6 +104,7 @@ function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
   return { ...copyReport(window), windowIndex: window.windowIndex, timestampMs: window.timestampMs, startedAtTimestampMs: window.startedAtTimestampMs, endedAtTimestampMs: window.endedAtTimestampMs, geometry: { ...window.geometry } };
 }
 function copyBrowserEntry(entry: RecordedBrowserEvidenceEntry): RecordedBrowserEvidenceEntry { return JSON.parse(JSON.stringify(entry)); }
+function copyExplanation(explanation: ExplanationArtifactV1): ExplanationArtifactV1 { return JSON.parse(JSON.stringify(explanation)); }
 
 function copyResetEvent(event: RecordedResetEvent): RecordedResetEvent { return { ...event }; }
 function copyLifecycleEvent(event: RecordedCanvasLifecycleEvent): RecordedCanvasLifecycleEvent { return { ...event }; }
@@ -370,6 +385,7 @@ function deriveAssociations(episodes: RecordedDrawEpisode[]): RecordedEpisodeAss
 
 function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undefined {
   if (state !== 'recording') return undefined;
+  const explanation = activeExplanation;
   drainAttributeRecords();
   const endedMonotonic = now();
   const browser = stopBrowserEvidence(endedMonotonic);
@@ -415,12 +431,49 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
+  if (explanation) {
+    lastExplanation = {
+      schemaVersion: 1,
+      explanationId: explanation.explanationId,
+      startedAt: lastSession.startedAt,
+      endedAt: lastSession.endedAt,
+      durationMs: lastSession.durationMs,
+      stopReason: lastSession.stopReason,
+      canvasScanVersion: lastSession.canvasScanVersion,
+      source: {
+        sessionId: explanation.sessionId,
+        findingIndex: explanation.findingIndex,
+        findingType: explanation.findingType,
+        canvasId: explanation.canvasId,
+      },
+      followUp: { sessionId: lastSession.sessionId, canvasId: explanation.canvasId },
+      windows: [],
+      comparisons: [],
+      firstDifference: null,
+      stacks: [],
+      collectionLimits: {
+        maxDurationMs: 10000,
+        maxSelectedCanvases: 1,
+        maxActiveWindows: 120,
+        maxCommandEntries: 5000,
+        maxArgumentsPerCommand: 20,
+        maxValueTokens: 1024,
+        maxStackSamples: 8,
+        maxFramesPerStack: 20,
+        maxSourceMapLookups: 8,
+        maxSourceMapResponseBytes: 2097152,
+      },
+      droppedEntryCounts: { activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 },
+      firstGap: null,
+    };
+    activeExplanation = undefined;
+  }
   state = 'complete';
   notify();
   return copySession(lastSession);
 }
 
-export function startRecording(): void {
+function startRecordingWithDuration(durationMs: number): void {
   if (state === 'recording') return;
   recordingStartWindowIndex = getCurrentWindowIndex();
   recordingStartOffsets = new Map([...records].map(record => [record.id, {
@@ -469,16 +522,47 @@ export function startRecording(): void {
   unsubscribeLifecycleEvents = subscribeToLifecycleEvents(event => {
     if (event.windowIndex > recordingStartWindowIndex) captureLifecycleEvent(event);
   });
-  timer = setTimeout(() => { finish('max-duration'); }, MAX_DURATION_MS);
+  timer = setTimeout(() => { finish('max-duration'); }, durationMs);
   lastSession = undefined;
   notify();
 }
+
+export function startRecording(): void { startRecordingWithDuration(MAX_DURATION_MS); }
 
 export function configureRecording(options: CanvasScanOptions): void {
   minRepeatedRasterOps = options.minFlashRasterOps ?? 2;
 }
 
 export function stopRecording(): InvestigationSessionV1 | undefined { return finish('manual'); }
+export function startExplanation(selection: ExplanationSelection): ExplanationStartResult {
+  if (activeExplanation) return { status: 'already-active' };
+  if (state === 'recording') return { status: 'unavailable', reason: 'recording-active' };
+  if (isKilled()) return { status: 'unavailable', reason: 'instrumentation-disabled' };
+  if (!lastSession) return { status: 'unavailable', reason: 'no-session' };
+  if (selection.sessionId !== lastSession.sessionId) return { status: 'unavailable', reason: 'session-mismatch' };
+  if (!Number.isInteger(selection.findingIndex) || selection.findingIndex < 0 || selection.findingIndex >= lastSession.findings.length) return { status: 'unavailable', reason: 'finding-not-found' };
+  const finding = lastSession.findings[selection.findingIndex];
+  const record = [...records].find(candidate => candidate.id === finding.canvasId);
+  if (!record) return { status: 'unavailable', reason: 'canvas-unavailable' };
+  const started = new Date().toISOString();
+  lastExplanation = undefined;
+  activeExplanation = {
+    explanationId: `canvas-scan-explanation-${Date.parse(started)}-${++explanationSequence}`,
+    sessionId: lastSession.sessionId,
+    findingIndex: selection.findingIndex,
+    findingType: finding.type,
+    canvasId: finding.canvasId,
+    record,
+  };
+  startRecordingWithDuration(EXPLANATION_MAX_DURATION_MS);
+  return { status: 'started' };
+}
+export function stopExplanation(): ExplanationArtifactV1 | undefined {
+  if (!activeExplanation) return undefined;
+  finish('manual');
+  return lastExplanation ? copyExplanation(lastExplanation) : undefined;
+}
+export function getLastExplanation(): ExplanationArtifactV1 | undefined { return lastExplanation ? copyExplanation(lastExplanation) : undefined; }
 export function mark(label: string): void { markBrowserEvidence(label); }
 export function getLastSession(): InvestigationSessionV1 | undefined { return lastSession ? copySession(lastSession) : undefined; }
 export function getRecordingState(): RecordingState { return state; }
@@ -502,6 +586,8 @@ export function resetRecordingForTests(): void {
   unsubscribeLifecycleEvents = undefined;
   state = 'idle';
   lastSession = undefined;
+  lastExplanation = undefined;
+  activeExplanation = undefined;
   windows = [];
   resetEvents = [];
   lifecycleEvents = [];
@@ -518,5 +604,6 @@ export function resetRecordingForTests(): void {
   recordingStartOffsets.clear();
   minRepeatedRasterOps = 2;
   sequence = 0;
+  explanationSequence = 0;
   listeners.clear();
 }

@@ -44,6 +44,91 @@ export interface CanvasScanOptions {
 export type RecordingStopReason = 'manual' | 'max-duration';
 export type RecordingState = 'idle' | 'recording' | 'complete';
 
+export interface ExplanationSelection {
+  sessionId: string;
+  findingIndex: number;
+}
+
+export type ExplanationStartResult =
+  | { status: 'started' }
+  | { status: 'already-active' }
+  | {
+      status: 'unavailable';
+      reason:
+        | 'no-session'
+        | 'session-mismatch'
+        | 'finding-not-found'
+        | 'canvas-unavailable'
+        | 'recording-active'
+        | 'instrumentation-disabled';
+    };
+
+export type ExplanationUnknownReason =
+  | 'unsupported-value'
+  | 'argument-limit'
+  | 'value-token-limit'
+  | 'command-limit'
+  | 'window-limit'
+  | 'sampling-gap'
+  | 'missing-reference'
+  | 'instrumentation-disabled';
+
+export interface NormalizedCommandArgument {
+  position: number;
+  kind: 'number' | 'string' | 'boolean' | 'null' | 'undefined' | 'array' | 'typed-array' | 'image' | 'canvas' | 'path' | 'gradient' | 'pattern' | 'object';
+  token: string | null;
+}
+
+export interface NormalizedCanvasCommand {
+  ordinal: number;
+  operationKind: 'call' | 'set';
+  name: string;
+  argumentCount: number;
+  arguments: NormalizedCommandArgument[];
+  unknownReason: ExplanationUnknownReason | null;
+}
+
+export interface ExplanationCommandWindow {
+  windowIndex: number;
+  timestampMs: number;
+  commands: NormalizedCanvasCommand[];
+  complete: boolean;
+  unknownReason: ExplanationUnknownReason | null;
+}
+
+export interface CommandDifference {
+  referenceWindowIndex: number;
+  targetWindowIndex: number;
+  ordinal: number;
+  reason: 'operation-kind' | 'operation-name' | 'argument-count' | 'argument-kind' | 'argument-token' | 'command-added' | 'command-removed';
+  reference: NormalizedCanvasCommand | null;
+  target: NormalizedCanvasCommand | null;
+}
+
+export interface ExplanationWindowComparison {
+  referenceWindowIndex: number;
+  targetWindowIndex: number;
+  status: SignatureStatus;
+  difference: CommandDifference | null;
+  unknownReason: ExplanationUnknownReason | null;
+}
+
+export interface ExplanationStackFrame {
+  functionName: string | null;
+  generated: SourceLocation | null;
+  mapped: SourceLocation | null;
+  mappingStatus: 'mapped' | 'unresolved';
+  unresolvedReason: 'no-source-map' | 'cross-origin-source-map' | 'source-map-too-large' | 'source-map-load-failed' | 'source-map-parse-failed' | 'mapping-missing' | null;
+}
+
+export interface ExplanationStackSample {
+  windowIndex: number;
+  commandOrdinal: number;
+  reason: 'first-raster' | 'first-difference';
+  frames: ExplanationStackFrame[];
+  droppedFrameCount: number;
+}
+
 export interface RecordedCanvasWindow extends DrawBatchReport {
   windowIndex: number;
   timestampMs: number;
@@ -291,4 +376,34 @@ export interface InvestigationSessionV1 {
     maxLongFrameScriptAttributions: 20;
   };
   droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number; lifecycleEvents: number; documentEvents: number; eventTiming: number; userMarks: number; longAnimationFrames: number };
+}
+
+export interface ExplanationArtifactV1 {
+  schemaVersion: 1;
+  explanationId: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  stopReason: RecordingStopReason;
+  canvasScanVersion: string;
+  source: { sessionId: string; findingIndex: number; findingType: InvestigationFinding['type']; canvasId: string };
+  followUp: { sessionId: string; canvasId: string };
+  windows: ExplanationCommandWindow[];
+  comparisons: ExplanationWindowComparison[];
+  firstDifference: CommandDifference | null;
+  stacks: ExplanationStackSample[];
+  collectionLimits: {
+    maxDurationMs: 10000;
+    maxSelectedCanvases: 1;
+    maxActiveWindows: 120;
+    maxCommandEntries: 5000;
+    maxArgumentsPerCommand: 20;
+    maxValueTokens: 1024;
+    maxStackSamples: 8;
+    maxFramesPerStack: 20;
+    maxSourceMapLookups: 8;
+    maxSourceMapResponseBytes: 2097152;
+  };
+  droppedEntryCounts: { activeWindows: number; commandEntries: number; commandArguments: number; valueTokens: number; stackSamples: number; stackFrames: number; sourceMapLookups: number };
+  firstGap: { windowIndex: number; commandOrdinal: number | null; reason: ExplanationUnknownReason } | null;
 }

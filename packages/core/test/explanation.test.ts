@@ -1,0 +1,155 @@
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { emitReport, getCurrentWindowIndex } from '../src/frame-loop';
+import { getLastExplanation, getLastSession, getRecordingState, resetRecordingForTests, startExplanation, startRecording, stopExplanation, stopRecording } from '../src/recording';
+import type { DrawBatchReport } from '../src/types';
+import { records, type CanvasRecord } from '../src/wrap-context';
+import * as wrapContext from '../src/wrap-context';
+
+const fixture = JSON.parse(readFileSync(new URL('./fixtures/v05-02-explanation-v1.json', import.meta.url), 'utf8'));
+
+const report = (canvasId: string): DrawBatchReport => ({
+  canvasId,
+  nearestReactOwner: null,
+  attributionKind: 'unattributed',
+  sourceLocation: null,
+  rasterOperationCount: 2,
+  canvasApiSelfTimeMs: 1,
+  signatureStatus: 'same',
+  unknownReason: null,
+  sampled: false,
+  comparisonGap: 1,
+  methodEvidence: {},
+});
+
+const record = (id: string): CanvasRecord => ({
+  canvas: {}, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+  id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
+  activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
+  matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
+  clipUnknown: false, resetPendingReason: null, modelUntrusted: false, resetVersion: 0, continuityLost: false, sourceResetVersions: new Map(),
+  attributeObservationUnavailable: false, contextActivityInWindow: false, exactResetDepth: 0, inactiveBoundaries: 0, retired: false,
+  lastConnected: false, activeLifecycleRecorded: false, pendingLifecycleEvents: [], stateStack: [],
+});
+
+function completeSource(canvasId = 'source-canvas') {
+  startRecording();
+  emitReport(report(canvasId), {}, { windowIndex: getCurrentWindowIndex() + 1, timestampMs: 1 });
+  emitReport(report(canvasId), {}, { windowIndex: getCurrentWindowIndex() + 2, timestampMs: 2 });
+  return stopRecording()!;
+}
+
+afterEach(() => {
+  resetRecordingForTests();
+  records.clear();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('explanation state', () => {
+  it('returns exact unavailable results without changing completed state', () => {
+    expect(startExplanation({ sessionId: 'none', findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'no-session' });
+    const session = completeSource();
+    expect(startExplanation({ sessionId: 'other', findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'session-mismatch' });
+    expect(startExplanation({ sessionId: session.sessionId, findingIndex: 99 })).toEqual({ status: 'unavailable', reason: 'finding-not-found' });
+    expect(startExplanation({ sessionId: session.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'canvas-unavailable' });
+    expect(getLastSession()?.sessionId).toBe(session.sessionId);
+  });
+
+  it('shares a manual stop and deep-copies the stored artifact', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-07T10:00:00.000Z'));
+    const source = completeSource();
+    const sourceRecord = record(source.findings[0].canvasId);
+    records.add(sourceRecord);
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'already-active' });
+    expect(getLastExplanation()).toBeUndefined();
+    vi.advanceTimersByTime(1000);
+    const artifact = stopExplanation()!;
+    expect(artifact).toEqual(fixture);
+    expect(artifact.collectionLimits).toEqual({ maxDurationMs: 10000, maxSelectedCanvases: 1, maxActiveWindows: 120, maxCommandEntries: 5000, maxArgumentsPerCommand: 20, maxValueTokens: 1024, maxStackSamples: 8, maxFramesPerStack: 20, maxSourceMapLookups: 8, maxSourceMapResponseBytes: 2097152 });
+    expect(artifact.droppedEntryCounts).toEqual({ activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 });
+    expect(getLastSession()?.sessionId).toBe(artifact.followUp.sessionId);
+    artifact.source.canvasId = 'changed-stop-result';
+    artifact.followUp.canvasId = 'changed-stop-result';
+    (artifact.collectionLimits as { maxDurationMs: number }).maxDurationMs = 1;
+    artifact.droppedEntryCounts.commandEntries = 1;
+    expect(getLastExplanation()).toMatchObject({
+      source: { canvasId: sourceRecord.id },
+      followUp: { canvasId: sourceRecord.id },
+      collectionLimits: { maxDurationMs: 10000 },
+      droppedEntryCounts: { commandEntries: 0 },
+    });
+    const firstRead = getLastExplanation()!;
+    firstRead.source.canvasId = 'changed';
+    firstRead.followUp.canvasId = 'changed';
+    (firstRead.collectionLimits as { maxDurationMs: number }).maxDurationMs = 1;
+    firstRead.droppedEntryCounts.commandEntries = 1;
+    const secondRead = getLastExplanation()!;
+    expect(secondRead.source.canvasId).toBe(sourceRecord.id);
+    expect(secondRead.followUp.canvasId).toBe(sourceRecord.id);
+    expect(secondRead.collectionLimits.maxDurationMs).toBe(10000);
+    expect(secondRead.droppedEntryCounts.commandEntries).toBe(0);
+    expect(stopExplanation()).toBeUndefined();
+  });
+
+  it('uses the 10-second timer and does not stop a normal recording', () => {
+    vi.useFakeTimers();
+    startRecording();
+    expect(stopExplanation()).toBeUndefined();
+    expect(getRecordingState()).toBe('recording');
+    expect(startExplanation({ sessionId: 'none', findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'recording-active' });
+    stopRecording();
+    const source = completeSource();
+    const sourceRecord = record(source.findings[0].canvasId);
+    records.add(sourceRecord);
+    startExplanation({ sessionId: source.sessionId, findingIndex: 0 });
+    vi.advanceTimersByTime(9999);
+    expect(getLastExplanation()).toBeUndefined();
+    vi.advanceTimersByTime(1);
+    expect(getLastExplanation()?.stopReason).toBe('max-duration');
+    expect(stopRecording()).toBeUndefined();
+  });
+
+  it('keeps completed artifacts on a failed start and rejects disabled instrumentation', () => {
+    vi.useFakeTimers();
+    const source = completeSource();
+    const sourceRecord = record(source.findings[0].canvasId);
+    records.add(sourceRecord);
+    startExplanation({ sessionId: source.sessionId, findingIndex: 0 });
+    stopExplanation();
+    const prior = getLastExplanation();
+    const nextSource = completeSource('next-source');
+    expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 99 })).toEqual({ status: 'unavailable', reason: 'finding-not-found' });
+    expect(getLastExplanation()).toEqual(prior);
+    const killed = vi.spyOn(wrapContext, 'isKilled').mockReturnValue(true);
+    expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'instrumentation-disabled' });
+    killed.mockRestore();
+  });
+
+  it('lets stopRecording finish an explanation and store both artifacts', () => {
+    const source = completeSource();
+    const sourceRecord = record(source.findings[0].canvasId);
+    records.add(sourceRecord);
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
+    const followUp = stopRecording()!;
+    expect(followUp.stopReason).toBe('manual');
+    expect(getLastExplanation()).toMatchObject({ stopReason: 'manual', followUp: { sessionId: followUp.sessionId, canvasId: sourceRecord.id } });
+  });
+
+  it('clears the prior artifact only after a successful new explanation start', () => {
+    const firstSource = completeSource('first-source');
+    const firstRecord = record(firstSource.findings[0].canvasId);
+    records.add(firstRecord);
+    startExplanation({ sessionId: firstSource.sessionId, findingIndex: 0 });
+    stopExplanation();
+    expect(getLastExplanation()).toBeDefined();
+    const nextSource = completeSource('next-source');
+    const nextRecord = record(nextSource.findings[0].canvasId);
+    records.add(nextRecord);
+    expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
+    expect(getLastExplanation()).toBeUndefined();
+  });
+});
