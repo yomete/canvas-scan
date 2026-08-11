@@ -10,8 +10,38 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
 import { emitLifecycleEvent, emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
-import { getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { getLastExplanation, getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
+import { getRecord, installCanvasPatch, notifySelectedCommandBoundary, records, type CanvasRecord } from '../src/wrap-context';
+
+class OverlayExplanationContext {
+  canvas: HTMLCanvasElement;
+
+  constructor(canvas: HTMLCanvasElement) { this.canvas = canvas; }
+  save(..._args: unknown[]) {}
+  restore(..._args: unknown[]) {}
+  fillRect(..._args: unknown[]) {}
+}
+
+const overlayExplanationContexts = new WeakMap<HTMLCanvasElement, OverlayExplanationContext>();
+Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+  configurable: true,
+  writable: true,
+  value(this: HTMLCanvasElement, type: string) {
+    if (type !== '2d') return null;
+    let context = overlayExplanationContexts.get(this);
+    if (!context) {
+      context = new OverlayExplanationContext(this);
+      overlayExplanationContexts.set(this, context);
+    }
+    return context;
+  },
+});
+installCanvasPatch({
+  canvasProto: HTMLCanvasElement.prototype,
+  contextProto: OverlayExplanationContext.prototype,
+  attributeObserver: { observe() {}, takeRecords: () => [] },
+});
 
 function makeReport(
   overrides: Partial<DrawBatchReport> = {},
@@ -69,6 +99,43 @@ function refreshOverlay(): void {
   vi.advanceTimersByTime(250);
 }
 
+function explanationRecord(id: string): CanvasRecord {
+  return {
+    canvas: {}, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+    id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
+    activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
+    matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
+    clipUnknown: false, resetPendingReason: null, modelUntrusted: false, resetVersion: 0, continuityLost: false, sourceResetVersions: new Map(),
+    attributeObservationUnavailable: false, contextActivityInWindow: false, exactResetDepth: 0, inactiveBoundaries: 0, retired: false,
+    lastConnected: true, activeLifecycleRecorded: false, pendingLifecycleEvents: [], stateStack: [],
+  };
+}
+
+function explanationCanvas(id: string): {
+  canvas: HTMLCanvasElement;
+  context: OverlayExplanationContext;
+  record: CanvasRecord;
+} {
+  const canvas = makeCanvas();
+  canvas.id = id;
+  const context = canvas.getContext('2d') as unknown as OverlayExplanationContext;
+  const record = getRecord(canvas)!;
+  return { canvas, context, record };
+}
+
+function openExplanationSource(canvas: HTMLCanvasElement, canvasId: string): HTMLButtonElement {
+  startRecording();
+  emitReport(makeReport({ canvasId, rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+  stopRecording();
+  refreshOverlay();
+  const root = getShadowRoot();
+  root.querySelector<HTMLButtonElement>('.counts')!.click();
+  refreshOverlay();
+  const action = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+  if (action.hidden) throw new Error('explanation action is hidden');
+  return action;
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
@@ -84,6 +151,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   document.body.replaceChildren();
   latestReports.clear();
+  records.clear();
 });
 
 describe('overlay toolbar', () => {
@@ -454,13 +522,15 @@ describe('overlay flyout', () => {
     const root = getShadowRoot();
     const card = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="retired-card"]')!;
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click(); refreshOverlay();
-    expect(card.textContent).toContain('The recorded canvas retired. Saved evidence remains available.');
+    expect(card.textContent).toContain('The recorded canvas retired during the saved recording. Saved evidence remains available.');
+    expect(card.textContent).not.toContain('Capture cannot start now.');
     expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(true);
     document.body.append(canvas);
     emitReport(makeReport({ canvasId: 'retired-card', rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
     refreshOverlay();
     expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(false);
-    expect(card.textContent).toContain('The recorded canvas retired. Saved evidence remains available.');
+    expect(card.textContent).toContain('The recorded canvas retired during the saved recording. Saved evidence remains available.');
+    expect(card.textContent).not.toContain('Capture cannot start now.');
   });
 
   it('supports finding keys and returns focus from both saved and live details', () => {
@@ -1681,6 +1751,303 @@ function describeReason(reason: string): string {
   };
   return phrases[reason];
 }
+
+describe('overlay explanation action', () => {
+  it('starts from the saved selection and keeps its copy button stable', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'explain-selected', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    const action = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+    expect(action.textContent).toBe('Explain next interaction');
+    expect(action.dataset.sessionId).toBe(getLastSession()?.sessionId);
+    expect(action.dataset.findingIndex).toBe('0');
+    records.add(explanationRecord('explain-selected'));
+    action.click();
+    refreshOverlay();
+    expect(getRecordingState()).toBe('recording');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
+    expect(action.getAttribute('aria-pressed')).toBe('true');
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+    expect(action.getAttribute('aria-pressed')).toBe('false');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Command result: unknown');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('missing-reference');
+    const copy = root.querySelector<HTMLButtonElement>('.explanation-copy')!;
+    copy.click();
+    await Promise.resolve();
+    emitReport(makeReport({ canvasId: 'unrelated-after-explanation' }), makeCanvas(), { windowIndex: 2, timestampMs: 20 });
+    refreshOverlay();
+    expect(root.querySelector('.explanation-copy')).toBe(copy);
+    expect(copy.isConnected).toBe(true);
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(getLastExplanation()));
+    const copyStatus = root.querySelector<HTMLElement>('.explanation-copy-status')!;
+    expect(copyStatus.textContent).toBe('Explanation JSON copied');
+
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    copy.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-copy-status')).toBe(copyStatus);
+    expect(copyStatus.textContent).toBe('Copy failed');
+
+    writeText.mockImplementationOnce(() => { throw new Error('unavailable'); });
+    copy.click();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-copy-status')).toBe(copyStatus);
+    expect(copyStatus.textContent).toBe('Copy failed');
+
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    copy.click();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-copy-status')).toBe(copyStatus);
+    expect(copyStatus.textContent).toBe('Copy failed');
+
+    startRecording();
+    emitReport(makeReport({ canvasId: 'explain-selected', rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
+    stopRecording();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-panel')?.textContent).not.toContain('EXPLANATION COMPLETE');
+    const nextAction = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+    nextAction.click();
+    refreshOverlay();
+    expect(getRecordingState()).toBe('recording');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
+    stopRecording();
+  });
+
+  it('uses the exact saved finding index across multiple native actions', () => {
+    mountOverlay();
+    const firstCanvas = makeCanvas();
+    const secondCanvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'explain-first', rasterOperationCount: 2 }), firstCanvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'explain-second', rasterOperationCount: 2 }), secondCanvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    records.add(explanationRecord('explain-first'));
+    records.add(explanationRecord('explain-second'));
+    const root = getShadowRoot();
+    const actions = [...root.querySelectorAll<HTMLButtonElement>('.explanation-action')];
+    expect(actions).toHaveLength(2);
+    expect(actions.map(action => action.dataset.findingIndex)).toEqual(['0', '1']);
+    expect(actions.every(action => action.type === 'button')).toBe(true);
+    actions[1].focus();
+    expect(root.activeElement).toBe(actions[1]);
+    actions[1].click();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Finding 2:');
+    expect(actions[0].getAttribute('aria-pressed')).toBe('false');
+    expect(actions[1].getAttribute('aria-pressed')).toBe('true');
+    stopRecording();
+  });
+
+  it('uses the same completed panel structure for manual and automatic stop', () => {
+    mountOverlay();
+    const { canvas, record } = explanationCanvas('stop-structure');
+    openExplanationSource(canvas, record.id).click();
+    getShadowRoot().querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+    const manual = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
+    const structure = (panel: HTMLElement) => [...panel.children].map(child => `${child.tagName}.${child.className}`);
+    const manualStructure = structure(manual);
+    expect(manual.textContent).toContain('Stop reason: manual');
+
+    startRecording();
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording();
+    refreshOverlay();
+    getShadowRoot().querySelector<HTMLButtonElement>('.explanation-action')!.click();
+    refreshOverlay();
+    vi.advanceTimersByTime(10000);
+    const automatic = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
+    expect(automatic.textContent).toContain('Stop reason: max-duration');
+    expect(structure(automatic)).toEqual(manualStructure);
+  });
+
+  it('keeps an automatic explanation through host reattachment', () => {
+    mountOverlay();
+    const { canvas, record } = explanationCanvas('automatic-explanation');
+    const action = openExplanationSource(canvas, record.id);
+    expect(action.tagName).toBe('BUTTON');
+    expect(action.type).toBe('button');
+    action.focus();
+    expect(getShadowRoot().activeElement).toBe(action);
+    action.click();
+    refreshOverlay();
+    expect(getShadowRoot().querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
+
+    const host = document.querySelector<HTMLElement>('[data-canvas-scan]')!;
+    host.remove();
+    vi.advanceTimersByTime(1000);
+    expect(host.isConnected).toBe(true);
+    expect(getShadowRoot().querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
+
+    vi.advanceTimersByTime(10000);
+    const panel = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
+    expect(panel.textContent).toContain('EXPLANATION COMPLETE');
+    expect(panel.textContent).toContain('Stop reason: max-duration');
+    expect(panel.textContent).toContain('Command result: unknown');
+    expect(panel.textContent).toContain('missing-reference');
+    const copy = panel.querySelector('.explanation-copy');
+    refreshOverlay();
+    expect(getShadowRoot().querySelector('.explanation-copy')).toBe(copy);
+  });
+
+  it('ignores a clipboard result from a prior explanation', async () => {
+    let finishCopy!: () => void;
+    const writeText = vi.fn().mockReturnValue(new Promise<void>(resolve => { finishCopy = resolve; }));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stale-copy', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    records.add(explanationRecord('stale-copy'));
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.explanation-action')!.click();
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.explanation-copy')!.click();
+
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stale-copy', rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording();
+    refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.explanation-action')!.click();
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+    const currentStatus = root.querySelector<HTMLElement>('.explanation-copy-status')!;
+    expect(currentStatus.textContent).toBe('');
+
+    finishCopy();
+    await Promise.resolve();
+    refreshOverlay();
+    expect(root.querySelector('.explanation-copy-status')).toBe(currentStatus);
+    expect(currentStatus.textContent).toBe('');
+  });
+
+  it('shows changed command evidence without visible values or tokens', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay();
+    const { canvas, context, record } = explanationCanvas('changed-explanation');
+    openExplanationSource(canvas, record.id).click();
+    context.fillRect(918273.645, 0, 10, 10);
+    notifySelectedCommandBoundary(record, 10, 10, true, true);
+    context.fillRect(918273.645, 0, 10, 10);
+    notifySelectedCommandBoundary(record, 11, 11, true, true);
+    context.fillRect(771928.125, 0, 10, 10);
+    notifySelectedCommandBoundary(record, 12, 12, true, true);
+    getShadowRoot().querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+
+    const artifact = getLastExplanation()!;
+    const panel = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
+    const visible = panel.textContent ?? '';
+    const tokens = artifact.windows.flatMap(window => window.commands).flatMap(command => command.arguments).map(argument => argument.token).filter((token): token is string => token !== null);
+    expect(artifact.firstDifference).toMatchObject({ ordinal: 0, reason: 'argument-token' });
+    expect(visible).toContain('Command result: changed');
+    expect(visible).toContain('First normalized command difference');
+    expect(visible).toContain('Reference command: call fillRect');
+    expect(visible).toContain('Target command: call fillRect');
+    expect(visible).not.toContain('918273.645');
+    expect(visible).not.toContain('771928.125');
+    for (const token of tokens) expect(visible).not.toContain(token);
+
+    panel.querySelector<HTMLButtonElement>('.explanation-copy')!.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(artifact));
+  });
+
+  it('shows the final same pair after the initial sampling gap', () => {
+    mountOverlay();
+    const { canvas, context, record } = explanationCanvas('same-explanation');
+    openExplanationSource(canvas, record.id).click();
+    for (const windowIndex of [10, 11, 12]) {
+      context.fillRect(1, 0, 10, 10);
+      notifySelectedCommandBoundary(record, windowIndex, windowIndex, true, true);
+    }
+    getShadowRoot().querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+
+    const artifact = getLastExplanation()!;
+    const visible = getShadowRoot().querySelector('.explanation-panel')?.textContent ?? '';
+    expect(artifact.comparisons.map(comparison => comparison.status)).toEqual(['unknown', 'same']);
+    expect(visible).toContain('Command result: same');
+    expect(visible).toContain('No normalized command difference was observed.');
+    expect(visible).toContain('1 commands');
+  });
+
+  it('shows an unknown limit, drop count, and gap without raw arguments', () => {
+    mountOverlay();
+    const { canvas, context, record } = explanationCanvas('unknown-explanation');
+    openExplanationSource(canvas, record.id).click();
+    context.fillRect(1, 0, 10, 10);
+    notifySelectedCommandBoundary(record, 10, 10, true, true);
+    context.fillRect(1, 0, 10, 10);
+    notifySelectedCommandBoundary(record, 11, 11, true, true);
+    context.save(...Array.from({ length: 21 }, (_, index) => 400000 + index));
+    notifySelectedCommandBoundary(record, 12, 12, true, true);
+    getShadowRoot().querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+
+    const artifact = getLastExplanation()!;
+    const visible = getShadowRoot().querySelector('.explanation-panel')?.textContent ?? '';
+    expect(artifact.comparisons.at(-1)).toMatchObject({ status: 'unknown', unknownReason: 'argument-limit' });
+    expect(artifact.droppedEntryCounts.commandArguments).toBe(1);
+    expect(visible).toContain('Command result: unknown');
+    expect(visible).toContain('Command difference is unknown.');
+    expect(visible).toContain('Unknown reason: argument-limit');
+    expect(visible).toContain('maxArgumentsPerCommand=20');
+    expect(visible).toContain('commandArguments=1');
+    expect(visible).toContain('First gap:');
+    expect(visible).not.toContain('400000');
+  });
+
+  it('hides the action for a detached finding and keeps one unavailable message', () => {
+    mountOverlay();
+    const canvas = makeCanvas(false);
+    startRecording();
+    emitReport(makeReport({ canvasId: 'detached-explanation', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const card = getShadowRoot().querySelector<HTMLElement>('.finding-card')!;
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
+    refreshOverlay();
+    expect(card.querySelector<HTMLButtonElement>('.explanation-action')?.hidden).toBe(true);
+    expect(card.textContent).toContain('Capture cannot start because the canvas is not on the page. Saved evidence remains available.');
+    expect(card.querySelectorAll('.finding-unavailable')).toHaveLength(1);
+    document.body.append(canvas);
+    emitReport(makeReport({ canvasId: 'detached-explanation', rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    refreshOverlay();
+    expect(card.querySelector<HTMLButtonElement>('.explanation-action')?.hidden).toBe(false);
+  });
+
+  it('keeps a connected saved finding when its canvas record is unavailable', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'unavailable-explanation', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    const action = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+    action.click();
+    refreshOverlay();
+    expect(getRecordingState()).toBe('complete');
+    expect(root.querySelector('.finding-status')?.textContent).toBe('Explain next interaction cannot start because the recorded canvas is not available. Saved evidence remains available.');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('recorded canvas is not available');
+    expect(root.querySelectorAll('.finding-status')).toHaveLength(1);
+  });
+});
 
 describe('overlay outline compatibility and cleanup', () => {
   it('uses the default two-raster-operation flash threshold', () => {

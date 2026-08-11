@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Explanation overlay fixture</title>
+  <link rel="icon" href="data:,">
+  <script>window.__CANVAS_SCAN_OPTS = { overlay: true };</script>
+  <script src="/canvas-scan.iife.js"></script>
+</head>
+<body>
+  <h1>Explanation overlay fixture</h1>
+  <button id="source">Create source finding</button>
+  <button id="changed">Replay changed</button>
+  <button id="same">Replay same</button>
+  <button id="unknown">Replay unknown</button>
+  <button id="retire">Retire source canvas</button>
+  <canvas id="source-canvas" width="80" height="80"></canvas>
+  <script>
+    const canvas = document.querySelector('#source-canvas');
+    const ctx = canvas.getContext('2d');
+    let sourceLoop = true;
+    let replayComplete = false;
+    const privateFixtureObject = { privateFixtureKey: 'private fixture object value' };
+    function privateFixtureFunction() { return 'private fixture function source'; }
+
+    function draw(value) {
+      ctx.fillStyle = '#123456';
+      ctx.fillRect(value, 1, 20, 20);
+      ctx.fillRect(value, 24, 20, 20);
+    }
+
+    function tick() {
+      if (sourceLoop) draw(918273.645);
+      requestAnimationFrame(tick);
+    }
+
+    function source() {
+      sourceLoop = true;
+      window.__CANVAS_SCAN__.startRecording();
+      setTimeout(() => window.__CANVAS_SCAN__.stopRecording(), 180);
+    }
+
+    function replay(mode) {
+      sourceLoop = false;
+      replayComplete = false;
+      const values = mode === 'changed'
+        ? [918273.645, 918273.645, 771928.125, 771928.125]
+        : [918273.645, 918273.645, 918273.645, 918273.645];
+      let frame = 0;
+      function replayFrame() {
+        draw(values[frame]);
+        if (mode === 'unknown') {
+          ctx.fillRect(
+            1,
+            1,
+            20,
+            20,
+            privateFixtureFunction,
+            privateFixtureObject,
+            'https://secret.example.invalid/private-path?private-query=1#private-fragment',
+            987654.321,
+          );
+        }
+        frame++;
+        if (frame < values.length) requestAnimationFrame(replayFrame);
+        else replayComplete = true;
+      }
+      requestAnimationFrame(replayFrame);
+    }
+
+    document.querySelector('#source').onclick = source;
+    for (const id of ['changed', 'same', 'unknown']) {
+      document.querySelector('#' + id).onclick = () => replay(id);
+    }
+    document.querySelector('#retire').onclick = () => canvas.remove();
+    window.__V05_04__ = { source, replay, retire: () => canvas.remove(), canvas, get replayComplete() { return replayComplete; } };
+    tick();
+  </script>
+</body>
+</html>

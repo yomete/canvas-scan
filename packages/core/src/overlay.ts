@@ -7,7 +7,9 @@ import {
 } from './frame-loop';
 import {
   getLastSession,
+  getLastExplanation,
   getRecordingState,
+  startExplanation,
   startRecording,
   stopRecording,
   subscribeToRecordingState,
@@ -17,7 +19,11 @@ import { resolveSourceOutcome } from './symbolicate';
 import type {
   AttributionKind,
   CanvasScanOptions,
+  CommandDifference,
   DrawBatchReport,
+  ExplanationArtifactV1,
+  ExplanationStartResult,
+  ExplanationUnknownReason,
   InvestigationFinding,
   InvestigationSessionV1,
   RecordedCanvasGeometry,
@@ -92,6 +98,12 @@ let shownSession: InvestigationSessionV1 | null = null;
 let renderedSession: InvestigationSessionV1 | null = null;
 let expandedFindingId: string | null = null;
 let copySessionStatus = '';
+let explanationSelection: { sessionId: string; findingIndex: number; key: string } | null = null;
+let explanationRecordingActive = false;
+let completedExplanation: ExplanationArtifactV1 | null = null;
+let explanationStartFailure = '';
+let copyExplanationStatus = '';
+let copyExplanationRequest = 0;
 let flyoutInvoker: HTMLElement | null = null;
 let showAllSessionCanvases = false;
 let minFlashRasterOps = 2;
@@ -242,6 +254,8 @@ button { font: inherit; }
 .finding-toggle:focus-visible,
 .session-copy:focus-visible,
 .current-action:focus-visible,
+.explanation-action:focus-visible,
+.explanation-copy:focus-visible,
 .canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
 .finding-line, .session-line, .raw-evidence { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
@@ -250,6 +264,11 @@ button { font: inherit; }
 .raw-evidence { color: rgba(255, 255, 255, 0.48); font-size: 10px; line-height: 14px; }
 .finding-actions { display: flex; gap: 4px; margin-top: 5px; }
 .finding-toggle, .current-action, .session-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
+.explanation-action, .explanation-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
+.explanation-panel { border-top: 1px solid rgba(255,255,255,.1); margin-top: 4px; padding: 6px 5px; }
+.explanation-panel.active { border-left: 2px solid #ef4444; }
+.explanation-panel.complete { border-left: 2px solid #fff; }
+.explanation-panel.failure { border-left: 2px solid rgba(239,68,68,.7); }
 .finding-toggle { width: 100%; color: #fff; font: 12px/16px ui-monospace, monospace; text-align: left; }
 .finding-evidence[hidden], .finding-actions[hidden], .finding-unavailable[hidden], .session-section[hidden] { display: none; }
 .session-section { border-top: 1px solid rgba(255,255,255,.1); margin-top: 4px; padding: 6px 5px; }
@@ -950,6 +969,127 @@ function droppedEntries(session: InvestigationSessionV1): Array<[string, number]
   return Object.entries(session.droppedEntryCounts).filter(([, count]) => count > 0);
 }
 
+const explanationStartCopy: Record<Exclude<ExplanationStartResult, { status: 'started' } | { status: 'already-active' }>['reason'], string> = {
+  'no-session': 'Explain next interaction cannot start because the saved recording changed. Select a finding from the current saved recording.',
+  'session-mismatch': 'Explain next interaction cannot start because the saved recording changed. Select the finding again.',
+  'finding-not-found': 'Explain next interaction cannot start because the selected finding changed. Select a current finding.',
+  'canvas-unavailable': 'Explain next interaction cannot start because the recorded canvas is not available. Saved evidence remains available.',
+  'recording-active': 'Explain next interaction cannot start while a recording is active. Stop the recording first.',
+  'instrumentation-disabled': 'Explain next interaction cannot start because canvas-scan instrumentation is unavailable. Reload the page before you try again.',
+};
+
+const differenceCopy: Record<CommandDifference['reason'], string> = {
+  'operation-kind': 'The command operation kind changed.',
+  'operation-name': 'The command operation name changed.',
+  'argument-count': 'The command argument count changed.',
+  'argument-kind': 'A command argument kind changed.',
+  'argument-token': 'A normalized command argument changed.',
+  'command-added': 'A command was added.',
+  'command-removed': 'A command was removed.',
+};
+
+const explanationUnknownCopy: Record<ExplanationUnknownReason, string> = {
+  'unsupported-value': 'Canvas-scan cannot safely compare an unsupported command value.',
+  'argument-limit': 'Canvas-scan reached the argument collection limit.',
+  'value-token-limit': 'Canvas-scan reached the value token limit.',
+  'command-limit': 'Canvas-scan reached the command collection limit.',
+  'window-limit': 'Canvas-scan reached the active window limit.',
+  'sampling-gap': 'Canvas-scan found a sampling gap.',
+  'missing-reference': 'No two active captured frames were available to compare.',
+  'instrumentation-disabled': 'Canvas-scan instrumentation became unavailable.',
+};
+
+function appendExplanationLine(root: HTMLElement, text: string, title?: string): void {
+  const line = document.createElement('div');
+  line.className = 'finding-line';
+  line.textContent = text;
+  if (title) line.title = title;
+  root.append(line);
+}
+
+function commandSummary(command: CommandDifference['reference']): string {
+  if (!command) return 'No command exists at this ordinal.';
+  return `${command.operationKind} ${command.name} · ${command.argumentCount} arguments · ${command.arguments.map(argument => argument.kind).join(', ') || 'none'}`;
+}
+
+function selectedComparison(artifact: ExplanationArtifactV1) {
+  if (artifact.firstDifference) return artifact.comparisons.find(comparison => comparison.difference?.ordinal === artifact.firstDifference?.ordinal && comparison.difference?.reason === artifact.firstDifference?.reason) ?? artifact.comparisons.find(comparison => comparison.status === 'changed');
+  return artifact.comparisons.at(-1);
+}
+
+function updateExplanationPanel(): void {
+  const panel = flyout?.querySelector<HTMLElement>('.explanation-panel');
+  if (!panel) return;
+  const signature = [
+    explanationSelection?.sessionId ?? '',
+    explanationSelection?.findingIndex ?? '',
+    getRecordingState(),
+    completedExplanation?.explanationId ?? '',
+    explanationStartFailure,
+  ].join(':');
+  if (panel.dataset.signature === signature) {
+    const copyStatus = panel.querySelector<HTMLElement>('.explanation-copy-status');
+    if (copyStatus) copyStatus.textContent = copyExplanationStatus;
+    return;
+  }
+  panel.dataset.signature = signature;
+  panel.replaceChildren();
+  panel.className = 'explanation-panel';
+  const selection = explanationSelection;
+  if (selection && getRecordingState() === 'recording') {
+    panel.classList.add('active');
+    const finding = shownSession?.findings[selection.findingIndex];
+    appendExplanationLine(panel, 'EXPLANATION ACTIVE');
+    appendExplanationLine(panel, `Finding ${selection.findingIndex + 1}: ${finding ? findingLabel(finding.type) : 'Selected finding'}`);
+    appendExplanationLine(panel, 'Repeat the interaction now. Capture stops after 10 seconds.');
+    appendExplanationLine(panel, 'The toolbar Stop button ends capture now.');
+    return;
+  }
+  if (completedExplanation) {
+    panel.classList.add('complete');
+    const artifact = completedExplanation;
+    const comparison = selectedComparison(artifact);
+    appendExplanationLine(panel, 'EXPLANATION COMPLETE');
+    appendExplanationLine(panel, `Source finding: ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`);
+    appendExplanationLine(panel, `Stop reason: ${artifact.stopReason}`);
+    const status = comparison?.status ?? 'unknown';
+    appendExplanationLine(panel, `Command result: ${status}`);
+    if (status === 'changed' && artifact.firstDifference) {
+      const difference = artifact.firstDifference;
+      appendExplanationLine(panel, 'First normalized command difference');
+      appendExplanationLine(panel, `Command ${difference.ordinal}: ${differenceCopy[difference.reason]}`, difference.reason);
+      appendExplanationLine(panel, `Reference command: ${commandSummary(difference.reference)}`);
+      appendExplanationLine(panel, `Target command: ${commandSummary(difference.target)}`);
+    } else if (status === 'same' && comparison) {
+      appendExplanationLine(panel, 'No normalized command difference was observed.');
+      const reference = artifact.windows.find(window => window.windowIndex === comparison.referenceWindowIndex);
+      const target = artifact.windows.find(window => window.windowIndex === comparison.targetWindowIndex);
+      appendExplanationLine(panel, `Compared windows: ${comparison.referenceWindowIndex} (${reference?.commands.length ?? 0} commands) and ${comparison.targetWindowIndex} (${target?.commands.length ?? 0} commands).`);
+    } else {
+      appendExplanationLine(panel, 'Command difference is unknown.');
+      const reason = comparison?.unknownReason ?? artifact.firstGap?.reason ?? 'missing-reference';
+      appendExplanationLine(panel, `Unknown reason: ${reason}`);
+      appendExplanationLine(panel, explanationUnknownCopy[reason]);
+      if (comparison) appendExplanationLine(panel, `Compared windows: ${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}.`);
+    }
+    appendExplanationLine(panel, `Compared frame indices: ${comparison ? `${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}` : 'none'}`);
+    appendExplanationLine(panel, `Limits: ${Object.entries(artifact.collectionLimits).map(([name, value]) => `${name}=${value}`).join(' · ')}`);
+    const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
+    if (drops.length) appendExplanationLine(panel, `Drops: ${drops.map(([name, value]) => `${name}=${value}`).join(' · ')}`);
+    if (artifact.firstGap) appendExplanationLine(panel, `First gap: window ${artifact.firstGap.windowIndex}, command ${artifact.firstGap.commandOrdinal ?? 'none'} (${artifact.firstGap.reason})`);
+    const copy = document.createElement('button');
+    copy.className = 'explanation-copy'; copy.type = 'button'; copy.dataset.action = 'copy-explanation'; copy.textContent = 'Copy explanation JSON';
+    const copyStatus = document.createElement('div');
+    copyStatus.className = 'explanation-copy-status'; copyStatus.setAttribute('aria-live', 'polite'); copyStatus.textContent = copyExplanationStatus;
+    panel.append(copy, copyStatus);
+    return;
+  }
+  if (explanationStartFailure) {
+    panel.classList.add('failure');
+    appendExplanationLine(panel, explanationStartFailure);
+  }
+}
+
 function createFinding(
   session: InvestigationSessionV1,
   finding: InvestigationFinding,
@@ -962,6 +1102,8 @@ function createFinding(
   card.className = 'repeated-finding finding-card';
   card.dataset.canvasId = finding.canvasId;
   card.dataset.findingId = key;
+  card.dataset.sessionId = session.sessionId;
+  card.dataset.findingIndex = String(index);
   card.id = id;
 
   const control = document.createElement('button');
@@ -1003,12 +1145,12 @@ function createFinding(
   if (lifecycleEndsRetired(session, finding.canvasId)) {
     const retired = document.createElement('div');
     retired.className = 'finding-line finding-retired';
-    retired.textContent = 'The recorded canvas retired. Saved evidence remains available.';
+    retired.textContent = 'The recorded canvas retired during the saved recording. Saved evidence remains available.';
     evidence.append(retired);
   }
   const unavailable = document.createElement('div');
   unavailable.className = 'finding-line finding-unavailable';
-  unavailable.textContent = 'The canvas is not on the page. Saved evidence remains available.';
+  unavailable.textContent = 'Capture cannot start because the canvas is not on the page. Saved evidence remains available.';
   evidence.append(unavailable);
 
   const actions = document.createElement('div');
@@ -1023,6 +1165,14 @@ function createFinding(
     actions.append(action);
   }
   evidence.append(actions);
+  const explanation = document.createElement('button');
+  explanation.className = 'explanation-action';
+  explanation.type = 'button';
+  explanation.dataset.action = 'start-explanation';
+  explanation.dataset.sessionId = session.sessionId;
+  explanation.dataset.findingIndex = String(index);
+  explanation.textContent = 'Explain next interaction';
+  evidence.append(explanation);
   const status = document.createElement('div');
   status.className = 'finding-line finding-status';
   status.setAttribute('aria-live', 'polite');
@@ -1050,8 +1200,15 @@ function updateFinding(finding: InvestigationFinding): void {
   const connected = live instanceof Element && live.isConnected;
   const actions = card.querySelector<HTMLElement>('.finding-actions');
   const unavailable = card.querySelector<HTMLElement>('.finding-unavailable');
+  const explanation = card.querySelector<HTMLButtonElement>('.explanation-action');
   if (actions) actions.hidden = !connected;
   if (unavailable) unavailable.hidden = connected;
+  if (explanation) {
+    explanation.hidden = !connected;
+    explanation.disabled = getRecordingState() === 'recording';
+    const selected = getRecordingState() === 'recording' && explanationSelection?.key === findingKey(finding);
+    explanation.setAttribute('aria-pressed', String(selected));
+  }
 }
 
 function coverageLabel(name: string): string {
@@ -1148,6 +1305,9 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   if (session.findings.length === 0) appendLine(findings, '', 'No review candidates met the finding thresholds in this recording.');
   for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
   root.append(findings);
+  const explanation = document.createElement('div');
+  explanation.className = 'explanation-panel';
+  root.append(explanation);
   return root;
 }
 
@@ -1165,6 +1325,7 @@ function updateSessionView(session: InvestigationSessionV1): void {
     more.textContent = `+${hidden} more`;
   }
   for (const finding of session.findings) updateFinding(finding);
+  updateExplanationPanel();
 }
 
 function renderFlyout(): void {
@@ -1518,6 +1679,45 @@ function handleFlyoutClick(event: MouseEvent): void {
     return;
   }
   const action = event.target.closest<HTMLElement>('[data-action]');
+  if (action?.dataset.action === 'start-explanation') {
+    const findingIndex = Number(action.dataset.findingIndex);
+    const source = shownSession;
+    const finding = source?.findings[findingIndex];
+    if (!source || !finding || action.dataset.sessionId !== source.sessionId) return;
+    const key = findingKey(finding);
+    explanationSelection = { sessionId: source.sessionId, findingIndex, key };
+    explanationRecordingActive = true;
+    explanationStartFailure = '';
+    completedExplanation = null;
+    copyExplanationStatus = '';
+    const result = startExplanation({ sessionId: source.sessionId, findingIndex });
+    if (result.status === 'started' || result.status === 'already-active') {
+      expandedFindingId = key;
+      flyoutOpen = true;
+    } else {
+      explanationSelection = null;
+      explanationRecordingActive = false;
+      explanationStartFailure = explanationStartCopy[result.reason];
+      const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
+      if (status) status.textContent = explanationStartFailure;
+    }
+    flyoutRevision++;
+    markDirty();
+    return;
+  }
+  if (action?.dataset.action === 'copy-explanation' && completedExplanation) {
+    const explanationId = completedExplanation.explanationId;
+    const request = ++copyExplanationRequest;
+    const copied = (status: string) => {
+      if (request !== copyExplanationRequest || completedExplanation?.explanationId !== explanationId) return;
+      copyExplanationStatus = status; flyoutRevision++; markDirty();
+    };
+    try {
+      if (!navigator.clipboard?.writeText) copied('Copy failed');
+      else void navigator.clipboard.writeText(JSON.stringify(completedExplanation)).then(() => copied('Explanation JSON copied')).catch(() => copied('Copy failed'));
+    } catch { copied('Copy failed'); }
+    return;
+  }
   if (action?.dataset.action === 'copy-session' && shownSession) {
     const copied = (status: string) => { copySessionStatus = status; flyoutRevision++; markDirty(); };
     try {
@@ -1670,6 +1870,10 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     if (getRecordingState() === 'recording') return;
     startRecording();
     if (getRecordingState() === 'recording') {
+      explanationSelection = null;
+      completedExplanation = null;
+      explanationStartFailure = '';
+      copyExplanationStatus = '';
       shownSession = null;
       expandedFindingId = null;
       copySessionStatus = '';
@@ -1780,15 +1984,30 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   }
   unsubscribeRecording = subscribeToRecordingState((state) => {
     if (state === 'recording') {
-      shownSession = null;
-      expandedFindingId = null;
-      copySessionStatus = '';
-      showAllSessionCanvases = false;
-      findingNodes.clear();
+      if (!explanationRecordingActive) {
+        shownSession = null;
+        expandedFindingId = null;
+        completedExplanation = null;
+        explanationStartFailure = '';
+        copyExplanationStatus = '';
+        copySessionStatus = '';
+        showAllSessionCanvases = false;
+        findingNodes.clear();
+      }
     } else if (state === 'complete') {
-      shownSession = getLastSession() ?? null;
-      expandedFindingId = shownSession?.findings[0] ? findingKey(shownSession.findings[0]) : null;
-      showAllSessionCanvases = false;
+      const explanation = getLastExplanation();
+      const explanationCompleted = explanationRecordingActive;
+      explanationRecordingActive = false;
+      if (explanationCompleted && explanationSelection && explanation?.source.sessionId === explanationSelection.sessionId && explanation.source.findingIndex === explanationSelection.findingIndex) {
+        completedExplanation = explanation;
+      } else {
+        shownSession = getLastSession() ?? null;
+        expandedFindingId = shownSession?.findings[0] ? findingKey(shownSession.findings[0]) : null;
+        completedExplanation = null;
+        explanationSelection = null;
+        copyExplanationStatus = '';
+        showAllSessionCanvases = false;
+      }
     }
     renderRecordingState();
     flyoutRevision++;
@@ -1854,6 +2073,12 @@ export function unmountOverlay(): void {
   renderedSession = null;
   expandedFindingId = null;
   copySessionStatus = '';
+  explanationSelection = null;
+  explanationRecordingActive = false;
+  completedExplanation = null;
+  explanationStartFailure = '';
+  copyExplanationStatus = '';
+  copyExplanationRequest = 0;
   flyoutInvoker = null;
   showAllSessionCanvases = false;
   minFlashRasterOps = 2;
