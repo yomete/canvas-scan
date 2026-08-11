@@ -1,15 +1,26 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { processRecord } from '../src/frame-loop';
 import {
+  captureBoundary,
+  captureCommand,
+  createCommandCapture,
+  disableCommandCapture,
+  finishCommandCapture,
+  getCommandEntryAllocationCount,
+  resetCommandCaptureForTests,
+} from '../src/command-capture';
+import {
   getRecord,
   getMethodEvidence,
   getResetEvents,
   installCanvasPatch,
   isKilled,
   records,
+  refreshContentToken,
   setMethodEvidenceCollectionEnabled,
   setResetEventCollectionEnabled,
   setWindowCaptured,
+  subscribeToSelectedCommands,
   takeLifecycleEvents,
 } from '../src/wrap-context';
 
@@ -51,6 +62,14 @@ class FakeContext {
 
   stroke(...args: unknown[]) {
     this.invocations.push({ method: 'stroke', args });
+  }
+
+  save(...args: unknown[]) {
+    this.invocations.push({ method: 'save', args });
+  }
+
+  restore(...args: unknown[]) {
+    this.invocations.push({ method: 'restore', args });
   }
 
   reset() {
@@ -319,6 +338,147 @@ describe('canvas context wrapping', () => {
       signatureStatus: 'unknown',
       unknownReason: 'first-window',
     });
+  });
+
+  it('captures only successful commands from the selected record', () => {
+    const selectedCanvas = new FakeCanvas();
+    const selectedContext = selectedCanvas.getContext('2d')!;
+    const selectedRecord = getRecord(selectedCanvas)!;
+    const decoyCanvas = new FakeCanvas();
+    const decoyContext = decoyCanvas.getContext('2d')!;
+    const capture = createCommandCapture()!;
+    const unsubscribe = subscribeToSelectedCommands(
+      selectedRecord,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+    );
+    resetCommandCaptureForTests();
+    try {
+      decoyContext.fillRect(0, 0, 1, 1);
+      expect(getCommandEntryAllocationCount()).toBe(0);
+
+      selectedContext.save({ privateKey: 'privateValue' });
+      selectedContext.fillStyle = 'opaque-private-string';
+      selectedContext.fillRect(1, 2, 3, 4);
+      selectedContext.restore();
+      expect(getCommandEntryAllocationCount()).toBe(4);
+      captureBoundary(capture, 10, 10, true, true);
+
+      const beforeFailure = getCommandEntryAllocationCount();
+      selectedContext.throwOnFillRect = new Error('native call failed');
+      expect(() => selectedContext.fillRect(1, 2, 3, 4)).toThrow('native call failed');
+      selectedContext.throwOnFillRect = null;
+      selectedContext.throwOnFillStyle = new Error('native setter failed');
+      expect(() => { selectedContext.fillStyle = '#123456'; }).toThrow('native setter failed');
+      selectedContext.throwOnFillStyle = null;
+      expect(getCommandEntryAllocationCount()).toBe(beforeFailure);
+
+      selectedContext.save({ privateKey: 'privateValue' });
+      selectedContext.fillStyle = 'opaque-private-string';
+      selectedContext.fillRect(1, 2, 3, 4);
+      selectedContext.restore();
+      captureBoundary(capture, 11, 11, true, true);
+      const result = finishCommandCapture(capture, 12, 12);
+      expect(result.windows.map(window => window.commands.map(command => [command.operationKind, command.name]))).toEqual([
+        [['call', 'save'], ['set', 'fillStyle'], ['call', 'fillRect'], ['call', 'restore']],
+        [['call', 'save'], ['set', 'fillStyle'], ['call', 'fillRect'], ['call', 'restore']],
+      ]);
+      expect(JSON.stringify(result)).not.toContain('privateValue');
+      expect(JSON.stringify(result)).not.toContain('opaque-private-string');
+    } finally {
+      selectedContext.throwOnFillRect = null;
+      selectedContext.throwOnFillStyle = null;
+      unsubscribe();
+    }
+
+    resetCommandCaptureForTests();
+    selectedContext.fillRect(0, 0, 1, 1);
+    expect(getCommandEntryAllocationCount()).toBe(0);
+  });
+
+  it('does not invoke selected hostile object traps or disable global instrumentation', () => {
+    const selectedCanvas = new FakeCanvas();
+    const selectedContext = selectedCanvas.getContext('2d')!;
+    const selectedRecord = getRecord(selectedCanvas)!;
+    const capture = createCommandCapture()!;
+    let traps = 0;
+    const handler = Object.fromEntries(['get', 'set', 'has', 'ownKeys', 'getOwnPropertyDescriptor', 'getPrototypeOf', 'setPrototypeOf', 'defineProperty', 'deleteProperty', 'isExtensible', 'preventExtensions'].map(name => [name, () => { traps++; throw new Error(name); }]));
+    const hostile = new Proxy({}, handler);
+    const unsubscribe = subscribeToSelectedCommands(
+      selectedRecord,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+    );
+    try {
+      expect(() => selectedContext.save(hostile)).not.toThrow();
+      captureBoundary(capture, 20, 20, true, true);
+      const revoked = Proxy.revocable({}, {});
+      revoked.revoke();
+      expect(() => selectedContext.save(revoked.proxy)).not.toThrow();
+      captureBoundary(capture, 21, 21, true, true);
+      const result = finishCommandCapture(capture, 22, 22);
+      expect(traps).toBe(0);
+      expect(result.windows[1]).toMatchObject({ complete: false, unknownReason: 'unsupported-value' });
+      expect(isKilled()).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('labels and tracks a mutable registered drawImage source without reading it', () => {
+    const selectedCanvas = new FakeCanvas();
+    const selectedContext = selectedCanvas.getContext('2d')!;
+    const selectedRecord = getRecord(selectedCanvas)!;
+    const sourceCanvas = new FakeCanvas();
+    sourceCanvas.getContext('2d');
+    const sourceRecord = getRecord(sourceCanvas)!;
+    const capture = createCommandCapture()!;
+    const unsubscribe = subscribeToSelectedCommands(
+      selectedRecord,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+    );
+    try {
+      selectedContext.drawImage(sourceCanvas, 0, 0);
+      captureBoundary(capture, 30, 30, true, true);
+      expect(processRecord(selectedRecord, 30, 1)?.report.signatureStatus).toBe('unknown');
+      selectedContext.drawImage(sourceCanvas, 0, 0);
+      captureBoundary(capture, 31, 31, true, true);
+      expect(processRecord(selectedRecord, 31, 1)?.report.signatureStatus).toBe('same');
+      sourceRecord.contentVersion++;
+      refreshContentToken(sourceRecord);
+      selectedContext.drawImage(sourceCanvas, 0, 0);
+      captureBoundary(capture, 32, 32, true, true);
+      expect(processRecord(selectedRecord, 32, 1)?.report.signatureStatus).toBe('changed');
+      const result = finishCommandCapture(capture, 33, 33);
+      expect(result.windows[0].commands[0].arguments[0].kind).toBe('canvas');
+      expect(result.comparisons.at(-1)).toMatchObject({ status: 'changed', difference: { ordinal: 0, reason: 'argument-token' } });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('contains a selected detail failure without changing the native call', () => {
+    const selectedCanvas = new FakeCanvas();
+    const selectedContext = selectedCanvas.getContext('2d')!;
+    const selectedRecord = getRecord(selectedCanvas)!;
+    const disabled = vi.fn();
+    const unsubscribe = subscribeToSelectedCommands(
+      selectedRecord,
+      () => { throw new Error('detail listener failed'); },
+      () => {},
+      disabled,
+    );
+    try {
+      expect(selectedContext.fillRect(1, 2, 3, 4)).toBe(fillRectResult);
+      expect(disabled).toHaveBeenCalledOnce();
+      expect(isKilled()).toBe(false);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('kills instrumentation when capture fails without escaping', () => {

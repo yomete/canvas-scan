@@ -62,7 +62,7 @@ export function installPath2DPatch(holder: any = globalThis): void {
           kill(error);
         }
       }
-      trackBuild(this, sig);
+      trackBuild(this, sig, 'path');
     }
   };
 }

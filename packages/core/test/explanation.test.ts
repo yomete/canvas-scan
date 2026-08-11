@@ -4,8 +4,42 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emitReport, getCurrentWindowIndex } from '../src/frame-loop';
 import { getLastExplanation, getLastSession, getRecordingState, resetRecordingForTests, startExplanation, startRecording, stopExplanation, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
-import { records, type CanvasRecord } from '../src/wrap-context';
+import { getRecord, installCanvasPatch, notifySelectedCommandBoundary, records, type CanvasRecord } from '../src/wrap-context';
 import * as wrapContext from '../src/wrap-context';
+
+class ExplanationContext {
+  canvas: ExplanationCanvas;
+  private fillStyleValue = '#000000';
+
+  constructor(canvas: ExplanationCanvas) { this.canvas = canvas; }
+  get fillStyle() { return this.fillStyleValue; }
+  set fillStyle(value: string) { this.fillStyleValue = value; }
+  save(..._args: unknown[]) {}
+  restore(..._args: unknown[]) {}
+  fillRect(..._args: unknown[]) {}
+}
+
+class ExplanationCanvas {
+  id = 'explanation-selected';
+  isConnected = true;
+  private context: ExplanationContext | null = null;
+  get width() { return 300; }
+  set width(_value: number) {}
+  get height() { return 150; }
+  set height(_value: number) {}
+  getAttribute(name: string) { return name === 'id' ? this.id : null; }
+  getContext(type: string) {
+    if (type !== '2d') return null;
+    this.context ??= new ExplanationContext(this);
+    return this.context;
+  }
+}
+
+installCanvasPatch({
+  canvasProto: ExplanationCanvas.prototype,
+  contextProto: ExplanationContext.prototype,
+  attributeObserver: { observe() {}, takeRecords: () => [] },
+});
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/v05-02-explanation-v1.json', import.meta.url), 'utf8'));
 
@@ -93,6 +127,46 @@ describe('explanation state', () => {
     expect(secondRead.collectionLimits.maxDurationMs).toBe(10000);
     expect(secondRead.droppedEntryCounts.commandEntries).toBe(0);
     expect(stopExplanation()).toBeUndefined();
+  });
+
+  it('deep-copies nested command windows, comparisons, and first differences', () => {
+    const canvas = new ExplanationCanvas();
+    const context = canvas.getContext('2d')!;
+    const sourceRecord = getRecord(canvas)!;
+    const source = completeSource(sourceRecord.id);
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
+    const privateObject = { privateKey: 'privateValue' };
+    const draw = (value: number) => {
+      context.save(privateObject);
+      context.fillStyle = 'opaque-private-string';
+      context.fillRect(value, 0, 10, 10);
+      context.restore();
+    };
+    draw(1);
+    notifySelectedCommandBoundary(sourceRecord, 10, 10, true, true);
+    draw(1);
+    notifySelectedCommandBoundary(sourceRecord, 11, 11, true, true);
+    draw(2);
+    notifySelectedCommandBoundary(sourceRecord, 12, 12, true, true);
+    const artifact = stopExplanation()!;
+    expect(artifact.windows).toHaveLength(3);
+    expect(artifact.firstDifference).toMatchObject({ ordinal: 2, reason: 'argument-token' });
+
+    artifact.windows[0].commands[0].arguments[0].kind = 'image';
+    artifact.comparisons[1].difference!.target!.arguments[0].kind = 'image';
+    artifact.firstDifference!.reference!.arguments[0].kind = 'image';
+    const firstRead = getLastExplanation()!;
+    expect(firstRead.windows[0].commands[0].arguments[0].kind).toBe('object');
+    expect(firstRead.comparisons[1].difference!.target!.arguments[0].kind).toBe('number');
+    expect(firstRead.firstDifference!.reference!.arguments[0].kind).toBe('number');
+
+    firstRead.windows[2].commands[2].arguments[0].token = 'changed';
+    firstRead.comparisons[1].difference!.reference!.arguments[0].token = 'changed';
+    firstRead.firstDifference!.target!.arguments[0].token = 'changed';
+    const secondRead = getLastExplanation()!;
+    expect(secondRead.windows[2].commands[2].arguments[0].token).not.toBe('changed');
+    expect(secondRead.comparisons[1].difference!.reference!.arguments[0].token).not.toBe('changed');
+    expect(secondRead.firstDifference!.target!.arguments[0].token).not.toBe('changed');
   });
 
   it('uses the 10-second timer and does not stop a normal recording', () => {

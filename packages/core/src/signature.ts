@@ -1,4 +1,4 @@
-import type { SignatureStatus } from './types';
+import type { NormalizedCanvasCommand, SignatureStatus } from './types';
 import { getBuildSignature } from './build-registry';
 
 export interface WindowSignature {
@@ -194,6 +194,22 @@ export function captureSet(
 ): void {
   mixToken(sig, 'S', prop);
   mixValue(sig, value);
+  sig.opCount++;
+}
+
+// Selected detail capture gives this helper only safe kinds and opaque,
+// capture-scoped tokens. It never examines application values.
+export function captureNormalizedCommand(
+  sig: WindowSignature,
+  command: NormalizedCanvasCommand,
+): void {
+  mixToken(sig, command.operationKind === 'call' ? 'C' : 'S', command.name);
+  mixToken(sig, 'N', String(command.argumentCount));
+  for (const argument of command.arguments) {
+    mixToken(sig, 'K', argument.kind);
+    mixToken(sig, 'T', argument.token ?? '?');
+  }
+  if (command.unknownReason) markUnknown(sig, command.unknownReason);
   sig.opCount++;
 }
 

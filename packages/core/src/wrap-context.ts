@@ -1,6 +1,7 @@
 import { getBuildSignature, trackBuild } from './build-registry';
 import {
   captureHeadState,
+  captureNormalizedCommand,
   captureOp,
   captureSet,
   markUnknown,
@@ -187,6 +188,13 @@ let installed = false;
 let killed = false;
 let nextCanvasSerial = 1;
 let windowCaptured = true;
+type SelectedCommandSubscription = {
+  record: CanvasRecord;
+  listener: (operationKind: 'call' | 'set', name: string, args: unknown[], sampled: boolean) => import('./types').NormalizedCanvasCommand | null;
+  boundary: (windowIndex: number, timestampMs: number, active: boolean, sampled: boolean) => void;
+  disabled: () => void;
+};
+let selectedCommandSubscription: SelectedCommandSubscription | null = null;
 let methodEvidenceByRecord: Map<CanvasRecord, Record<string, CanvasMethodEvidence>> | null = null;
 type PendingResetEvent = { source: CanvasResetSource; width: number | null; height: number | null };
 let resetEventsByRecord: Map<CanvasRecord, PendingResetEvent[]> | null = null;
@@ -202,6 +210,17 @@ let takeAttributeRecords: (() => MutationRecord[]) | null = null;
 
 export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
+}
+
+export function subscribeToSelectedCommands(record: CanvasRecord, listener: SelectedCommandSubscription['listener'], boundary: SelectedCommandSubscription['boundary'], disabled: () => void): () => void {
+  if (selectedCommandSubscription) throw new Error('selected command subscription already exists');
+  selectedCommandSubscription = { record, listener, boundary, disabled };
+  return () => { if (selectedCommandSubscription?.record === record) selectedCommandSubscription = null; };
+}
+
+export function notifySelectedCommandBoundary(record: CanvasRecord, windowIndex: number, timestampMs: number, active: boolean, sampled: boolean): void {
+  const subscription = selectedCommandSubscription;
+  if (subscription?.record === record) subscription.boundary(windowIndex, timestampMs, active, sampled);
 }
 
 export function setMethodEvidenceCollectionEnabled(enabled: boolean): void {
@@ -367,6 +386,21 @@ function headState(record: CanvasRecord) {
     pathUnknown: record.pathUnknown,
     dimensionsUnknown,
   };
+}
+
+function captureSelectedHeadState(
+  sig: WindowSignature,
+  entries: ReadonlyArray<readonly [string, unknown]>,
+): void {
+  for (const [name, value] of entries) {
+    const internal = name === '__matrix' || name === '__path' || name === '__clip';
+    const primitive = value === null || (typeof value !== 'object' && typeof value !== 'function');
+    if (!internal && !primitive) {
+      markUnknown(sig, 'selected-head-state-unmodeled');
+      return;
+    }
+  }
+  captureHeadState(sig, entries);
 }
 
 function clearPersistentState(record: CanvasRecord): void {
@@ -721,10 +755,33 @@ function kill(error: unknown) {
   console.warn('[canvas-scan] instrumentation disabled', error);
 }
 
+function hasOnlySafeStateArguments(command: import('./types').NormalizedCanvasCommand): boolean {
+  if (command.unknownReason) return false;
+  return command.arguments.every(argument =>
+    argument.kind === 'number' ||
+    argument.kind === 'string' ||
+    argument.kind === 'boolean' ||
+    argument.kind === 'null' ||
+    argument.kind === 'undefined',
+  );
+}
+
+function selectedStateIgnoresArguments(name: string): boolean {
+  return name === 'save' || name === 'restore' || name === 'beginPath';
+}
+
+function selectedStateNeedsArguments(
+  name: string,
+  matrixOperation: boolean,
+  barePathOperation: boolean,
+): boolean {
+  return matrixOperation || barePathOperation || name === 'clip' || name === 'setLineDash';
+}
+
 function trackGradient(gradient: any, creator: string, args: unknown[]) {
   const sig = newWindowSignature();
   captureOp(sig, creator, args);
-  trackBuild(gradient, sig);
+  trackBuild(gradient, sig, 'gradient');
   const originalAdd = gradient.addColorStop;
   if (typeof originalAdd !== 'function') return;
   // per-instance shadow: CanvasGradient.prototype isn't injectable in tests,
@@ -754,6 +811,10 @@ function trackGradient(gradient: any, creator: string, args: unknown[]) {
 
 export function getRecord(canvas: unknown): CanvasRecord | undefined {
   return recordByCanvas.get(canvas as object);
+}
+
+export function isTrackedCanvas(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && recordByCanvas.has(value);
 }
 
 export function markAttributeReset(canvas: unknown, source: CanvasResetSource): void {
@@ -1170,9 +1231,25 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           }
         }
       }
+      const subscription = selectedCommandSubscription;
+      const selected = subscription?.record === record;
+      // A selected command is normalized before any passive helper can see
+      // its raw arguments. The native call has already succeeded.
+      let selectedCommand = null;
+      if (selected) {
+        try {
+          selectedCommand = subscription.listener('call', name, args, windowCaptured);
+          if (selectedCommand) captureNormalizedCommand(record.sig, selectedCommand);
+          else markUnknown(record.sig, 'sampling-gap');
+        } catch {
+          subscription.disabled();
+          markUnknown(record.sig, 'instrumentation-disabled');
+        }
+      }
       try {
         if (headEntries) {
-          captureHeadState(record.sig, headEntries.entries);
+          if (selected) captureSelectedHeadState(record.sig, headEntries.entries);
+          else captureHeadState(record.sig, headEntries.entries);
           if (headEntries.matrixUnknown) {
             markUnknown(record.sig, 'transform-unmodeled');
           }
@@ -1186,11 +1263,15 @@ export function installCanvasPatch(targets?: PatchTargets): void {
             markUnknown(record.sig, 'canvas-dimensions-unmodeled');
           }
         }
-        if (!resetsContext) {
+        const safeSelectedState = selectedCommand !== null && hasOnlySafeStateArguments(selectedCommand);
+        const canUpdateSelectedState = safeSelectedState || selectedStateIgnoresArguments(name);
+        if (!resetsContext && (!selected || canUpdateSelectedState)) {
           updateMethodState(record, name, args, this, matrixOperation, barePathOperation);
+        } else if (selected && selectedStateNeedsArguments(name, matrixOperation, barePathOperation)) {
+          markUnknown(record.sig, selectedCommand?.unknownReason ?? 'unsupported-value');
         }
         if (windowCaptured && !resetsContext) {
-          if (name === 'clip' && record.clipUnknown) {
+          if (!selected && name === 'clip' && record.clipUnknown) {
             markUnknown(record.sig, 'clip-unmodeled');
           }
           if (name === 'drawImage') {
@@ -1212,10 +1293,11 @@ export function installCanvasPatch(targets?: PatchTargets): void {
               }
             }
           }
-          captureOp(record.sig, name, args);
+          if (!selected) captureOp(record.sig, name, args);
         }
         if (gradientCreator && result && typeof result === 'object') {
-          trackGradient(result, name, args);
+          if (!selected || safeSelectedState) trackGradient(result, name, args);
+          else trackBuild(result, newWindowSignature(), 'gradient');
         }
       } catch (error) {
         kill(error);
@@ -1248,9 +1330,23 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         }
         if (record.activeInWindow) record.contextActivityInWindow = true;
         else markRecordActive(record);
+        const subscription = selectedCommandSubscription;
+        const selected = subscription?.record === record;
+        let selectedCommand = null;
+        if (selected) {
+          try {
+            selectedCommand = subscription.listener('set', name, [value], windowCaptured);
+            if (selectedCommand) captureNormalizedCommand(record.sig, selectedCommand);
+            else markUnknown(record.sig, 'sampling-gap');
+          } catch {
+            subscription.disabled();
+            markUnknown(record.sig, 'instrumentation-disabled');
+          }
+        }
         if (headEntries) {
           try {
-            captureHeadState(record.sig, headEntries.entries);
+            if (selected) captureSelectedHeadState(record.sig, headEntries.entries);
+            else captureHeadState(record.sig, headEntries.entries);
             if (headEntries.matrixUnknown) {
               markUnknown(record.sig, 'transform-unmodeled');
             }
@@ -1268,8 +1364,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           }
           if (killed) return;
         }
-        setProp(record, name, value);
-        if (typeof value === 'object' && value !== null) {
+        const safeSelectedState = selectedCommand !== null && hasOnlySafeStateArguments(selectedCommand);
+        if (!selected || safeSelectedState) setProp(record, name, value);
+        else if (selected) markUnknown(record.sig, selectedCommand?.unknownReason ?? 'unsupported-value');
+        if ((!selected || safeSelectedState) && typeof value === 'object' && value !== null) {
           const build = getBuildSignature(value);
           if (build) {
             let dependents = gradientDependents.get(value);
@@ -1281,7 +1379,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           }
         }
         try {
-          if (windowCaptured) captureSet(record.sig, name, value);
+          if (windowCaptured && !selected) captureSet(record.sig, name, value);
         } catch (error) {
           kill(error);
         }

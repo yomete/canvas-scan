@@ -7,6 +7,7 @@ import {
   vi,
 } from 'vitest';
 import { processRecord } from '../src/frame-loop';
+import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture } from '../src/command-capture';
 import {
   drainAttributeRecords,
   getRecord,
@@ -16,6 +17,7 @@ import {
   records,
   setResetEventCollectionEnabled,
   setWindowCaptured,
+  subscribeToSelectedCommands,
 } from '../src/wrap-context';
 
 const fillRectResult = Symbol('fillRect result');
@@ -301,6 +303,67 @@ afterAll(() => {
 });
 
 describe('canvas patch hardening', () => {
+  it('keeps a hostile ignored argument inside selected detail capture', () => {
+    const { context, record } = makeCanvas();
+    const capture = createCommandCapture()!;
+    let traps = 0;
+    const handler = Object.fromEntries(['get', 'set', 'has', 'ownKeys', 'getOwnPropertyDescriptor', 'getPrototypeOf', 'setPrototypeOf', 'defineProperty', 'deleteProperty', 'isExtensible', 'preventExtensions', 'apply', 'construct'].map(name => [name, () => { traps++; throw new Error(name); }]));
+    const hostile = new Proxy(function privateFunction() {}, handler);
+    let decoyRecord: typeof record | undefined;
+    const unsubscribe = subscribeToSelectedCommands(
+      record,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+    );
+    try {
+      expect(context.fillRect(0, 0, 1, 1, hostile)).toBe(fillRectResult);
+      captureBoundary(capture, 10, 10, true, true);
+      const result = finishCommandCapture(capture, 11, 11);
+      expect(traps).toBe(0);
+      expect(result.windows[0]).toMatchObject({ complete: false, unknownReason: 'sampling-gap', commands: [{ unknownReason: 'unsupported-value' }] });
+      expect(result.firstGap).toEqual({ windowIndex: 10, commandOrdinal: 0, reason: 'sampling-gap' });
+      expect(JSON.stringify(result)).not.toContain('privateFunction');
+      expect(isKilled()).toBe(false);
+      const decoy = makeCanvas();
+      decoyRecord = decoy.record;
+      decoy.context.fillRect(0, 0, 1, 1);
+      expect(finish(decoy.record, 11)).toBeDefined();
+    } finally {
+      unsubscribe();
+      records.delete(record);
+      if (decoyRecord) records.delete(decoyRecord);
+    }
+  });
+
+  it('does not read a stored application value from selected head state', () => {
+    const { context, record } = makeCanvas();
+    let constructorReads = 0;
+    const applicationValue = {
+      get constructor() { constructorReads++; return Object; },
+      toString() { return '#123456'; },
+    };
+    context.fillStyle = applicationValue as unknown as string;
+    finish(record, 1);
+    constructorReads = 0;
+    const capture = createCommandCapture()!;
+    const unsubscribe = subscribeToSelectedCommands(
+      record,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+    );
+    try {
+      context.fillRect(0, 0, 1, 1);
+      expect(constructorReads).toBe(0);
+      expect(finish(record, 2)).toMatchObject({ signatureStatus: 'unknown', unknownReason: 'selected-head-state-unmodeled' });
+      expect(constructorReads).toBe(0);
+    } finally {
+      unsubscribe();
+      records.delete(record);
+    }
+  });
+
   it('records each successful native reset once with its source and resulting dimensions', () => {
     const { canvas, context, record } = makeCanvas();
     setResetEventCollectionEnabled(true);

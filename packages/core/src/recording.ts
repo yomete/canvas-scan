@@ -2,6 +2,8 @@ import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, sub
 import { drainAttributeRecords, isKilled, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
+import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, resetCommandCaptureForTests } from './command-capture';
+import { subscribeToSelectedCommands } from './wrap-context';
 import type {
   CanvasMethodEvidence,
   CanvasScanOptions,
@@ -83,6 +85,8 @@ let activeExplanation: {
   findingType: InvestigationFinding['type'];
   canvasId: string;
   record: CanvasRecord;
+  capture: NonNullable<ReturnType<typeof createCommandCapture>>;
+  unsubscribeDetail: () => void;
 } | undefined;
 let unsubscribe: (() => void) | undefined;
 let unsubscribeResetEvents: (() => void) | undefined;
@@ -386,6 +390,7 @@ function deriveAssociations(episodes: RecordedDrawEpisode[]): RecordedEpisodeAss
 function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undefined {
   if (state !== 'recording') return undefined;
   const explanation = activeExplanation;
+  const detail = explanation ? finishCommandCapture(explanation.capture, getCurrentWindowIndex() + 1, now()) : null;
   drainAttributeRecords();
   const endedMonotonic = now();
   const browser = stopBrowserEvidence(endedMonotonic);
@@ -421,6 +426,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   unsubscribeResetEvents = undefined;
   unsubscribeLifecycleEvents?.();
   unsubscribeLifecycleEvents = undefined;
+  if (explanation) explanation.unsubscribeDetail();
   const derived = episodesAndFindings();
   episodeAssociations = deriveAssociations(derived.episodes);
   lastSession = {
@@ -447,9 +453,9 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
         canvasId: explanation.canvasId,
       },
       followUp: { sessionId: lastSession.sessionId, canvasId: explanation.canvasId },
-      windows: [],
-      comparisons: [],
-      firstDifference: null,
+      windows: detail!.windows,
+      comparisons: detail!.comparisons,
+      firstDifference: detail!.firstDifference,
       stacks: [],
       collectionLimits: {
         maxDurationMs: 10000,
@@ -463,8 +469,8 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
         maxSourceMapLookups: 8,
         maxSourceMapResponseBytes: 2097152,
       },
-      droppedEntryCounts: { activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 },
-      firstGap: null,
+      droppedEntryCounts: { ...detail!.droppedEntryCounts, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 },
+      firstGap: detail!.firstGap,
     };
     activeExplanation = undefined;
   }
@@ -544,7 +550,15 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
   const finding = lastSession.findings[selection.findingIndex];
   const record = [...records].find(candidate => candidate.id === finding.canvasId);
   if (!record) return { status: 'unavailable', reason: 'canvas-unavailable' };
+  const capture = createCommandCapture();
+  if (!capture) return { status: 'unavailable', reason: 'instrumentation-disabled' };
   const started = new Date().toISOString();
+  const unsubscribeDetail = subscribeToSelectedCommands(
+    record,
+    (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+    (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+    () => disableCommandCapture(capture),
+  );
   lastExplanation = undefined;
   activeExplanation = {
     explanationId: `canvas-scan-explanation-${Date.parse(started)}-${++explanationSequence}`,
@@ -553,6 +567,8 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
     findingType: finding.type,
     canvasId: finding.canvasId,
     record,
+    capture,
+    unsubscribeDetail,
   };
   startRecordingWithDuration(EXPLANATION_MAX_DURATION_MS);
   return { status: 'started' };
@@ -584,10 +600,12 @@ export function resetRecordingForTests(): void {
   unsubscribeResetEvents = undefined;
   unsubscribeLifecycleEvents?.();
   unsubscribeLifecycleEvents = undefined;
+  activeExplanation?.unsubscribeDetail();
   state = 'idle';
   lastSession = undefined;
   lastExplanation = undefined;
   activeExplanation = undefined;
+  resetCommandCaptureForTests();
   windows = [];
   resetEvents = [];
   lifecycleEvents = [];

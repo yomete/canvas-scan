@@ -10,6 +10,8 @@
     "collect": "node collect.mjs",
     "probe:recording": "node recording-probe.mjs",
     "probe:explanation-state": "node explanation-state-probe.mjs",
+    "probe:command-capture": "node command-capture-probe.mjs",
+    "probe:command-capture:test": "node --test command-capture-truth.test.mjs",
     "probe:reset": "node probes.mjs",
     "probe:burst-heavy": "node burst-heavy-probe.mjs",
     "probe:continuous-repeated": "node v04-04-continuous-probe.mjs",

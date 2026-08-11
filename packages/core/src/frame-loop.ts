@@ -19,6 +19,7 @@ import {
   setWindowCaptured,
   takeResetEvents,
   takeLifecycleEvents,
+  notifySelectedCommandBoundary,
 } from './wrap-context';
 
 export const latestReports = new Map<string, DrawBatchReport>();
@@ -313,6 +314,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       }
       record.lastConnected = connected;
       const hadActivity = record.activeInWindow;
+      notifySelectedCommandBoundary(record, windowIndex, timestampMs, hadActivity, windowIndex % captureEvery === 0);
       const processed = resetEventListeners.size === 0
         ? processRecord(record, windowIndex, captureEvery)
         : processRecordWithResetEvents(record, windowIndex, captureEvery, processedResetEvents);
