@@ -191,6 +191,7 @@ let windowCaptured = true;
 type SelectedCommandSubscription = {
   record: CanvasRecord;
   listener: (operationKind: 'call' | 'set', name: string, args: unknown[], sampled: boolean) => import('./types').NormalizedCanvasCommand | null;
+  stack?: (command: import('./types').NormalizedCanvasCommand, rasterOperation: boolean, boundary: (...args: unknown[]) => unknown) => void;
   boundary: (windowIndex: number, timestampMs: number, active: boolean, sampled: boolean) => void;
   disabled: () => void;
 };
@@ -212,9 +213,9 @@ export function setWindowCaptured(captured: boolean): void {
   windowCaptured = captured;
 }
 
-export function subscribeToSelectedCommands(record: CanvasRecord, listener: SelectedCommandSubscription['listener'], boundary: SelectedCommandSubscription['boundary'], disabled: () => void): () => void {
+export function subscribeToSelectedCommands(record: CanvasRecord, listener: SelectedCommandSubscription['listener'], boundary: SelectedCommandSubscription['boundary'], disabled: () => void, stack?: SelectedCommandSubscription['stack']): () => void {
   if (selectedCommandSubscription) throw new Error('selected command subscription already exists');
-  selectedCommandSubscription = { record, listener, boundary, disabled };
+  selectedCommandSubscription = { record, listener, stack, boundary, disabled };
   return () => { if (selectedCommandSubscription?.record === record) selectedCommandSubscription = null; };
 }
 
@@ -1171,7 +1172,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     const matrixOperation = MATRIX_OPS.has(name);
     const barePathOperation = BARE_PATH_OPS.has(name);
 
-    contextProto[name] = function (this: any, ...args: unknown[]) {
+    const wrapped = function (this: any, ...args: unknown[]) {
       const record = recordByContext.get(this);
       if (!record || killed) return original.apply(this, args);
 
@@ -1241,6 +1242,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           selectedCommand = subscription.listener('call', name, args, windowCaptured);
           if (selectedCommand) captureNormalizedCommand(record.sig, selectedCommand);
           else markUnknown(record.sig, 'sampling-gap');
+          if (selectedCommand) subscription.stack?.(selectedCommand, rasterOperation, wrapped);
         } catch {
           subscription.disabled();
           markUnknown(record.sig, 'instrumentation-disabled');
@@ -1304,6 +1306,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       }
       return result;
     };
+    contextProto[name] = wrapped;
   }
 
   for (const name of CAPTURED_SETTERS) {

@@ -1,0 +1,60 @@
+{
+  "privateSentinels": [
+    "SIDPROJ_68_PRIVATE_SENTINEL_DIRECT",
+    "SIDPROJ_68_PRIVATE_SENTINEL_NESTED",
+    "SIDPROJ_68_PRIVATE_SENTINEL_BUNDLED",
+    "SIDPROJ_68_PRIVATE_SENTINEL_NO_MAP",
+    "private-query",
+    "private-fragment"
+  ],
+  "expectedDroppedEntryCounts": {
+    "activeWindows": 0,
+    "commandEntries": 0,
+    "commandArguments": 0,
+    "valueTokens": 0,
+    "stackSamples": 0,
+    "stackFrames": 0,
+    "sourceMapLookups": 0
+  },
+  "rows": [
+    {
+      "name": "direct",
+      "class": "positive",
+      "expectedReasons": ["first-raster", "first-difference"],
+      "relationship": { "status": "changed", "ordinal": 0, "reason": "argument-token" },
+      "mapped": { "file": "fixtures/v05-05/direct-source.js", "line": 3, "column": 10 },
+      "generatedPath": "/v05-05-generated/direct.js",
+      "mapPath": "/v05-05-generated/direct.js.map",
+      "maxMapRequests": 1
+    },
+    {
+      "name": "nested",
+      "class": "positive",
+      "expectedReasons": ["first-raster", "first-difference"],
+      "relationship": { "status": "changed", "ordinal": 0, "reason": "argument-token" },
+      "mapped": { "file": "fixtures/v05-05/nested-source.js", "line": 4, "column": 33 },
+      "generatedPath": "/v05-05-generated/nested.js",
+      "mapPath": "/v05-05-generated/nested.js.map",
+      "maxMapRequests": 1
+    },
+    {
+      "name": "bundled",
+      "class": "positive",
+      "expectedReasons": ["first-raster", "first-difference"],
+      "relationship": { "status": "changed", "ordinal": 0, "reason": "argument-token" },
+      "mapped": { "file": "fixtures/v05-05/bundled-source.js", "line": 2, "column": 48 },
+      "generatedPath": "/v05-05-generated/bundled.js",
+      "mapPath": "/v05-05-generated/bundled.js.map",
+      "maxMapRequests": 1
+    },
+    {
+      "name": "no-map",
+      "class": "negative",
+      "expectedReasons": ["first-raster", "first-difference"],
+      "relationship": { "status": "changed", "ordinal": 0, "reason": "argument-token" },
+      "generatedPath": "/v05-05-generated/no-map.js",
+      "unresolvedReason": "no-source-map",
+      "maxMapRequests": 0
+    }
+  ]
+}

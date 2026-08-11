@@ -8,13 +8,15 @@ export const MAX_COMMAND_ARGUMENTS = 20;
 export const MAX_VALUE_TOKENS = 1024;
 
 type DropCounts = { activeWindows: number; commandEntries: number; commandArguments: number; valueTokens: number };
+export type CommandWindowIdentity = object;
+export type CommandBoundary = { identity: CommandWindowIdentity; windowIndex: number };
 type Capture = {
   namespace: string;
   primitiveTokens: Map<string, string>;
   objectTokens: WeakMap<object, Map<string, string>>;
   nextToken: number;
   commandCount: number;
-  pending: { windowIndex: number; timestampMs: number; commands: NormalizedCanvasCommand[]; complete: boolean; reason: ExplanationUnknownReason | null; active: boolean; nextOrdinal: number } | null;
+  pending: { identity: CommandWindowIdentity; windowIndex: number; timestampMs: number; commands: NormalizedCanvasCommand[]; complete: boolean; reason: ExplanationUnknownReason | null; active: boolean; nextOrdinal: number } | null;
   windows: ExplanationCommandWindow[];
   comparisons: ExplanationWindowComparison[];
   firstDifference: CommandDifference | null;
@@ -108,7 +110,7 @@ export function createCommandCapture(): Capture | null {
 
 export function captureCommand(capture: Capture, operationKind: 'call' | 'set', name: string, args: unknown[], sampled: boolean): NormalizedCanvasCommand | null {
   if (capture.finished) return null;
-  const pending = capture.pending ?? (capture.pending = { windowIndex: -1, timestampMs: 0, commands: [], complete: true, reason: null, active: false, nextOrdinal: 0 });
+  const pending = capture.pending ?? (capture.pending = { identity: {}, windowIndex: -1, timestampMs: 0, commands: [], complete: true, reason: null, active: false, nextOrdinal: 0 });
   pending.active = true;
   const ordinal = pending.nextOrdinal++;
   if (!sampled) { capture.dropped.commandEntries++; markPending(capture, ordinal, 'sampling-gap'); return null; }
@@ -146,6 +148,17 @@ export function captureCommand(capture: Capture, operationKind: 'call' | 'set', 
   return command;
 }
 
+// The selected wrapper calls this after it stores the current command. The
+// pending window does not have its final index until its next boundary.
+export function getLiveCommandRelationship(capture: Capture, command: NormalizedCanvasCommand): { identity: CommandWindowIdentity; firstDifference: boolean } | null {
+  const pending = capture.pending;
+  const reference = capture.windows.at(-1);
+  if (!pending || !pending.commands.includes(command)) return null;
+  if (!pending.complete || !reference?.complete) return { identity: pending.identity, firstDifference: false };
+  const difference = compareCommands(reference.commands, pending.commands, reference.windowIndex, -1);
+  return { identity: pending.identity, firstDifference: difference?.ordinal === command.ordinal && difference.reason !== 'command-removed' };
+}
+
 function compareCommands(reference: NormalizedCanvasCommand[], target: NormalizedCanvasCommand[], referenceWindowIndex: number, targetWindowIndex: number): CommandDifference | null {
   const count = Math.max(reference.length, target.length);
   for (let ordinal = 0; ordinal < count; ordinal++) {
@@ -169,9 +182,9 @@ export function compareCommandWindows(reference: ExplanationCommandWindow, targe
   const difference = compareCommands(reference.commands, target.commands, reference.windowIndex, target.windowIndex);
   return { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: difference ? 'changed' : 'same', difference, unknownReason: null };
 }
-function finishWindow(capture: Capture, windowIndex: number, timestampMs: number, partial: boolean): void {
+function finishWindow(capture: Capture, windowIndex: number, timestampMs: number, partial: boolean): CommandBoundary | null {
   const pending = capture.pending;
-  if (!pending || !pending.active) return;
+  if (!pending || !pending.active) return null;
   pending.windowIndex = windowIndex; pending.timestampMs = timestampMs;
   if (partial) {
     pending.complete = false;
@@ -190,36 +203,39 @@ function finishWindow(capture: Capture, windowIndex: number, timestampMs: number
     const reference = capture.windows.at(-1);
     if (reference) capture.comparisons.push({ referenceWindowIndex: reference.windowIndex, targetWindowIndex: windowIndex, status: 'unknown', difference: null, unknownReason: 'window-limit' });
     capture.pending = null;
-    return;
+    return { identity: pending.identity, windowIndex };
   }
   const window: ExplanationCommandWindow = { windowIndex, timestampMs, commands: pending.commands.map(copy), complete: pending.complete && !pending.reason, unknownReason: pending.reason };
   const reference = capture.windows.at(-1);
   capture.windows.push(window);
   if (reference) { const comparison = compareCommandWindows(reference, window); capture.comparisons.push(comparison); if (!capture.firstDifference && comparison.difference) capture.firstDifference = copy(comparison.difference); }
   capture.pending = null;
+  return { identity: pending.identity, windowIndex };
 }
-export function captureBoundary(capture: Capture, windowIndex: number, timestampMs: number, active: boolean, sampled: boolean): void {
-  if (!active) return;
+export function captureBoundary(capture: Capture, windowIndex: number, timestampMs: number, active: boolean, sampled: boolean): CommandBoundary | null {
+  if (!active) return null;
   const pending = capture.pending;
   if (!pending) {
-    capture.pending = { windowIndex, timestampMs, commands: [], complete: sampled && !capture.instrumentationDisabled, reason: !sampled ? 'sampling-gap' : capture.instrumentationDisabled ? 'instrumentation-disabled' : null, active: true, nextOrdinal: 0 };
+    capture.pending = { identity: {}, windowIndex, timestampMs, commands: [], complete: sampled && !capture.instrumentationDisabled, reason: !sampled ? 'sampling-gap' : capture.instrumentationDisabled ? 'instrumentation-disabled' : null, active: true, nextOrdinal: 0 };
     if (capture.instrumentationDisabled && !capture.firstGap && !capture.pendingGap) capture.pendingGap = { commandOrdinal: 0, reason: 'instrumentation-disabled' };
     // A reset-only boundary is still the first observed explanation window.
-    finishWindow(capture, windowIndex, timestampMs, !sampled || !capture.firstActiveBoundarySeen);
+    const boundary = finishWindow(capture, windowIndex, timestampMs, !sampled || !capture.firstActiveBoundarySeen);
     capture.firstActiveBoundarySeen = true;
-    return;
+    return boundary;
   }
-  finishWindow(capture, windowIndex, timestampMs, !sampled || !capture.firstActiveBoundarySeen);
+  const boundary = finishWindow(capture, windowIndex, timestampMs, !sampled || !capture.firstActiveBoundarySeen);
   capture.firstActiveBoundarySeen = true;
+  return boundary;
 }
 export function disableCommandCapture(capture: Capture): void {
   capture.instrumentationDisabled = true;
   const pending = capture.pending;
   if (pending) markPending(capture, pending.commands.at(-1)?.ordinal ?? 0, 'instrumentation-disabled');
 }
-export function finishCommandCapture(capture: Capture, windowIndex: number, timestampMs: number): { windows: ExplanationCommandWindow[]; comparisons: ExplanationWindowComparison[]; firstDifference: CommandDifference | null; droppedEntryCounts: DropCounts; firstGap: Capture['firstGap'] } {
-  if (!capture.finished) { finishWindow(capture, windowIndex, timestampMs, true); capture.finished = true; capture.primitiveTokens.clear(); }
-  return { windows: copy(capture.windows), comparisons: copy(capture.comparisons), firstDifference: capture.firstDifference ? copy(capture.firstDifference) : null, droppedEntryCounts: { ...capture.dropped }, firstGap: capture.firstGap ? { ...capture.firstGap } : null };
+export function finishCommandCapture(capture: Capture, windowIndex: number, timestampMs: number): { windows: ExplanationCommandWindow[]; comparisons: ExplanationWindowComparison[]; firstDifference: CommandDifference | null; droppedEntryCounts: DropCounts; firstGap: Capture['firstGap']; boundary: CommandBoundary | null } {
+  const boundary = capture.finished ? null : finishWindow(capture, windowIndex, timestampMs, true);
+  if (!capture.finished) { capture.finished = true; capture.primitiveTokens.clear(); }
+  return { windows: copy(capture.windows), comparisons: copy(capture.comparisons), firstDifference: capture.firstDifference ? copy(capture.firstDifference) : null, droppedEntryCounts: { ...capture.dropped }, firstGap: capture.firstGap ? { ...capture.firstGap } : null, boundary };
 }
 export function getCommandEntryAllocationCount(): number { return allocations; }
 export function resetCommandCaptureForTests(): void { allocations = 0; }

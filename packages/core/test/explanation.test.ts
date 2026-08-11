@@ -151,22 +151,31 @@ describe('explanation state', () => {
     const artifact = stopExplanation()!;
     expect(artifact.windows).toHaveLength(3);
     expect(artifact.firstDifference).toMatchObject({ ordinal: 2, reason: 'argument-token' });
+    expect(artifact.stacks.map(sample => sample.reason)).toEqual(['first-raster', 'first-difference']);
+    expect(artifact.stacks[1]).toMatchObject({ windowIndex: 12, commandOrdinal: 2, reason: 'first-difference' });
+    expect(artifact.stacks[0].frames.length).toBeGreaterThan(0);
 
     artifact.windows[0].commands[0].arguments[0].kind = 'image';
     artifact.comparisons[1].difference!.target!.arguments[0].kind = 'image';
     artifact.firstDifference!.reference!.arguments[0].kind = 'image';
+    artifact.stacks[0].frames[0].functionName = 'changed-stack';
+    artifact.stacks[0].frames[0].mappingStatus = 'mapped';
     const firstRead = getLastExplanation()!;
     expect(firstRead.windows[0].commands[0].arguments[0].kind).toBe('object');
     expect(firstRead.comparisons[1].difference!.target!.arguments[0].kind).toBe('number');
     expect(firstRead.firstDifference!.reference!.arguments[0].kind).toBe('number');
+    expect(firstRead.stacks[0].frames[0].functionName).not.toBe('changed-stack');
+    expect(firstRead.stacks[0].frames[0].mappingStatus).toBe('unresolved');
 
     firstRead.windows[2].commands[2].arguments[0].token = 'changed';
     firstRead.comparisons[1].difference!.reference!.arguments[0].token = 'changed';
     firstRead.firstDifference!.target!.arguments[0].token = 'changed';
+    firstRead.stacks[1].frames.length = 0;
     const secondRead = getLastExplanation()!;
     expect(secondRead.windows[2].commands[2].arguments[0].token).not.toBe('changed');
     expect(secondRead.comparisons[1].difference!.reference!.arguments[0].token).not.toBe('changed');
     expect(secondRead.firstDifference!.target!.arguments[0].token).not.toBe('changed');
+    expect(secondRead.stacks[1].frames.length).toBeGreaterThan(0);
   });
 
   it('uses the 10-second timer and does not stop a normal recording', () => {

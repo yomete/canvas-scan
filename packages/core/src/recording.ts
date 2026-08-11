@@ -2,7 +2,8 @@ import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, sub
 import { drainAttributeRecords, isKilled, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
-import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, resetCommandCaptureForTests } from './command-capture';
+import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture';
+import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, shouldCaptureFirstDifference, shouldCaptureFirstRaster } from './draw-callsite';
 import { subscribeToSelectedCommands } from './wrap-context';
 import type {
   CanvasMethodEvidence,
@@ -86,6 +87,7 @@ let activeExplanation: {
   canvasId: string;
   record: CanvasRecord;
   capture: NonNullable<ReturnType<typeof createCommandCapture>>;
+  callsites: ReturnType<typeof createDrawCallsiteCapture>;
   unsubscribeDetail: () => void;
 } | undefined;
 let unsubscribe: (() => void) | undefined;
@@ -391,6 +393,8 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   if (state !== 'recording') return undefined;
   const explanation = activeExplanation;
   const detail = explanation ? finishCommandCapture(explanation.capture, getCurrentWindowIndex() + 1, now()) : null;
+  if (explanation && detail?.boundary) resolveDrawCallsiteBoundary(explanation.callsites, detail.boundary.identity, detail.boundary.windowIndex);
+  const callsites = explanation ? finishDrawCallsiteCapture(explanation.callsites) : null;
   drainAttributeRecords();
   const endedMonotonic = now();
   const browser = stopBrowserEvidence(endedMonotonic);
@@ -456,7 +460,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
       windows: detail!.windows,
       comparisons: detail!.comparisons,
       firstDifference: detail!.firstDifference,
-      stacks: [],
+      stacks: callsites!.stacks,
       collectionLimits: {
         maxDurationMs: 10000,
         maxSelectedCanvases: 1,
@@ -469,7 +473,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
         maxSourceMapLookups: 8,
         maxSourceMapResponseBytes: 2097152,
       },
-      droppedEntryCounts: { ...detail!.droppedEntryCounts, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 },
+      droppedEntryCounts: { ...detail!.droppedEntryCounts, ...callsites!.droppedEntryCounts },
       firstGap: detail!.firstGap,
     };
     activeExplanation = undefined;
@@ -552,12 +556,24 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
   if (!record) return { status: 'unavailable', reason: 'canvas-unavailable' };
   const capture = createCommandCapture();
   if (!capture) return { status: 'unavailable', reason: 'instrumentation-disabled' };
+  const callsites = createDrawCallsiteCapture();
   const started = new Date().toISOString();
   const unsubscribeDetail = subscribeToSelectedCommands(
     record,
     (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
-    (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
-    () => disableCommandCapture(capture),
+    (windowIndex, timestampMs, active, sampled) => {
+      const boundary = captureBoundary(capture, windowIndex, timestampMs, active, sampled);
+      if (boundary) resolveDrawCallsiteBoundary(callsites, boundary.identity, boundary.windowIndex);
+    },
+    () => { disableCommandCapture(capture); disableDrawCallsiteCapture(callsites); },
+    (command, rasterOperation, stackBoundary) => {
+      const relationship = getLiveCommandRelationship(capture, command);
+      if (!relationship) return;
+      const reasons: Array<'first-raster' | 'first-difference'> = [];
+      if (rasterOperation && shouldCaptureFirstRaster(callsites)) reasons.push('first-raster');
+      if (relationship.firstDifference && shouldCaptureFirstDifference(callsites, relationship.identity)) reasons.push('first-difference');
+      if (reasons.length) captureDrawCallsite(callsites, relationship.identity, command.ordinal, reasons, undefined, stackBoundary);
+    },
   );
   lastExplanation = undefined;
   activeExplanation = {
@@ -568,6 +584,7 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
     canvasId: finding.canvasId,
     record,
     capture,
+    callsites,
     unsubscribeDetail,
   };
   startRecordingWithDuration(EXPLANATION_MAX_DURATION_MS);
@@ -606,6 +623,7 @@ export function resetRecordingForTests(): void {
   lastExplanation = undefined;
   activeExplanation = undefined;
   resetCommandCaptureForTests();
+  resetDrawCallsiteForTests();
   windows = [];
   resetEvents = [];
   lifecycleEvents = [];

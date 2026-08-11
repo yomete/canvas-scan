@@ -1073,6 +1073,20 @@ function updateExplanationPanel(): void {
       if (comparison) appendExplanationLine(panel, `Compared windows: ${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}.`);
     }
     appendExplanationLine(panel, `Compared frame indices: ${comparison ? `${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}` : 'none'}`);
+    appendExplanationLine(panel, 'Draw callsite');
+    if (!artifact.stacks.length) appendExplanationLine(panel, 'No bounded draw callsite was captured.');
+    for (const sample of artifact.stacks) {
+      appendExplanationLine(panel, sample.reason === 'first-raster' ? 'First selected raster' : 'First command difference');
+      appendExplanationLine(panel, `Window ${sample.windowIndex}, command ${sample.commandOrdinal}`);
+      for (const frame of sample.frames) {
+        if (frame.functionName) appendExplanationLine(panel, `callsite ${frame.functionName}`);
+        if (frame.mapped) appendExplanationLine(panel, `mapped ${frame.mapped.file}:${frame.mapped.line}:${frame.mapped.column}`);
+        if (frame.generated) appendExplanationLine(panel, `generated ${frame.generated.file}:${frame.generated.line}:${frame.generated.column}`);
+        appendExplanationLine(panel, frame.mappingStatus);
+        if (frame.mappingStatus === 'unresolved') appendExplanationLine(panel, `unresolved ${frame.unresolvedReason}`);
+      }
+      if (sample.droppedFrameCount) appendExplanationLine(panel, `Dropped frames: ${sample.droppedFrameCount}`);
+    }
     appendExplanationLine(panel, `Limits: ${Object.entries(artifact.collectionLimits).map(([name, value]) => `${name}=${value}`).join(' · ')}`);
     const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
     if (drops.length) appendExplanationLine(panel, `Drops: ${drops.map(([name, value]) => `${name}=${value}`).join(' · ')}`);

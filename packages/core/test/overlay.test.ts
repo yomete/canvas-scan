@@ -1954,10 +1954,17 @@ describe('overlay explanation action', () => {
     const visible = panel.textContent ?? '';
     const tokens = artifact.windows.flatMap(window => window.commands).flatMap(command => command.arguments).map(argument => argument.token).filter((token): token is string => token !== null);
     expect(artifact.firstDifference).toMatchObject({ ordinal: 0, reason: 'argument-token' });
+    expect(artifact.stacks.map(sample => sample.reason)).toEqual(['first-raster', 'first-difference']);
+    expect(artifact.stacks[1]).toMatchObject({ windowIndex: 12, commandOrdinal: 0 });
     expect(visible).toContain('Command result: changed');
     expect(visible).toContain('First normalized command difference');
     expect(visible).toContain('Reference command: call fillRect');
     expect(visible).toContain('Target command: call fillRect');
+    expect(visible).toContain('Draw callsite');
+    expect(visible).toContain('First selected raster');
+    expect(visible).toContain('First command difference');
+    expect(visible).toContain('Window 12, command 0');
+    expect(visible).not.toMatch(/caused by|responsible|wasted work|same pixels/i);
     expect(visible).not.toContain('918273.645');
     expect(visible).not.toContain('771928.125');
     for (const token of tokens) expect(visible).not.toContain(token);
@@ -1965,6 +1972,36 @@ describe('overlay explanation action', () => {
     panel.querySelector<HTMLButtonElement>('.explanation-copy')!.click();
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(artifact));
+  });
+
+  it('shows the exact dropped-frame count for a bounded callsite', () => {
+    const error = Error as ErrorConstructor & { stackTraceLimit: number };
+    const previousLimit = error.stackTraceLimit;
+    error.stackTraceLimit = 50;
+    try {
+      mountOverlay();
+      const { canvas, context, record } = explanationCanvas('dropped-callsite-frames');
+      openExplanationSource(canvas, record.id).click();
+      function nestedDraw(depth: number): void {
+        if (depth > 0) nestedDraw(depth - 1);
+        else context.fillRect(1, 0, 10, 10);
+      }
+      nestedDraw(30);
+      notifySelectedCommandBoundary(record, 10, 10, true, true);
+      getShadowRoot().querySelector<HTMLButtonElement>('.stop-recording')!.click();
+      refreshOverlay();
+
+      const artifact = getLastExplanation()!;
+      const dropped = artifact.stacks[0].droppedFrameCount;
+      const visible = getShadowRoot().querySelector('.explanation-panel')?.textContent ?? '';
+      expect(dropped).toBeGreaterThan(0);
+      expect(artifact.stacks[0].frames).toHaveLength(20);
+      expect(artifact.droppedEntryCounts.stackFrames).toBe(dropped);
+      expect(visible).toContain(`Dropped frames: ${dropped}`);
+      expect(visible).toContain(`stackFrames=${dropped}`);
+    } finally {
+      error.stackTraceLimit = previousLimit;
+    }
   });
 
   it('shows the final same pair after the initial sampling gap', () => {

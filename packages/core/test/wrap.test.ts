@@ -9,6 +9,7 @@ import {
   getCommandEntryAllocationCount,
   resetCommandCaptureForTests,
 } from '../src/command-capture';
+import { captureDrawCallsite, createDrawCallsiteCapture, getDrawCallsiteTestCounts, resetDrawCallsiteForTests } from '../src/draw-callsite';
 import {
   getRecord,
   getMethodEvidence,
@@ -395,6 +396,43 @@ describe('canvas context wrapping', () => {
     resetCommandCaptureForTests();
     selectedContext.fillRect(0, 0, 1, 1);
     expect(getCommandEntryAllocationCount()).toBe(0);
+  });
+
+  it('offers stack capture only for a successful selected raster call', () => {
+    resetDrawCallsiteForTests();
+    const selectedCanvas = new FakeCanvas();
+    const selectedContext = selectedCanvas.getContext('2d')!;
+    const selectedRecord = getRecord(selectedCanvas)!;
+    const decoyContext = new FakeCanvas().getContext('2d')!;
+    decoyContext.fillRect(0, 0, 1, 1);
+    selectedContext.fillRect(0, 0, 1, 1);
+    expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 0, sourceMapLookups: 0 });
+
+    const capture = createCommandCapture()!;
+    const callsites = createDrawCallsiteCapture({ locationHref: 'http://example.test/', fetch: vi.fn() as unknown as typeof fetch });
+    const target = {};
+    const unsubscribe = subscribeToSelectedCommands(
+      selectedRecord,
+      (operationKind, name, args, sampled) => captureCommand(capture, operationKind, name, args, sampled),
+      (windowIndex, timestampMs, active, sampled) => captureBoundary(capture, windowIndex, timestampMs, active, sampled),
+      () => disableCommandCapture(capture),
+      (command, rasterOperation) => {
+        if (rasterOperation) captureDrawCallsite(callsites, target, command.ordinal, ['first-raster'], 'Error\n    at application (https://other.test/app.js:1:1)');
+      },
+    );
+    try {
+      decoyContext.fillRect(1, 1, 1, 1);
+      selectedContext.fillStyle = '#123456';
+      selectedContext.throwOnFillRect = new Error('native failure');
+      expect(() => selectedContext.fillRect(2, 2, 1, 1)).toThrow('native failure');
+      expect(getDrawCallsiteTestCounts().stackAllocations).toBe(0);
+      selectedContext.throwOnFillRect = null;
+      expect(selectedContext.fillRect(3, 3, 1, 1)).toBe(fillRectResult);
+      expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 1, sourceMapLookups: 0 });
+    } finally {
+      selectedContext.throwOnFillRect = null;
+      unsubscribe();
+    }
   });
 
   it('does not invoke selected hostile object traps or disable global instrumentation', () => {

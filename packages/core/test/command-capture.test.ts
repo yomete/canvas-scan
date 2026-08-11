@@ -7,6 +7,7 @@ import {
   disableCommandCapture,
   finishCommandCapture,
   getCommandEntryAllocationCount,
+  getLiveCommandRelationship,
   MAX_ACTIVE_WINDOWS,
   MAX_COMMAND_ARGUMENTS,
   MAX_COMMAND_ENTRIES,
@@ -288,5 +289,44 @@ describe('command comparison', () => {
   it('returns same for equal complete windows and unknown for incomplete windows', () => {
     expect(compareCommandWindows(window(1, [command()]), window(2, [command()]))).toEqual({ referenceWindowIndex: 1, targetWindowIndex: 2, status: 'same', difference: null, unknownReason: null });
     expect(compareCommandWindows(window(1, [command()], false), window(2, [command()]))).toMatchObject({ status: 'unknown', difference: null, unknownReason: 'sampling-gap' });
+  });
+});
+
+describe('live command relationship', () => {
+  it('uses the boundary identity that receives the final target window index', () => {
+    const value = capture();
+    completeWindow(value, 10, [1]);
+    completeWindow(value, 11, [1]);
+    const current = captureCommand(value, 'call', 'fillRect', [2], true)!;
+    const relationship = getLiveCommandRelationship(value, current);
+    expect(relationship?.firstDifference).toBe(true);
+    const boundary = captureBoundary(value, 17, 17, true, true);
+    expect(boundary).toEqual({ identity: relationship?.identity, windowIndex: 17 });
+    const result = finishCommandCapture(value, 18, 18);
+    expect(result.firstDifference).toMatchObject({ targetWindowIndex: 17, ordinal: current.ordinal, reason: 'argument-token' });
+  });
+
+  it('does not qualify equal, later, incomplete, or removed current commands', () => {
+    const equal = capture();
+    completeWindow(equal, 1, [1]); completeWindow(equal, 2, [1]);
+    const equalCommand = captureCommand(equal, 'call', 'fillRect', [1], true)!;
+    expect(getLiveCommandRelationship(equal, equalCommand)?.firstDifference).toBe(false);
+
+    const later = capture();
+    captureCommand(later, 'call', 'fillRect', [1], true); captureCommand(later, 'call', 'strokeRect', [1], true); captureBoundary(later, 1, 1, true, true);
+    captureCommand(later, 'call', 'fillRect', [1], true); captureCommand(later, 'call', 'strokeRect', [1], true); captureBoundary(later, 2, 2, true, true);
+    const first = captureCommand(later, 'call', 'fillRect', [2], true)!;
+    const second = captureCommand(later, 'call', 'strokeRect', [2], true)!;
+    expect(getLiveCommandRelationship(later, first)?.firstDifference).toBe(true);
+    expect(getLiveCommandRelationship(later, second)?.firstDifference).toBe(false);
+
+    const incomplete = capture();
+    completeWindow(incomplete, 1, [1]); completeWindow(incomplete, 2, [1]);
+    captureCommand(incomplete, 'call', 'save', [], false);
+    const sampled = captureCommand(incomplete, 'call', 'fillRect', [2], true)!;
+    expect(getLiveCommandRelationship(incomplete, sampled)?.firstDifference).toBe(false);
+
+    const removed = compareCommandWindows(window(1, [command(), command({ ordinal: 1 })]), window(2, [command()]));
+    expect(removed.difference).toMatchObject({ ordinal: 1, reason: 'command-removed', target: null });
   });
 });
