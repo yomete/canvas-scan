@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const rowNames = ['wrapper-depth', 'canvas-order', 'background-work', 'identical-stream', 'unsupported-value'];
 export const counterexampleNames = ['unsupported-gap', 'proxy-zero-traps', 'revoked-proxy', 'reset-only-start', 'non-selected-decoy'];
@@ -325,7 +326,8 @@ export function checkEvidence({ manifest, expectedResults, actualResults, artifa
   return { pass: failures.length === 0, failures };
 }
 
-if (process.argv[2] === '--check-evidence') {
+const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (isMain && process.argv[2] === '--check-evidence') {
   const directory = process.argv[3];
   const read = name => readFile(path.join(directory, name), 'utf8').then(JSON.parse);
   const [manifest, expectedResults, actualResults, privacyScan, allocationCounter] = await Promise.all(['manifest.json', 'expected-results.json', 'actual-results.json', 'privacy-results.json', 'allocation-counter.json'].map(read));

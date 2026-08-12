@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Canvas Scan v0.5 integrated lab</title>
+  <link rel="icon" href="data:,">
+  <script>window.__CANVAS_SCAN_OPTS = { overlay: true };</script>
+  <script src="/canvas-scan.iife.js"></script>
+</head>
+<body>
+  <h1>Canvas Scan v0.5 integrated lab</h1>
+  <button id="baseline">Record structural baseline</button>
+  <button id="select-baseline" disabled>Select baseline finding</button>
+  <button id="start-explanation" disabled>Start selected explanation</button>
+  <button id="replay">Replay selected baseline</button>
+  <button id="apply-change">Apply structural change</button>
+  <button id="candidate">Record structural candidate</button>
+  <button id="select-candidate" disabled>Select candidate finding</button>
+  <button id="compare" disabled>Compare selected findings</button>
+  <button id="export" disabled>Export comparison JSON</button>
+  <pre id="comparison-panel"></pre>
+  <canvas id="selected" width="80" height="80"></canvas>
+  <canvas id="unrelated" width="16" height="16"></canvas>
+  <script>
+    const canvas = document.querySelector('#selected');
+    const context = canvas.getContext('2d');
+    const unrelated = document.querySelector('#unrelated').getContext('2d');
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const privateFixtureObject = { privateKey: 'privateValue', liveOnlyPrivateShape: true, ownerDocument: document, nodeType: 771928.125 };
+    const privateFixtureUrl = 'https://secret.example.invalid/private-path?private-query=1#private-fragment';
+    function privateFunction() { return 'private-function'; }
+    const state = {
+      baselineComplete: false,
+      baseline: null,
+      baselineFindingIndex: null,
+      baselineSelected: false,
+      explanationComplete: false,
+      explanation: null,
+      structuralChangeApplied: false,
+      drawsPerFrame: 4,
+      candidateComplete: false,
+      candidate: null,
+      candidateFindingIndex: null,
+      candidateSelected: false,
+      comparison: null,
+      comparisonCount: 0,
+      exported: false,
+    };
+
+    function findingIndex(session) {
+      return session.findings.findIndex(finding => finding.type === 'repeated-draw-work');
+    }
+
+    function enableSelection(id, index) {
+      const button = document.querySelector(id);
+      button.dataset.findingIndex = String(index);
+      button.disabled = index < 0;
+    }
+
+    function draw(value, count) {
+      context.fillStyle = '#123456';
+      for (let index = 0; index < count; index++) context.fillRect(value, 1, 20, 20);
+    }
+
+    async function frames(count, value) {
+      for (let index = 0; index < 8; index++) {
+        draw(value, count);
+        unrelated.fillRect(index % 4, 0, 1, 1);
+        await nextFrame();
+      }
+    }
+
+    async function record() {
+      window.__CANVAS_SCAN__.startRecording();
+      await frames(state.drawsPerFrame, 1);
+      return window.__CANVAS_SCAN__.stopRecording();
+    }
+
+    async function recordBaseline() {
+      state.baselineComplete = false;
+      const session = await record();
+      state.baseline = session;
+      enableSelection('#select-baseline', findingIndex(session));
+      state.baselineComplete = true;
+      return session;
+    }
+
+    function selectBaseline(event) {
+      state.baselineFindingIndex = Number(event.currentTarget.dataset.findingIndex);
+      state.baselineSelected = true;
+      document.querySelector('#start-explanation').disabled = false;
+    }
+
+    function startSelectedExplanation() {
+      return window.__CANVAS_SCAN__.startExplanation({ sessionId: state.baseline.sessionId, findingIndex: state.baselineFindingIndex });
+    }
+
+    function applyStructuralChange() {
+      state.drawsPerFrame = 2;
+      state.structuralChangeApplied = true;
+    }
+
+    async function recordCandidate() {
+      state.candidateComplete = false;
+      const session = await record();
+      state.candidate = session;
+      enableSelection('#select-candidate', findingIndex(session));
+      state.candidateComplete = true;
+      return session;
+    }
+
+    async function replayExplanation() {
+      context.save(privateFunction);
+      await frames(4, 1);
+      context.fillRect(1, 1, 20, 20, 918273.645, privateFixtureUrl, privateFixtureObject);
+      context.restore();
+      state.explanation = window.__CANVAS_SCAN__.stopExplanation();
+      state.explanationComplete = true;
+      return state.explanation;
+    }
+
+    function replayClick() { void replayExplanation(); }
+
+    function selectCandidate(event) {
+      state.candidateFindingIndex = Number(event.currentTarget.dataset.findingIndex);
+      state.candidateSelected = true;
+      document.querySelector('#compare').disabled = false;
+    }
+
+    function compareSelected() {
+      state.comparison = window.__CANVAS_SCAN__.compareSessions(state.baseline, state.candidate, {
+        baselineFindingIndex: state.baselineFindingIndex,
+        candidateFindingIndex: state.candidateFindingIndex,
+      });
+      state.comparisonCount++;
+      document.querySelector('#comparison-panel').textContent = JSON.stringify(state.comparison, null, 2);
+      document.querySelector('#export').disabled = false;
+      return state.comparison;
+    }
+
+    async function exportComparison() {
+      await navigator.clipboard.writeText(JSON.stringify(state.comparison));
+      state.exported = true;
+    }
+
+    document.querySelector('#baseline').addEventListener('click', () => { void recordBaseline(); });
+    document.querySelector('#select-baseline').addEventListener('click', selectBaseline);
+    document.querySelector('#start-explanation').addEventListener('click', startSelectedExplanation);
+    document.querySelector('#replay').addEventListener('click', replayClick);
+    document.querySelector('#apply-change').addEventListener('click', applyStructuralChange);
+    document.querySelector('#candidate').addEventListener('click', () => { void recordCandidate(); });
+    document.querySelector('#select-candidate').addEventListener('click', selectCandidate);
+    document.querySelector('#compare').addEventListener('click', compareSelected);
+    document.querySelector('#export').addEventListener('click', () => { void exportComparison(); });
+    window.__V05_LAB__ = {
+      state,
+      recordBaseline,
+      recordCandidate,
+      replayExplanation,
+      compare(baseline, candidate, pairing) { return window.__CANVAS_SCAN__.compareSessions(baseline, candidate, pairing); },
+      lastSession() { return window.__CANVAS_SCAN__.getLastSession(); },
+      lastExplanation() { return window.__CANVAS_SCAN__.getLastExplanation(); },
+    };
+  </script>
+</body>
+</html>

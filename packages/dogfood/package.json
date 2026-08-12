@@ -37,6 +37,10 @@
     "lab:v0.4": "node lab-v04.mjs",
     "lab:v0.4:check": "node lab-v04.mjs --check-evidence",
     "lab:v0.4:test": "node --test lab-v04.test.mjs",
+    "lab:v0.5": "node lab-v05.mjs",
+    "lab:v0.5:check": "node lab-v05.mjs --check-evidence",
+    "lab:v0.5:test": "node --test lab-v05.test.mjs",
+    "lab:v0.5:mutations": "node lab-v05-mutations.mjs",
     "release:v0.4:test": "node --test bench-chrome-interleaved.test.mjs release-v04.test.mjs",
     "release:v0.4:check": "node release-v04.mjs --check-evidence"
   },
