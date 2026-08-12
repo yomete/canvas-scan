@@ -7,6 +7,7 @@ import {
   disableCommandCapture,
   finishCommandCapture,
   getCommandEntryAllocationCount,
+  getLiveComparisonStepCount,
   getLiveCommandRelationship,
   MAX_ACTIVE_WINDOWS,
   MAX_COMMAND_ARGUMENTS,
@@ -337,6 +338,19 @@ describe('command comparison', () => {
 });
 
 describe('live command relationship', () => {
+  it('does one live comparison step per selected command', () => {
+    const value = capture();
+    captureBoundary(value, 0, 0, true, true);
+    for (let index = 0; index < 1000; index++) captureCommand(value, 'call', 'fillRect', [index], true);
+    captureBoundary(value, 1, 1, true, true);
+    resetCommandCaptureForTests();
+    for (let index = 0; index < 1000; index++) {
+      const current = captureCommand(value, 'call', 'fillRect', [index], true)!;
+      getLiveCommandRelationship(value, current);
+    }
+    expect(getLiveComparisonStepCount()).toBe(1000);
+  });
+
   it('uses the boundary identity that receives the final target window index', () => {
     const value = capture();
     completeWindow(value, 10, [1]);

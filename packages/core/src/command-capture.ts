@@ -16,7 +16,7 @@ type Capture = {
   objectTokens: WeakMap<object, Map<string, string>>;
   nextToken: number;
   commandCount: number;
-  pending: { identity: CommandWindowIdentity; windowIndex: number; timestampMs: number; commands: NormalizedCanvasCommand[]; complete: boolean; reason: ExplanationUnknownReason | null; active: boolean; nextOrdinal: number } | null;
+  pending: { identity: CommandWindowIdentity; windowIndex: number; timestampMs: number; commands: NormalizedCanvasCommand[]; complete: boolean; reason: ExplanationUnknownReason | null; active: boolean; nextOrdinal: number; liveDifferenceOrdinal: number | null } | null;
   windows: ExplanationCommandWindow[];
   comparisons: ExplanationWindowComparison[];
   firstDifference: CommandDifference | null;
@@ -30,6 +30,7 @@ type Capture = {
 };
 
 let allocations = 0;
+let liveComparisonSteps = 0;
 
 function copy<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 function setGap(capture: Capture, windowIndex: number, commandOrdinal: number | null, reason: ExplanationUnknownReason): void {
@@ -116,7 +117,7 @@ export function createCommandCapture(): Capture | null {
 
 export function captureCommand(capture: Capture, operationKind: 'call' | 'set', name: string, args: unknown[], sampled: boolean): NormalizedCanvasCommand | null {
   if (capture.finished) return null;
-  const pending = capture.pending ?? (capture.pending = { identity: {}, windowIndex: -1, timestampMs: 0, commands: [], complete: true, reason: null, active: false, nextOrdinal: 0 });
+  const pending = capture.pending ?? (capture.pending = { identity: {}, windowIndex: -1, timestampMs: 0, commands: [], complete: true, reason: null, active: false, nextOrdinal: 0, liveDifferenceOrdinal: null });
   pending.active = true;
   const ordinal = pending.nextOrdinal++;
   if (!sampled) { markPending(capture, ordinal, 'sampling-gap'); return null; }
@@ -155,6 +156,11 @@ export function captureCommand(capture: Capture, operationKind: 'call' | 'set', 
     }
     command.arguments.push({ position: index, kind: valueKind, token: valueToken });
   }
+  const reference = capture.windows.at(-1);
+  if (pending.complete && reference?.complete && pending.liveDifferenceOrdinal === null) {
+    liveComparisonSteps++;
+    if (commandDifferenceReason(reference.commands[ordinal] ?? null, command)) pending.liveDifferenceOrdinal = ordinal;
+  }
   return command;
 }
 
@@ -162,27 +168,28 @@ export function captureCommand(capture: Capture, operationKind: 'call' | 'set', 
 // pending window does not have its final index until its next boundary.
 export function getLiveCommandRelationship(capture: Capture, command: NormalizedCanvasCommand): { identity: CommandWindowIdentity; firstDifference: boolean } | null {
   const pending = capture.pending;
-  const reference = capture.windows.at(-1);
-  if (!pending || !pending.commands.includes(command)) return null;
-  if (!pending.complete || !reference?.complete) return { identity: pending.identity, firstDifference: false };
-  const difference = compareCommands(reference.commands, pending.commands, reference.windowIndex, -1);
-  return { identity: pending.identity, firstDifference: difference?.ordinal === command.ordinal && difference.reason !== 'command-removed' };
+  if (!pending || (pending.commands.at(-1) !== command && !pending.commands.includes(command))) return null;
+  return { identity: pending.identity, firstDifference: pending.complete && pending.liveDifferenceOrdinal === command.ordinal };
 }
 
+function commandDifferenceReason(left: NormalizedCanvasCommand | null, right: NormalizedCanvasCommand | null): CommandDifference['reason'] | null {
+  if (!left) return 'command-added';
+  if (!right) return 'command-removed';
+  if (left.operationKind !== right.operationKind) return 'operation-kind';
+  if (left.name !== right.name) return 'operation-name';
+  if (left.argumentCount !== right.argumentCount) return 'argument-count';
+  for (let index = 0; index < Math.max(left.arguments.length, right.arguments.length); index++) {
+    const leftArg = left.arguments[index]; const rightArg = right.arguments[index];
+    if (!leftArg || !rightArg || leftArg.kind !== rightArg.kind) return 'argument-kind';
+    if (leftArg.token !== rightArg.token) return 'argument-token';
+  }
+  return null;
+}
 function compareCommands(reference: NormalizedCanvasCommand[], target: NormalizedCanvasCommand[], referenceWindowIndex: number, targetWindowIndex: number): CommandDifference | null {
   const count = Math.max(reference.length, target.length);
   for (let ordinal = 0; ordinal < count; ordinal++) {
     const left = reference[ordinal] ?? null; const right = target[ordinal] ?? null;
-    let reason: CommandDifference['reason'] | null = null;
-    if (!left) reason = 'command-added'; else if (!right) reason = 'command-removed';
-    else if (left.operationKind !== right.operationKind) reason = 'operation-kind';
-    else if (left.name !== right.name) reason = 'operation-name';
-    else if (left.argumentCount !== right.argumentCount) reason = 'argument-count';
-    else for (let index = 0; index < Math.max(left.arguments.length, right.arguments.length); index++) {
-      const leftArg = left.arguments[index]; const rightArg = right.arguments[index];
-      if (!leftArg || !rightArg || leftArg.kind !== rightArg.kind) { reason = 'argument-kind'; break; }
-      if (leftArg.token !== rightArg.token) { reason = 'argument-token'; break; }
-    }
+    const reason = commandDifferenceReason(left, right);
     if (reason) return { referenceWindowIndex, targetWindowIndex, ordinal, reason, reference: left ? copy(left) : null, target: right ? copy(right) : null };
   }
   return null;
@@ -228,7 +235,7 @@ export function captureBoundary(capture: Capture, windowIndex: number, timestamp
   if (!active) return null;
   const pending = capture.pending;
   if (!pending) {
-    capture.pending = { identity: {}, windowIndex, timestampMs, commands: [], complete: sampled && !capture.instrumentationDisabled, reason: !sampled ? 'sampling-gap' : capture.instrumentationDisabled ? 'instrumentation-disabled' : null, active: true, nextOrdinal: 0 };
+    capture.pending = { identity: {}, windowIndex, timestampMs, commands: [], complete: sampled && !capture.instrumentationDisabled, reason: !sampled ? 'sampling-gap' : capture.instrumentationDisabled ? 'instrumentation-disabled' : null, active: true, nextOrdinal: 0, liveDifferenceOrdinal: null };
     if (capture.instrumentationDisabled && !capture.firstGap && !capture.pendingGap) capture.pendingGap = { commandOrdinal: 0, reason: 'instrumentation-disabled' };
     // A reset-only boundary is still the first observed explanation window.
     const boundary = finishWindow(capture, windowIndex, timestampMs, !sampled || !capture.firstActiveBoundarySeen);
@@ -251,4 +258,5 @@ export function finishCommandCapture(capture: Capture, windowIndex: number, time
   return { windows: copy(capture.windows), comparisons: copy(capture.comparisons), firstDifference: capture.firstDifference ? copy(capture.firstDifference) : null, droppedEntryCounts: { ...capture.dropped }, firstAffected, firstGap: capture.firstGap ? { ...capture.firstGap } : null, boundary };
 }
 export function getCommandEntryAllocationCount(): number { return allocations; }
-export function resetCommandCaptureForTests(): void { allocations = 0; }
+export function getLiveComparisonStepCount(): number { return liveComparisonSteps; }
+export function resetCommandCaptureForTests(): void { allocations = 0; liveComparisonSteps = 0; }
