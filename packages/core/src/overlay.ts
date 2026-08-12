@@ -15,6 +15,7 @@ import {
   subscribeToRecordingState,
 } from './recording';
 import { collectCanvasGeometry } from './geometry';
+import { compareSessions } from './comparison';
 import { resolveSourceOutcome } from './symbolicate';
 import type {
   AttributionKind,
@@ -24,6 +25,9 @@ import type {
   ExplanationArtifactV1,
   ExplanationStartResult,
   ExplanationUnknownReason,
+  ComparisonArtifactV1,
+  ComparisonMeasure,
+  ComparisonMeasureId,
   InvestigationFinding,
   InvestigationSessionV1,
   RecordedCanvasGeometry,
@@ -104,6 +108,10 @@ let completedExplanation: ExplanationArtifactV1 | null = null;
 let explanationStartFailure = '';
 let copyExplanationStatus = '';
 let copyExplanationRequest = 0;
+let baseline: { findingIndex: number; session: InvestigationSessionV1 } | null = null;
+let completedComparison: ComparisonArtifactV1 | null = null;
+let copyComparisonStatus = '';
+let copyComparisonRequest = 0;
 let flyoutInvoker: HTMLElement | null = null;
 let showAllSessionCanvases = false;
 let minFlashRasterOps = 2;
@@ -256,6 +264,9 @@ button { font: inherit; }
 .current-action:focus-visible,
 .explanation-action:focus-visible,
 .explanation-copy:focus-visible,
+.baseline-action:focus-visible,
+.comparison-action:focus-visible,
+.comparison-copy:focus-visible,
 .canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
 .finding-line, .session-line, .raw-evidence { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
@@ -1017,6 +1028,70 @@ function selectedComparison(artifact: ExplanationArtifactV1) {
   return artifact.comparisons.at(-1);
 }
 
+function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
+  return JSON.parse(JSON.stringify(session)) as InvestigationSessionV1;
+}
+
+function comparisonMeasureLabel(id: ComparisonMeasureId): string {
+  const labels: Record<Exclude<ComparisonMeasureId, `method:${string}:operation-count` | `method:${string}:self-time-ms`>, string> = {
+    'active-window-count': 'Active window count', 'raster-operation-count': 'Raster operation count',
+    'canvas-api-self-time-ms': 'Canvas2D API self-time', 'maximum-window-self-time-ms': 'Maximum window Canvas2D API self-time',
+    'unknown-command-window-count': 'Unknown command window count', 'heavy-episode-operation-count': 'Heavy episode operation count',
+    'heavy-episode-self-time-ms': 'Heavy episode Canvas2D API self-time', 'repeated-window-count': 'Repeated window count',
+    'repeated-raster-operation-count': 'Repeated raster operation count', 'comparison-gap-count': 'Comparison gap count',
+    'active-reset-count': 'Active reset count', 'observed-reset-count': 'Observed reset count', 'affected-episode-count': 'Affected episode count',
+    'same-command-window-count': 'Same command window count', 'changed-command-window-count': 'Changed command window count',
+    'affected-backing-window-count': 'Affected backing window count', 'maximum-backing-area-ratio': 'Maximum backing area ratio',
+  };
+  if (id.startsWith('method:')) {
+    const [, method, kind] = id.split(':');
+    return `${method} ${kind === 'operation-count' ? 'operation count' : 'Canvas2D API self-time'}`;
+  }
+  return labels[id as Exclude<ComparisonMeasureId, `method:${string}:operation-count` | `method:${string}:self-time-ms`>];
+}
+
+function comparisonDirection(measure: ComparisonMeasure): string {
+  if (measure.interpretation === 'structural') return measure.direction;
+  return ({ increased: 'higher in this pair', decreased: 'lower in this pair', unchanged: 'equal in this pair', unknown: 'unknown in this pair' } as const)[measure.direction];
+}
+
+function updateComparisonPanel(): void {
+  const panel = flyout?.querySelector<HTMLElement>('.comparison-panel');
+  if (!panel) return;
+  const signature = `${baseline?.session.sessionId ?? ''}:${baseline?.findingIndex ?? ''}:${completedComparison?.comparisonId ?? ''}`;
+  if (panel.dataset.signature === signature) {
+    const status = panel.querySelector<HTMLElement>('.comparison-copy-status');
+    if (status) status.textContent = copyComparisonStatus;
+    return;
+  }
+  panel.dataset.signature = signature;
+  panel.replaceChildren();
+  if (baseline) {
+    const finding = baseline.session.findings[baseline.findingIndex];
+    appendExplanationLine(panel, 'BASELINE KEPT');
+    appendExplanationLine(panel, `Session: ${baseline.session.sessionId}`);
+    if (finding) appendExplanationLine(panel, `Finding ${baseline.findingIndex + 1}: ${findingLabel(finding.type)}`);
+  }
+  const artifact = completedComparison;
+  if (!artifact) return;
+  appendExplanationLine(panel, 'COMPARISON COMPLETE');
+  appendExplanationLine(panel, `Baseline: Session ${artifact.baseline.sessionId} · Finding ${artifact.baseline.findingIndex + 1}: ${artifact.baseline.findingType ? findingLabel(artifact.baseline.findingType) : 'Selected finding'}`);
+  appendExplanationLine(panel, `Candidate: Session ${artifact.candidate.sessionId} · Finding ${artifact.candidate.findingIndex + 1}: ${artifact.candidate.findingType ? findingLabel(artifact.candidate.findingType) : 'Selected finding'}`);
+  appendExplanationLine(panel, 'Pairing: user-selected');
+  appendExplanationLine(panel, 'Canvas IDs and owner names are session-local labels and were not used to pair the findings.');
+  appendExplanationLine(panel, `Comparison status: ${artifact.status}`);
+  appendExplanationLine(panel, 'One selected pair does not establish a performance improvement.');
+  appendExplanationLine(panel, 'improvementEstablished: false');
+  if (artifact.status === 'comparable') {
+    for (const measure of artifact.measures) appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: baseline ${measure.baseline} · candidate ${measure.candidate} · delta ${measure.delta} · ${measure.unit} · ${comparisonDirection(measure)} · ${measure.interpretation}`);
+  } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Incomparable reason: ${reason}`);
+  const copy = document.createElement('button');
+  copy.className = 'comparison-copy'; copy.type = 'button'; copy.dataset.action = 'copy-comparison'; copy.textContent = 'Copy comparison JSON';
+  const status = document.createElement('div');
+  status.className = 'comparison-copy-status'; status.setAttribute('aria-live', 'polite'); status.textContent = copyComparisonStatus;
+  panel.append(copy, status);
+}
+
 function updateExplanationPanel(): void {
   const panel = flyout?.querySelector<HTMLElement>('.explanation-panel');
   if (!panel) return;
@@ -1187,6 +1262,14 @@ function createFinding(
   explanation.dataset.findingIndex = String(index);
   explanation.textContent = 'Explain next interaction';
   evidence.append(explanation);
+  const baselineAction = document.createElement('button');
+  baselineAction.className = 'baseline-action'; baselineAction.type = 'button'; baselineAction.dataset.action = 'keep-baseline';
+  baselineAction.dataset.sessionId = session.sessionId; baselineAction.dataset.findingIndex = String(index);
+  evidence.append(baselineAction);
+  const comparisonAction = document.createElement('button');
+  comparisonAction.className = 'comparison-action'; comparisonAction.type = 'button'; comparisonAction.dataset.action = 'compare-baseline';
+  comparisonAction.dataset.sessionId = session.sessionId; comparisonAction.dataset.findingIndex = String(index); comparisonAction.textContent = 'Compare with baseline';
+  evidence.append(comparisonAction);
   const status = document.createElement('div');
   status.className = 'finding-line finding-status';
   status.setAttribute('aria-live', 'polite');
@@ -1202,7 +1285,7 @@ function createFinding(
   return card;
 }
 
-function updateFinding(finding: InvestigationFinding): void {
+function updateFinding(session: InvestigationSessionV1, finding: InvestigationFinding, index: number): void {
   const card = findingNodes.get(findingKey(finding));
   if (!card) return;
   const expanded = expandedFindingId === findingKey(finding);
@@ -1223,6 +1306,14 @@ function updateFinding(finding: InvestigationFinding): void {
     const selected = getRecordingState() === 'recording' && explanationSelection?.key === findingKey(finding);
     explanation.setAttribute('aria-pressed', String(selected));
   }
+  const baselineAction = card.querySelector<HTMLButtonElement>('.baseline-action');
+  const comparisonAction = card.querySelector<HTMLButtonElement>('.comparison-action');
+  const selectedBaseline = baseline?.session.sessionId === session.sessionId && baseline.findingIndex === index;
+  if (baselineAction) {
+    baselineAction.textContent = selectedBaseline ? 'Baseline kept' : baseline ? 'Replace baseline' : 'Keep as baseline';
+    if (selectedBaseline) baselineAction.setAttribute('aria-pressed', 'true'); else baselineAction.removeAttribute('aria-pressed');
+  }
+  if (comparisonAction) comparisonAction.hidden = !baseline || selectedBaseline || session.sessionId === baseline.session.sessionId || finding.type !== baseline.session.findings[baseline.findingIndex]?.type;
 }
 
 function coverageLabel(name: string): string {
@@ -1321,7 +1412,9 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   root.append(findings);
   const explanation = document.createElement('div');
   explanation.className = 'explanation-panel';
-  root.append(explanation);
+  const comparison = document.createElement('div');
+  comparison.className = 'comparison-panel';
+  root.append(explanation, comparison);
   return root;
 }
 
@@ -1338,8 +1431,9 @@ function updateSessionView(session: InvestigationSessionV1): void {
     more.hidden = showAllSessionCanvases || hidden === 0;
     more.textContent = `+${hidden} more`;
   }
-  for (const finding of session.findings) updateFinding(finding);
+  for (const [index, finding] of session.findings.entries()) updateFinding(session, finding, index);
   updateExplanationPanel();
+  updateComparisonPanel();
 }
 
 function renderFlyout(): void {
@@ -1693,6 +1787,45 @@ function handleFlyoutClick(event: MouseEvent): void {
     return;
   }
   const action = event.target.closest<HTMLElement>('[data-action]');
+  if (action?.dataset.action === 'keep-baseline') {
+    const findingIndex = Number(action.dataset.findingIndex);
+    const source = shownSession;
+    const finding = source?.findings[findingIndex];
+    if (!source || !finding || action.dataset.sessionId !== source.sessionId) return;
+    baseline = { session: copySession(source), findingIndex };
+    completedComparison = null;
+    copyComparisonStatus = '';
+    copyComparisonRequest++;
+    updateSessionView(source);
+    flyoutRevision++; markDirty();
+    return;
+  }
+  if (action?.dataset.action === 'compare-baseline') {
+    const findingIndex = Number(action.dataset.findingIndex);
+    const source = shownSession;
+    const candidate = source?.findings[findingIndex];
+    const baselineFinding = baseline?.session.findings[baseline.findingIndex];
+    if (!baseline || !source || !candidate || !baselineFinding || action.dataset.sessionId !== source.sessionId || source.sessionId === baseline.session.sessionId || candidate.type !== baselineFinding.type) return;
+    completedComparison = compareSessions(baseline.session, source, { baselineFindingIndex: baseline.findingIndex, candidateFindingIndex: findingIndex });
+    copyComparisonStatus = '';
+    copyComparisonRequest++;
+    updateSessionView(source);
+    flyoutRevision++; markDirty();
+    return;
+  }
+  if (action?.dataset.action === 'copy-comparison' && completedComparison) {
+    const comparisonId = completedComparison.comparisonId;
+    const request = ++copyComparisonRequest;
+    const copied = (status: string) => {
+      if (request !== copyComparisonRequest || completedComparison?.comparisonId !== comparisonId) return;
+      copyComparisonStatus = status; flyoutRevision++; markDirty();
+    };
+    try {
+      if (!navigator.clipboard?.writeText) copied('Copy failed');
+      else void navigator.clipboard.writeText(JSON.stringify(completedComparison)).then(() => copied('Comparison JSON copied')).catch(() => copied('Copy failed'));
+    } catch { copied('Copy failed'); }
+    return;
+  }
   if (action?.dataset.action === 'start-explanation') {
     const findingIndex = Number(action.dataset.findingIndex);
     const source = shownSession;
@@ -1888,12 +2021,16 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
       completedExplanation = null;
       explanationStartFailure = '';
       copyExplanationStatus = '';
+      completedComparison = null;
+      copyComparisonStatus = '';
+      copyComparisonRequest++;
       shownSession = null;
       expandedFindingId = null;
       copySessionStatus = '';
       showAllSessionCanvases = false;
       findingNodes.clear();
       flyoutRevision++;
+      requestAnimationFrame(() => stopRecordingButton?.focus());
     }
   });
 
@@ -2004,6 +2141,9 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
         completedExplanation = null;
         explanationStartFailure = '';
         copyExplanationStatus = '';
+        completedComparison = null;
+        copyComparisonStatus = '';
+        copyComparisonRequest++;
         copySessionStatus = '';
         showAllSessionCanvases = false;
         findingNodes.clear();
@@ -2093,6 +2233,10 @@ export function unmountOverlay(): void {
   explanationStartFailure = '';
   copyExplanationStatus = '';
   copyExplanationRequest = 0;
+  baseline = null;
+  completedComparison = null;
+  copyComparisonStatus = '';
+  copyComparisonRequest = 0;
   flyoutInvoker = null;
   showAllSessionCanvases = false;
   minFlashRasterOps = 2;

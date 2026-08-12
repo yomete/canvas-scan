@@ -11,7 +11,7 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 import { emitLifecycleEvent, emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
 import { getLastExplanation, getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
-import type { DrawBatchReport } from '../src/types';
+import type { ComparisonArtifactV1, DrawBatchReport, InvestigationSessionV1 } from '../src/types';
 import { getRecord, installCanvasPatch, notifySelectedCommandBoundary, records, type CanvasRecord } from '../src/wrap-context';
 
 class OverlayExplanationContext {
@@ -1751,6 +1751,207 @@ function describeReason(reason: string): string {
   };
   return phrases[reason];
 }
+
+describe('overlay session comparison', () => {
+  function recordFinding(canvasId: string, rasterOperationCount = 2): void {
+    startRecording();
+    const canvas = makeCanvas();
+    canvas.width = 100; canvas.height = 50;
+    emitReport(makeReport({ canvasId, rasterOperationCount }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId, rasterOperationCount }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+  }
+
+  function activateWithKeyboard(button: HTMLButtonElement, key: 'Enter' | ' '): void {
+    button.focus();
+    expect(button.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key }))).toBe(true);
+    button.click();
+    expect((button.getRootNode() as ShadowRoot).activeElement).toBe(button);
+  }
+
+  function openCompletedSession(): ShadowRoot {
+    const root = getShadowRoot();
+    const counts = root.querySelector<HTMLButtonElement>('.counts')!;
+    if (counts.getAttribute('aria-expanded') !== 'true') counts.click();
+    refreshOverlay();
+    return root;
+  }
+
+  function recordMixedCandidates(): void {
+    startRecording();
+    for (const [canvasId, rasterOperationCount] of [['candidate-a', 3], ['candidate-b', 5]] as const) {
+      const canvas = makeCanvas();
+      canvas.width = 100; canvas.height = 50;
+      emitReport(makeReport({ canvasId, rasterOperationCount }), canvas, { windowIndex: 1, timestampMs: 10 });
+      emitReport(makeReport({ canvasId, rasterOperationCount }), canvas, { windowIndex: 2, timestampMs: 20 });
+    }
+    const backing = makeCanvas();
+    backing.width = 1000; backing.height = 1000; setCanvasRect(backing, { width: 10, height: 10 });
+    emitReport(makeReport({ canvasId: 'candidate-backing', rasterOperationCount: 1, signatureStatus: 'changed' }), backing, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'candidate-backing', rasterOperationCount: 1, signatureStatus: 'changed' }), backing, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+  }
+
+  function recordIncompleteFinding(canvasId: string): void {
+    startRecording();
+    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const canvas = makeCanvas();
+    canvas.width = 100; canvas.height = 50;
+    emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+  }
+
+  it('deep-copies an explicit baseline and uses the exact selected same-type index', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay(); recordFinding('baseline-canvas');
+    const root = openCompletedSession();
+    const keep = root.querySelector<HTMLButtonElement>('.baseline-action')!;
+    expect(keep.type).toBe('button'); expect(keep.textContent).toBe('Keep as baseline');
+    const stringify = vi.spyOn(JSON, 'stringify');
+    keep.click();
+    const source = stringify.mock.calls.find(call => Array.isArray((call[0] as InvestigationSessionV1)?.findings))?.[0] as InvestigationSessionV1;
+    expect(source.findings[0].canvasId).toBe('baseline-canvas');
+    source.findings[0].canvasId = 'mutated-source';
+    stringify.mockRestore();
+    refreshOverlay();
+    expect(keep.textContent).toBe('Baseline kept'); expect(keep.getAttribute('aria-pressed')).toBe('true');
+    recordMixedCandidates();
+    const candidates = [...root.querySelectorAll<HTMLButtonElement>('.comparison-action')];
+    const visible = candidates.filter(button => !button.hidden);
+    expect(visible.map(button => button.closest<HTMLElement>('.finding-card')?.dataset.canvasId).sort()).toEqual(['candidate-a', 'candidate-b']);
+    expect(candidates.find(button => button.closest<HTMLElement>('.finding-card')?.dataset.canvasId === 'candidate-backing')?.hidden).toBe(true);
+    const compare = visible.find(button => button.closest<HTMLElement>('.finding-card')?.dataset.canvasId === 'candidate-b')!;
+    expect(compare.type).toBe('button');
+    compare.click(); refreshOverlay();
+    root.querySelector<HTMLButtonElement>('.comparison-copy')!.click();
+    await Promise.resolve();
+    const artifact = JSON.parse(writeText.mock.calls[0][0]) as ComparisonArtifactV1;
+    expect(artifact.baseline.canvasId).toBe('baseline-canvas');
+    expect(artifact.candidate.canvasId).toBe('candidate-b');
+    expect(artifact.candidate.findingIndex).toBe(Number(compare.dataset.findingIndex));
+    const panel = root.querySelector<HTMLElement>('.comparison-panel')!;
+    expect(panel.textContent).toContain('Pairing: user-selected');
+    expect(panel.textContent).toContain('improvementEstablished: false');
+  });
+
+  it('renders every comparable measure with neutral pair wording', () => {
+    mountOverlay(); recordFinding('first');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordFinding('second', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+    const text = root.querySelector('.comparison-panel')?.textContent ?? '';
+    for (const label of ['Active window count', 'Raster operation count', 'Canvas2D API self-time', 'Maximum window Canvas2D API self-time', 'Unknown command window count', 'Repeated window count', 'Repeated raster operation count', 'Comparison gap count']) expect(text).toContain(`${label}: baseline `);
+    expect(text).toContain('equal in this pair');
+    expect(text).toContain('observed-timing-pair');
+    expect(text).toContain('One selected pair does not establish a performance improvement.');
+    expect(text).not.toMatch(/\b(fixed|faster|improved|regressed)\b|same pixels|pixel identity|caused by|wasted work|auto.?match/i);
+  });
+
+  it('shows exact incomplete evidence without measures and keeps the baseline for a later recording', () => {
+    mountOverlay(); recordFinding('baseline-incomplete');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordIncompleteFinding('candidate-incomplete');
+    const compare = root.querySelector<HTMLButtonElement>('.comparison-action')!;
+    activateWithKeyboard(compare, ' '); refreshOverlay();
+    const text = root.querySelector('.comparison-panel')?.textContent ?? '';
+    expect(text).toContain('Comparison status: incomparable');
+    expect(text).toContain('Incomparable reason: incomplete-evidence');
+    expect(text).not.toMatch(/\bdelta\b|higher in this pair|lower in this pair|equal in this pair|unknown in this pair/);
+    root.querySelector<HTMLButtonElement>('.record')!.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent ?? '').not.toContain('COMPARISON COMPLETE');
+    const next = makeCanvas();
+    next.width = 100; next.height = 50;
+    emitReport(makeReport({ canvasId: 'candidate-after-clear', rasterOperationCount: 3 }), next, { windowIndex: 3, timestampMs: 30 });
+    emitReport(makeReport({ canvasId: 'candidate-after-clear', rasterOperationCount: 3 }), next, { windowIndex: 4, timestampMs: 40 });
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click(); refreshOverlay();
+    expect(root.querySelector<HTMLButtonElement>('.comparison-action')?.hidden).toBe(false);
+    expect(root.querySelector<HTMLButtonElement>('.baseline-action')?.textContent).toBe('Replace baseline');
+  });
+
+  it('reports copy success and failure and ignores a stale copy result', async () => {
+    let pending: Promise<void> | undefined;
+    let resolvePending = () => {};
+    const writeText = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('denied'))
+      .mockImplementationOnce(() => pending = new Promise<void>(resolve => { resolvePending = resolve; }));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay(); recordFinding('copy-baseline');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordFinding('copy-candidate', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+    const copy = root.querySelector<HTMLButtonElement>('.comparison-copy')!;
+    activateWithKeyboard(copy, 'Enter'); await Promise.resolve(); refreshOverlay();
+    expect(root.querySelector('.comparison-copy-status')?.textContent).toBe('Comparison JSON copied');
+    copy.click(); await Promise.resolve(); await Promise.resolve(); refreshOverlay();
+    expect(root.querySelector('.comparison-copy-status')?.textContent).toBe('Copy failed');
+    copy.click();
+    const replace = root.querySelector<HTMLButtonElement>('.baseline-action')!;
+    activateWithKeyboard(replace, 'Enter'); refreshOverlay();
+    resolvePending(); await pending; await Promise.resolve(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).not.toContain('Comparison JSON copied');
+    expect(root.querySelector('.comparison-panel')?.textContent).not.toContain('Copy failed');
+  });
+
+  it('reports copy failure for an absent or throwing Clipboard API', () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    mountOverlay(); recordFinding('copy-failure-baseline');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordFinding('copy-failure-candidate', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+    const copy = root.querySelector<HTMLButtonElement>('.comparison-copy')!;
+    copy.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-copy-status')?.textContent).toBe('Copy failed');
+    const writeText = vi.fn(() => { throw new Error('blocked'); });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    copy.click(); refreshOverlay();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('.comparison-copy-status')?.textContent).toBe('Copy failed');
+  });
+
+  it('keeps baseline, comparison, copy, and focus behavior after host reattachment', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mountOverlay(); recordFinding('hydrate-baseline');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordFinding('hydrate-candidate', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+    const host = document.querySelector<HTMLElement>('[data-canvas-scan]')!;
+    host.remove(); vi.advanceTimersByTime(1000);
+    expect(document.querySelectorAll('[data-canvas-scan]')).toHaveLength(1);
+    expect(host.isConnected).toBe(true);
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain('COMPARISON COMPLETE');
+    const copy = root.querySelector<HTMLButtonElement>('.comparison-copy')!;
+    activateWithKeyboard(copy, 'Enter'); await Promise.resolve();
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a completed comparison only after an explicit replacement', () => {
+    mountOverlay(); recordFinding('first');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    recordFinding('second', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain('COMPARISON COMPLETE');
+    const replace = root.querySelector<HTMLButtonElement>('.baseline-action')!;
+    expect(replace.textContent).toBe('Replace baseline'); activateWithKeyboard(replace, 'Enter'); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).not.toContain('COMPARISON COMPLETE');
+    expect(replace.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('clears the baseline across an explicit unmount and remount', () => {
+    mountOverlay(); recordFinding('unmount-baseline');
+    let root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain('BASELINE KEPT');
+    unmountOverlay(); mountOverlay(); recordFinding('after-unmount'); root = openCompletedSession();
+    expect(root.querySelector('.comparison-panel')?.textContent ?? '').not.toContain('BASELINE KEPT');
+    expect(root.querySelector<HTMLButtonElement>('.baseline-action')?.textContent).toBe('Keep as baseline');
+    expect(root.querySelector<HTMLButtonElement>('.comparison-action')?.hidden).toBe(true);
+  });
+});
 
 describe('overlay explanation action', () => {
   it('starts from the saved selection and keeps its copy button stable', async () => {

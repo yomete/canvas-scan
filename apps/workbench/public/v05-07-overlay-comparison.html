@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Overlay comparison fixture</title>
+  <link rel="icon" href="data:,">
+  <script>window.__CANVAS_SCAN_OPTS = { overlay: true };</script>
+  <script src="/canvas-scan.iife.js"></script>
+</head>
+<body>
+  <h1>Overlay comparison fixture</h1>
+  <button id="baseline">Record baseline</button>
+  <button id="candidate">Prepare comparable candidate</button>
+  <button id="incomplete">Prepare incomplete candidate</button>
+  <canvas id="selected" width="80" height="80"></canvas>
+  <canvas id="unrelated" width="1000" height="1000" style="width: 10px; height: 10px"></canvas>
+  <script>
+    const canvas = document.querySelector('#selected');
+    const context = canvas.getContext('2d');
+    const unrelated = document.querySelector('#unrelated');
+    const unrelatedContext = unrelated.getContext('2d');
+    let mode = 'idle';
+    let recording = false;
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
+    function draw() {
+      const count = mode === 'candidate' ? 4 : 2;
+      for (let index = 0; index < count; index++) context.fillRect(index * 2, 0, 1, 1);
+      if (mode === 'candidate' || mode === 'incomplete') unrelatedContext.fillRect(0, 0, 1, 1);
+    }
+
+    async function makeDrops() {
+      for (let index = 0; index < 129; index++) {
+        const extra = document.createElement('canvas');
+        extra.width = 1; extra.height = 1;
+        extra.getContext('2d').fillRect(0, 0, 1, 1);
+      }
+      await nextFrame();
+    }
+
+    async function runFrames() {
+      for (let index = 0; index < 8; index++) { draw(); await nextFrame(); }
+    }
+
+    async function recordBaseline() {
+      mode = 'baseline'; recording = true;
+      window.__CANVAS_SCAN__.startRecording();
+      await runFrames();
+      window.__CANVAS_SCAN__.stopRecording();
+      recording = false; window.__V05_07__.baselineComplete = true;
+    }
+
+    document.querySelector('#baseline').addEventListener('click', () => { void recordBaseline(); });
+    document.querySelector('#candidate').addEventListener('click', () => { mode = 'candidate'; window.__V05_07__.candidateReady = true; });
+    document.querySelector('#incomplete').addEventListener('click', () => { mode = 'incomplete'; window.__V05_07__.incompleteReady = true; });
+    window.__V05_07__ = {
+      baselineComplete: false, candidateReady: false, incompleteReady: false,
+      async drawForOverlayRecording() { recording = true; if (mode === 'incomplete') await makeDrops(); await runFrames(); recording = false; },
+    };
+  </script>
+</body>
+</html>
