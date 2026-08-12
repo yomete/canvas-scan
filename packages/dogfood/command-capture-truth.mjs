@@ -35,7 +35,9 @@ const expectedCounterexamples = {
 const argumentKinds = new Set(['number', 'string', 'boolean', 'null', 'undefined', 'array', 'typed-array', 'image', 'canvas', 'path', 'gradient', 'pattern', 'object']);
 const differenceReasons = new Set(['command-added', 'command-removed', 'operation-kind', 'operation-name', 'argument-count', 'argument-kind', 'argument-token']);
 const gapReasons = new Set(['unsupported-value', 'argument-limit', 'value-token-limit', 'command-limit', 'window-limit', 'sampling-gap', 'instrumentation-disabled']);
-const dropKeys = ['activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups'];
+const dropKeys = ['durationStops', 'selectedCanvasRejections', 'activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups', 'sourceMapResponses'];
+const limitNames = ['duration-ms', 'selected-canvases', 'active-windows', 'command-entries', 'arguments-per-command', 'value-tokens', 'stack-samples', 'frames-per-stack', 'source-map-lookups', 'source-map-response-bytes'];
+const limitMaximums = [10000, 1, 120, 5000, 20, 1024, 8, 20, 8, 2097152];
 const privacyCategories = ['strings', 'numbers', 'keys', 'urls', 'sha256', 'fnv', 'function-source', 'live-object-shapes', 'claim-language'];
 const privateStrings = ['opaque-private-string', 'privateKey', 'privateValue', 'private-function', 'privateFunction', 'liveOnlyPrivateShape'];
 const privateNumbers = [918273.645, 771928.125];
@@ -116,6 +118,16 @@ function comparison(reference, target) {
   return { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: 'same', difference: null, unknownReason: null };
 }
 
+function recomputeCommandComparisons(windows, droppedActiveWindows = 0) {
+  const result = [];
+  for (let index = 1; index < windows.length; index++) result.push(comparison(windows[index - 1], windows[index]));
+  for (let index = 0; index < droppedActiveWindows; index++) {
+    const reference = windows.at(-1);
+    result.push({ referenceWindowIndex: reference.windowIndex, targetWindowIndex: reference.windowIndex + index + 1, status: 'unknown', difference: null, unknownReason: 'window-limit' });
+  }
+  return result;
+}
+
 function privacyMatch(trail, category, value) { return { trail, category, value: String(value) }; }
 export function scanArtifactPrivacy(value) {
   const matches = [];
@@ -169,8 +181,8 @@ function checkCommand(name, command, ordinal, failures, tokens, counters) {
 
 function checkGap(name, artifact, failures) {
   const incomplete = artifact.windows.find(window => !window.complete);
-  const dropped = dropKeys.some(key => artifact.droppedEntryCounts[key] > 0);
-  if ((incomplete || dropped) && !artifact.firstGap) addFailure(failures, `${name}:missing-first-gap`);
+  const commandDropped = ['activeWindows', 'commandEntries', 'commandArguments', 'valueTokens'].some(key => artifact.droppedEntryCounts[key] > 0);
+  if ((incomplete || commandDropped) && !artifact.firstGap) addFailure(failures, `${name}:missing-first-gap`);
   if (!artifact.firstGap) return;
   const gap = artifact.firstGap;
   if (!Number.isInteger(gap.windowIndex) || gap.windowIndex < 0 || !(gap.commandOrdinal === null || Number.isInteger(gap.commandOrdinal) && gap.commandOrdinal >= 0) || !gapReasons.has(gap.reason)) addFailure(failures, `${name}:first-gap-shape`);
@@ -222,16 +234,13 @@ function checkArtifact(name, artifact, failures, tokens) {
   const droppedValueTokens = artifact.windows.flatMap(window => window.commands).reduce((sum, command) => sum + (command.unknownReason === 'value-token-limit' ? command.arguments.filter(argument => argument.token === null).length : 0), 0);
   if (artifact.droppedEntryCounts.commandArguments !== omittedArguments) addFailure(failures, `${name}:drop-commandArguments-exact`);
   if (artifact.droppedEntryCounts.valueTokens !== droppedValueTokens) addFailure(failures, `${name}:drop-valueTokens-exact`);
-  if (artifact.droppedEntryCounts.commandEntries !== 0 || artifact.droppedEntryCounts.stackSamples !== 0 || artifact.droppedEntryCounts.stackFrames !== 0 || artifact.droppedEntryCounts.sourceMapLookups !== 0) addFailure(failures, `${name}:unsupported-drop-count`);
+  if (artifact.droppedEntryCounts.durationStops !== 0 || artifact.droppedEntryCounts.selectedCanvasRejections !== 0 || artifact.droppedEntryCounts.commandEntries !== 0 || artifact.droppedEntryCounts.stackSamples !== 0 || artifact.droppedEntryCounts.stackFrames !== 0 || artifact.droppedEntryCounts.sourceMapLookups !== 0 || artifact.droppedEntryCounts.sourceMapResponses !== 0) addFailure(failures, `${name}:unsupported-drop-count`);
+  if (!Array.isArray(artifact.limitResults) || artifact.limitResults.length !== limitNames.length || artifact.limitResults.some((limit, index) => limit?.name !== limitNames[index] || limit.maximum !== limitMaximums[index] || !Number.isInteger(limit.rejectedCount) || limit.rejectedCount < 0 || (limit.rejectedCount === 0 && (limit.reason !== null || limit.firstAffected !== null)))) addFailure(failures, `${name}:limit-results`);
+  if (!artifact.callsiteCoverage || !['complete', 'incomplete'].includes(artifact.callsiteCoverage.status) || !Array.isArray(artifact.callsiteCoverage.incompleteReasons)) addFailure(failures, `${name}:callsite-coverage`);
   if (artifact.droppedEntryCounts.activeWindows > 0 && artifact.windows.length !== limits.maxActiveWindows) addFailure(failures, `${name}:drop-activeWindows-exact`);
   if (omittedTokens > 0 && !artifact.windows.some(window => window.commands.some(command => command.unknownReason === 'unsupported-value' || command.unknownReason === 'value-token-limit'))) addFailure(failures, `${name}:null-token-without-gap`);
 
-  const expectedComparisons = [];
-  for (let index = 1; index < artifact.windows.length; index++) expectedComparisons.push(comparison(artifact.windows[index - 1], artifact.windows[index]));
-  for (let index = 0; index < (artifact.droppedEntryCounts?.activeWindows ?? 0); index++) {
-    const reference = artifact.windows.at(-1);
-    expectedComparisons.push({ referenceWindowIndex: reference.windowIndex, targetWindowIndex: reference.windowIndex + index + 1, status: 'unknown', difference: null, unknownReason: 'window-limit' });
-  }
+  const expectedComparisons = recomputeCommandComparisons(artifact.windows, artifact.droppedEntryCounts?.activeWindows ?? 0);
   if (!Array.isArray(artifact.comparisons) || artifact.comparisons.length !== expectedComparisons.length) addFailure(failures, `${name}:comparison-count`);
   else for (let index = 0; index < expectedComparisons.length; index++) if (!sameJson(artifact.comparisons[index], expectedComparisons[index])) addFailure(failures, `${name}:comparison-${index}`);
   const firstDifference = expectedComparisons.find(entry => entry.status === 'changed')?.difference ?? null;

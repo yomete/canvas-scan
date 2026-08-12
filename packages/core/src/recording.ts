@@ -28,6 +28,8 @@ import type {
   ExplanationArtifactV1,
   ExplanationSelection,
   ExplanationStartResult,
+  ExplanationLimitResult,
+  ExplanationCallsiteCoverage,
 } from './types';
 
 const MAX_DURATION_MS = 30000;
@@ -89,6 +91,8 @@ let activeExplanation: {
   capture: NonNullable<ReturnType<typeof createCommandCapture>>;
   callsites: ReturnType<typeof createDrawCallsiteCapture>;
   unsubscribeDetail: () => void;
+  selectedCanvasRejections: number;
+  selectableFindingIndexes: Set<number>;
 } | undefined;
 let unsubscribe: (() => void) | undefined;
 let unsubscribeResetEvents: (() => void) | undefined;
@@ -111,6 +115,26 @@ function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
 }
 function copyBrowserEntry(entry: RecordedBrowserEvidenceEntry): RecordedBrowserEvidenceEntry { return JSON.parse(JSON.stringify(entry)); }
 function copyExplanation(explanation: ExplanationArtifactV1): ExplanationArtifactV1 { return JSON.parse(JSON.stringify(explanation)); }
+
+function explanationLimits(detail: NonNullable<ReturnType<typeof finishCommandCapture>>, callsites: NonNullable<ReturnType<typeof finishDrawCallsiteCapture>>, durationStops: number, selectedCanvasRejections: number): { limitResults: ExplanationLimitResult[]; callsiteCoverage: ExplanationCallsiteCoverage } {
+  const coordinates = (value: any, scope: 'window' | 'command') => value && Number.isInteger(value.windowIndex) && value.windowIndex >= 0 && (scope === 'window' || Number.isInteger(value.commandOrdinal))
+    ? { scope, windowIndex: value.windowIndex, commandOrdinal: scope === 'window' ? null : value.commandOrdinal } as const : null;
+  const items: Array<[ExplanationLimitResult['name'], number, number, Exclude<ExplanationLimitResult['reason'], null>, ExplanationLimitResult['firstAffected']]> = [
+    ['duration-ms', 10000, durationStops, 'max-duration', durationStops ? { scope: 'explanation', windowIndex: null, commandOrdinal: null } : null],
+    ['selected-canvases', 1, selectedCanvasRejections, 'selected-canvas-limit', selectedCanvasRejections ? { scope: 'explanation', windowIndex: null, commandOrdinal: null } : null],
+    ['active-windows', 120, detail.droppedEntryCounts.activeWindows, 'window-limit', coordinates(detail.firstAffected.activeWindows, 'window')],
+    ['command-entries', 5000, detail.droppedEntryCounts.commandEntries, 'command-limit', coordinates(detail.firstAffected.commandEntries, 'command')],
+    ['arguments-per-command', 20, detail.droppedEntryCounts.commandArguments, 'argument-limit', coordinates(detail.firstAffected.commandArguments, 'command')],
+    ['value-tokens', 1024, detail.droppedEntryCounts.valueTokens, 'value-token-limit', coordinates(detail.firstAffected.valueTokens, 'command')],
+    ['stack-samples', 8, callsites.droppedEntryCounts.stackSamples, 'stack-sample-limit', coordinates(callsites.firstAffected.stackSamples, 'command')],
+    ['frames-per-stack', 20, callsites.droppedEntryCounts.stackFrames, 'stack-frame-limit', coordinates(callsites.firstAffected.stackFrames, 'command')],
+    ['source-map-lookups', 8, callsites.droppedEntryCounts.sourceMapLookups, 'source-map-lookup-limit', coordinates(callsites.firstAffected.sourceMapLookups, 'command')],
+    ['source-map-response-bytes', 2097152, callsites.droppedEntryCounts.sourceMapResponses, 'source-map-too-large', coordinates(callsites.firstAffected.sourceMapResponses, 'command')],
+  ];
+  const limitResults = items.map(([name, maximum, rejectedCount, reason, firstAffected]) => ({ name, maximum, rejectedCount, reason: rejectedCount ? reason : null, firstAffected: rejectedCount ? firstAffected : null }));
+  const callsiteReasons = limitResults.slice(6).filter(result => result.rejectedCount).map(result => result.reason!) as ExplanationCallsiteCoverage['incompleteReasons'];
+  return { limitResults, callsiteCoverage: { status: callsiteReasons.length ? 'incomplete' : 'complete', incompleteReasons: callsiteReasons } };
+}
 
 function copyResetEvent(event: RecordedResetEvent): RecordedResetEvent { return { ...event }; }
 function copyLifecycleEvent(event: RecordedCanvasLifecycleEvent): RecordedCanvasLifecycleEvent { return { ...event }; }
@@ -442,6 +466,8 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
   if (explanation) {
+    const durationStops = stopReason === 'max-duration' ? 1 : 0;
+    const limits = explanationLimits(detail!, callsites!, durationStops, explanation.selectedCanvasRejections);
     lastExplanation = {
       schemaVersion: 1,
       explanationId: explanation.explanationId,
@@ -473,7 +499,9 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
         maxSourceMapLookups: 8,
         maxSourceMapResponseBytes: 2097152,
       },
-      droppedEntryCounts: { ...detail!.droppedEntryCounts, ...callsites!.droppedEntryCounts },
+      droppedEntryCounts: { durationStops, selectedCanvasRejections: explanation.selectedCanvasRejections, ...detail!.droppedEntryCounts, ...callsites!.droppedEntryCounts },
+      limitResults: limits.limitResults,
+      callsiteCoverage: limits.callsiteCoverage,
       firstGap: detail!.firstGap,
     };
     activeExplanation = undefined;
@@ -545,7 +573,12 @@ export function configureRecording(options: CanvasScanOptions): void {
 
 export function stopRecording(): InvestigationSessionV1 | undefined { return finish('manual'); }
 export function startExplanation(selection: ExplanationSelection): ExplanationStartResult {
-  if (activeExplanation) return { status: 'already-active' };
+  if (activeExplanation) {
+    const sameSelection = activeExplanation.sessionId === selection.sessionId && activeExplanation.findingIndex === selection.findingIndex;
+    const validAlternative = activeExplanation.sessionId === selection.sessionId && activeExplanation.selectableFindingIndexes.has(selection.findingIndex);
+    if (!sameSelection && validAlternative) activeExplanation.selectedCanvasRejections++;
+    return { status: 'already-active' };
+  }
   if (state === 'recording') return { status: 'unavailable', reason: 'recording-active' };
   if (isKilled()) return { status: 'unavailable', reason: 'instrumentation-disabled' };
   if (!lastSession) return { status: 'unavailable', reason: 'no-session' };
@@ -586,6 +619,8 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
     capture,
     callsites,
     unsubscribeDetail,
+    selectedCanvasRejections: 0,
+    selectableFindingIndexes: new Set(lastSession.findings.flatMap((candidate, index) => [...records].some(item => item.id === candidate.canvasId) ? [index] : [])),
   };
   startRecordingWithDuration(EXPLANATION_MAX_DURATION_MS);
   return { status: 'started' };

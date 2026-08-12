@@ -8,13 +8,16 @@
     "private-fragment"
   ],
   "expectedDroppedEntryCounts": {
+    "durationStops": 0,
+    "selectedCanvasRejections": 0,
     "activeWindows": 0,
     "commandEntries": 0,
     "commandArguments": 0,
     "valueTokens": 0,
     "stackSamples": 0,
     "stackFrames": 0,
-    "sourceMapLookups": 0
+    "sourceMapLookups": 0,
+    "sourceMapResponses": 0
   },
   "rows": [
     {

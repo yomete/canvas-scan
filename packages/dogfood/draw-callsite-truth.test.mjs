@@ -7,7 +7,11 @@ import { checkEvidence, checkEvidenceObject, createManifest, evidenceFiles, fixt
 
 const origin = 'http://127.0.0.1:5205';
 const collectionLimits = { maxDurationMs: 10000, maxSelectedCanvases: 1, maxActiveWindows: 120, maxCommandEntries: 5000, maxArgumentsPerCommand: 20, maxValueTokens: 1024, maxStackSamples: 8, maxFramesPerStack: 20, maxSourceMapLookups: 8, maxSourceMapResponseBytes: 2097152 };
-const droppedEntryCounts = { activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 };
+const droppedEntryCounts = { durationStops: 0, selectedCanvasRejections: 0, activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 };
+const limitResults = [
+  ['duration-ms', 10000], ['selected-canvases', 1], ['active-windows', 120], ['command-entries', 5000], ['arguments-per-command', 20],
+  ['value-tokens', 1024], ['stack-samples', 8], ['frames-per-stack', 20], ['source-map-lookups', 8], ['source-map-response-bytes', 2097152],
+].map(([name, maximum]) => ({ name, maximum, rejectedCount: 0, reason: null, firstAffected: null }));
 function command(token) { return { ordinal: 0, operationKind: 'call', name: 'fillRect', argumentCount: 1, arguments: [{ position: 0, kind: 'number', token }], unknownReason: null }; }
 function frame(row) {
   const generated = { file: `${origin}/v05-05-generated/${row.name}.js`, line: 20, column: 2 };
@@ -40,6 +44,8 @@ function artifact(row) {
     ],
     collectionLimits: { ...collectionLimits },
     droppedEntryCounts: { ...droppedEntryCounts },
+    limitResults: JSON.parse(JSON.stringify(limitResults)),
+    callsiteCoverage: { status: 'complete', incompleteReasons: [] },
     firstGap: { windowIndex: 9, commandOrdinal: 0, reason: 'sampling-gap' },
   };
 }

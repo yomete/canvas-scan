@@ -118,7 +118,7 @@ export interface ExplanationStackFrame {
   generated: SourceLocation | null;
   mapped: SourceLocation | null;
   mappingStatus: 'mapped' | 'unresolved';
-  unresolvedReason: 'no-source-map' | 'cross-origin-source-map' | 'source-map-too-large' | 'source-map-load-failed' | 'source-map-parse-failed' | 'mapping-missing' | null;
+  unresolvedReason: 'no-source-map' | 'cross-origin-source-map' | 'source-map-lookup-limit' | 'source-map-too-large' | 'source-map-load-failed' | 'source-map-parse-failed' | 'mapping-missing' | null;
 }
 
 export interface ExplanationStackSample {
@@ -466,6 +466,38 @@ export interface ExplanationArtifactV1 {
     maxSourceMapLookups: 8;
     maxSourceMapResponseBytes: 2097152;
   };
-  droppedEntryCounts: { activeWindows: number; commandEntries: number; commandArguments: number; valueTokens: number; stackSamples: number; stackFrames: number; sourceMapLookups: number };
+  droppedEntryCounts: { durationStops: number; selectedCanvasRejections: number; activeWindows: number; commandEntries: number; commandArguments: number; valueTokens: number; stackSamples: number; stackFrames: number; sourceMapLookups: number; sourceMapResponses: number };
+  limitResults: ExplanationLimitResult[];
+  callsiteCoverage: ExplanationCallsiteCoverage;
   firstGap: { windowIndex: number; commandOrdinal: number | null; reason: ExplanationUnknownReason } | null;
+}
+
+export type ExplanationLimitName =
+  | 'duration-ms' | 'selected-canvases' | 'active-windows' | 'command-entries'
+  | 'arguments-per-command' | 'value-tokens' | 'stack-samples' | 'frames-per-stack'
+  | 'source-map-lookups' | 'source-map-response-bytes';
+
+export type ExplanationLimitReason =
+  | 'max-duration' | 'selected-canvas-limit' | 'window-limit' | 'command-limit'
+  | 'argument-limit' | 'value-token-limit' | 'stack-sample-limit' | 'stack-frame-limit'
+  | 'source-map-lookup-limit' | 'source-map-too-large';
+
+export type ExplanationLimitCoordinate =
+  | { scope: 'explanation'; windowIndex: null; commandOrdinal: null }
+  | { scope: 'window'; windowIndex: number; commandOrdinal: null }
+  | { scope: 'command'; windowIndex: number; commandOrdinal: number };
+
+export interface ExplanationLimitResult {
+  name: ExplanationLimitName;
+  maximum: number;
+  rejectedCount: number;
+  reason: ExplanationLimitReason | null;
+  firstAffected: ExplanationLimitCoordinate | null;
+}
+
+export type ExplanationCallsiteLimitReason = 'stack-sample-limit' | 'stack-frame-limit' | 'source-map-lookup-limit' | 'source-map-too-large';
+
+export interface ExplanationCallsiteCoverage {
+  status: 'complete' | 'incomplete';
+  incompleteReasons: ExplanationCallsiteLimitReason[];
 }

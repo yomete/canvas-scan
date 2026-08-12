@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Canvas Scan fixed-limit fixture</title>
+  <link rel="icon" href="data:,">
+  <script>window.__CANVAS_SCAN_OPTS = { overlay: true };</script>
+  <script src="/canvas-scan.iife.js"></script>
+</head>
+<body>
+  <canvas id="selected" width="80" height="80"></canvas>
+  <canvas id="alternative" width="80" height="80"></canvas>
+  <canvas id="background" width="20" height="20"></canvas>
+  <script>
+    const canvases = {
+      selected: document.querySelector('#selected'),
+      alternative: document.querySelector('#alternative'),
+      background: document.querySelector('#background'),
+    };
+    const state = { variant: 'wrapper-depth', selectedFindingIndex: -1, alternativeFindingIndex: -1, source: null };
+    let contexts = {};
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const layer = callback => callback();
+
+    function prepare(variant) {
+      state.variant = variant;
+      if (variant === 'canvas-order') {
+        contexts.background = canvases.background.getContext('2d');
+        contexts.alternative = canvases.alternative.getContext('2d');
+        contexts.selected = canvases.selected.getContext('2d');
+      } else {
+        contexts.selected = canvases.selected.getContext('2d');
+        contexts.alternative = canvases.alternative.getContext('2d');
+        contexts.background = canvases.background.getContext('2d');
+      }
+    }
+
+    function irrelevantWork() {
+      if (state.variant === 'background-work') contexts.background.fillRect(0, 0, 1, 1);
+    }
+
+    function invoke(callback) {
+      return state.variant === 'wrapper-depth'
+        ? layer(() => layer(() => layer(callback)))
+        : callback();
+    }
+
+    async function makeSource() {
+      window.__CANVAS_SCAN__.startRecording();
+      for (let index = 0; index < 5; index++) {
+        contexts.selected.fillRect(0, 0, 4, 4);
+        contexts.selected.fillRect(1, 1, 4, 4);
+        contexts.alternative.fillRect(0, 0, 4, 4);
+        contexts.alternative.fillRect(1, 1, 4, 4);
+        irrelevantWork();
+        await frame();
+      }
+      state.source = window.__CANVAS_SCAN__.stopRecording();
+      state.selectedFindingIndex = state.source.findings.findIndex(finding => finding.canvasId.startsWith('selected#'));
+      state.alternativeFindingIndex = state.source.findings.findIndex(finding => finding.canvasId.startsWith('alternative#'));
+      if (state.selectedFindingIndex < 0 || state.alternativeFindingIndex < 0) throw new Error('fixture source findings missing');
+      return structuredClone({ source: state.source, selectedFindingIndex: state.selectedFindingIndex, alternativeFindingIndex: state.alternativeFindingIndex });
+    }
+
+    async function makeResizeSource() {
+      window.__CANVAS_SCAN__.startRecording();
+      for (let index = 0; index < 5; index++) {
+        canvases.selected.width = canvases.selected.width;
+        contexts.selected.fillRect(0, 0, 4, 4);
+        contexts.selected.fillRect(1, 1, 4, 4);
+        await frame();
+      }
+      return window.__CANVAS_SCAN__.stopRecording();
+    }
+
+    function selection(index) { return { sessionId: state.source.sessionId, findingIndex: index }; }
+    function startSelected() { return window.__CANVAS_SCAN__.startExplanation(selection(state.selectedFindingIndex)); }
+    function startSame() { return window.__CANVAS_SCAN__.startExplanation(selection(state.selectedFindingIndex)); }
+    function startAlternative() { return window.__CANVAS_SCAN__.startExplanation(selection(state.alternativeFindingIndex)); }
+
+    function drawArguments(values) {
+      return invoke(() => Reflect.apply(contexts.selected.fillRect, contexts.selected, values));
+    }
+
+    function drawPrivateSeeds() {
+      const privateObject = { SIDPROJ_84_PRIVATE_KEY: 'SIDPROJ_84_PRIVATE_STRING' };
+      function privateLimitFixture() {}
+      Reflect.apply(contexts.selected.fillRect, contexts.selected, [
+        0,
+        0,
+        1,
+        1,
+        'SIDPROJ_84_PRIVATE_STRING',
+        privateObject,
+        918273.645,
+        'Error: SIDPROJ_84_RAW_STACK',
+        'https://secret.example.invalid/private-path?token=abc#secret',
+        privateLimitFixture,
+      ]);
+      return true;
+    }
+
+    function deepDraw(depth, value) {
+      const descend = remaining => remaining === 0
+        ? drawArguments([value, 0, 1, 1])
+        : descend(remaining - 1);
+      return descend(depth);
+    }
+
+    function runExternal(name, value) { return window[name](contexts.selected, value); }
+
+    async function drawWindow(value, depth = 0) {
+      deepDraw(depth, value);
+      irrelevantWork();
+      await frame();
+    }
+
+    async function resetWindow() {
+      canvases.selected.width = canvases.selected.width;
+      await frame();
+    }
+
+    async function settleInactive() { await frame(); await frame(); }
+    async function settle() { await frame(); await frame(); }
+    function stop() { return window.__CANVAS_SCAN__.stopExplanation(); }
+    function last() { return window.__CANVAS_SCAN__.getLastExplanation(); }
+    function compare(baseline, candidate, pairing) { return window.__CANVAS_SCAN__.compareSessions(baseline, candidate, pairing); }
+    function filterEvidence() {
+      const host = document.querySelector('[data-canvas-scan]');
+      if (!host) return null;
+      const root = host.shadowRoot;
+      return {
+        visibleComparisonActions: root.querySelectorAll('.comparison-action:not([hidden])').length,
+        hiddenComparisonActions: root.querySelectorAll('.comparison-action[hidden]').length,
+      };
+    }
+
+    window.__V05_08A__ = {
+      prepare,
+      makeSource,
+      makeResizeSource,
+      startSelected,
+      startSame,
+      startAlternative,
+      drawArguments,
+      drawPrivateSeeds,
+      drawWindow,
+      resetWindow,
+      settleInactive,
+      deepDraw,
+      runExternal,
+      irrelevantWork,
+      frame,
+      settle,
+      stop,
+      last,
+      compare,
+      filterEvidence,
+    };
+  </script>
+</body>
+</html>

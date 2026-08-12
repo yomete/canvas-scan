@@ -48,6 +48,7 @@ describe('draw callsite capture', () => {
     expect(result.stacks[0].frames).toHaveLength(MAX_FRAMES_PER_STACK);
     expect(result.stacks[0].droppedFrameCount).toBe(2);
     expect(result.droppedEntryCounts).toMatchObject({ stackSamples: 1, stackFrames: 16 });
+    expect(result.firstAffected).toMatchObject({ stackSamples: { windowIndex: 9, commandOrdinal: 8 }, stackFrames: { windowIndex: 1, commandOrdinal: 0 } });
     expect(JSON.stringify(result)).not.toContain('secret');
     expect(JSON.stringify(result)).not.toContain('    at ');
     expect(getDrawCallsiteTestCounts().stackAllocations).toBe(8);
@@ -74,6 +75,20 @@ describe('draw callsite capture', () => {
     const result = finishDrawCallsiteCapture(nearlyFull);
     expect(result.stacks.at(-1)?.reason).toBe('first-raster');
     expect(result.droppedEntryCounts.stackSamples).toBe(1);
+    expect(result.firstAffected.stackSamples).toEqual({ windowIndex: 8, commandOrdinal: 8 });
+  });
+
+  it('accepts exactly 20 frames and rejects only the twenty-first frame', async () => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    const exact = await captured(stack(...Array.from({ length: MAX_FRAMES_PER_STACK }, (_, index) => `frame${index} (http://other.test/exact.js:${index + 1}:1)`)), fetcher);
+    expect(exact.stacks[0]).toMatchObject({ frames: { length: MAX_FRAMES_PER_STACK }, droppedFrameCount: 0 });
+    expect(exact.droppedEntryCounts.stackFrames).toBe(0);
+    expect(exact.firstAffected.stackFrames).toBeUndefined();
+
+    const over = await captured(stack(...Array.from({ length: MAX_FRAMES_PER_STACK + 1 }, (_, index) => `frame${index} (http://other.test/over.js:${index + 1}:1)`)), fetcher);
+    expect(over.stacks[0]).toMatchObject({ frames: { length: MAX_FRAMES_PER_STACK }, droppedFrameCount: 1 });
+    expect(over.droppedEntryCounts.stackFrames).toBe(1);
+    expect(over.firstAffected.stackFrames).toEqual({ windowIndex: 12, commandOrdinal: 3 });
   });
 
   it('maps a same-origin generated frame and strips URL details and dot segments', async () => {
@@ -210,12 +225,17 @@ describe('draw callsite capture', () => {
     const header = await captured(stack('draw (http://example.test/large.js:1:0)'), vi.fn(async () => tooLargeHeader) as typeof fetch);
     expect(bodyRead).toBe(false);
     expect(header.stacks[0].frames[0].unresolvedReason).toBe('source-map-too-large');
+    expect(header.droppedEntryCounts.sourceMapResponses).toBe(1);
+    expect(header.firstAffected.sourceMapResponses).toEqual({ windowIndex: 12, commandOrdinal: 3 });
 
     const actual = await captured(stack('draw (http://example.test/actual.js:1:0)'), vi.fn(async url => response(new Uint8Array(MAX_SOURCE_MAP_RESPONSE_BYTES + 1), String(url), { headers: { 'content-length': '1' } })) as typeof fetch);
     expect(actual.stacks[0].frames[0].unresolvedReason).toBe('source-map-too-large');
+    expect(actual.droppedEntryCounts.sourceMapResponses).toBe(1);
 
     const exact = await captured(stack('draw (http://example.test/exact.js:1:0)'), vi.fn(async url => response(new Uint8Array(MAX_SOURCE_MAP_RESPONSE_BYTES), String(url))) as typeof fetch);
     expect(exact.stacks[0].frames[0].unresolvedReason).toBe('no-source-map');
+    expect(exact.droppedEntryCounts.sourceMapResponses).toBe(0);
+    expect(exact.firstAffected.sourceMapResponses).toBeUndefined();
   });
 
   it('reuses lookups, skips the ninth unique resource, and records exact drops', async () => {
@@ -235,7 +255,8 @@ describe('draw callsite capture', () => {
     expect(fetcher).toHaveBeenCalledTimes(MAX_SOURCE_MAP_LOOKUPS);
     expect(getDrawCallsiteTestCounts().sourceMapLookups).toBe(MAX_SOURCE_MAP_LOOKUPS);
     expect(result.droppedEntryCounts.sourceMapLookups).toBe(1);
-    expect(result.stacks[0].frames.at(-1)?.unresolvedReason).toBe('mapping-missing');
+    expect(result.firstAffected.sourceMapLookups).toEqual({ windowIndex: 1, commandOrdinal: 0 });
+    expect(result.stacks[0].frames.at(-1)?.unresolvedReason).toBe('source-map-lookup-limit');
   });
 
   it('does not mutate a finalized capture after a late lookup completes', async () => {
@@ -278,13 +299,131 @@ describe('draw callsite capture', () => {
     expect(finishDrawCallsiteCapture(named).stacks[0].frames[0].functionName).toBe('captureDrawCallsiteFromApplication');
   });
 
+  it('does not invoke replaced stack getters or callbacks during automatic capture', () => {
+    const captureStackTrace = Object.getOwnPropertyDescriptor(Error, 'captureStackTrace');
+    const prepareStackTrace = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
+    let getterCalls = 0;
+    let callbackCalls = 0;
+    const privateName = 'customerPrivateStackGetter84';
+    try {
+      Object.defineProperty(Error, 'captureStackTrace', {
+        configurable: true,
+        get() {
+          getterCalls++;
+          return () => { callbackCalls++; throw new TypeError(privateName); };
+        },
+      });
+      Object.defineProperty(Error, 'prepareStackTrace', {
+        configurable: true,
+        get() {
+          getterCalls++;
+          return () => { callbackCalls++; return `Error\n    at ${privateName} (http://other.test/private.js:1:1)`; };
+        },
+      });
+      const capture = createDrawCallsiteCapture({ locationHref: base, fetch: vi.fn() as unknown as typeof fetch });
+      const target = {};
+      expect(() => captureDrawCallsite(capture, target, 0, ['first-raster'])).not.toThrow();
+      resolveDrawCallsiteBoundary(capture, target, 1);
+      const result = finishDrawCallsiteCapture(capture);
+      expect(getterCalls).toBe(0);
+      expect(callbackCalls).toBe(0);
+      expect(result.stacks[0].frames.length).toBeGreaterThan(0);
+      expect(JSON.stringify(result)).not.toContain(privateName);
+    } finally {
+      if (captureStackTrace) Object.defineProperty(Error, 'captureStackTrace', captureStackTrace);
+      else Reflect.deleteProperty(Error, 'captureStackTrace');
+      if (prepareStackTrace) Object.defineProperty(Error, 'prepareStackTrace', prepareStackTrace);
+      else Reflect.deleteProperty(Error, 'prepareStackTrace');
+    }
+  });
+
+  it('does not invoke a throwing prepareStackTrace hook or leak its private name', () => {
+    const prepareStackTrace = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
+    let hookCalls = 0;
+    const privateName = 'customerPrivateThrowingHook84';
+    try {
+      Object.defineProperty(Error, 'prepareStackTrace', {
+        configurable: true,
+        value() { hookCalls++; throw new TypeError(privateName); },
+      });
+      const capture = createDrawCallsiteCapture({ locationHref: base, fetch: vi.fn() as unknown as typeof fetch });
+      const target = {};
+      expect(() => captureDrawCallsite(capture, target, 0, ['first-raster'])).not.toThrow();
+      resolveDrawCallsiteBoundary(capture, target, 1);
+      const result = finishDrawCallsiteCapture(capture);
+      expect(hookCalls).toBe(0);
+      expect(result.stacks[0].frames.length).toBeGreaterThan(0);
+      expect(JSON.stringify(result)).not.toContain(privateName);
+    } finally {
+      if (prepareStackTrace) Object.defineProperty(Error, 'prepareStackTrace', prepareStackTrace);
+      else Reflect.deleteProperty(Error, 'prepareStackTrace');
+    }
+  });
+
+  it('fails closed for a non-configurable hostile stack hook', () => {
+    const globalError = Object.getOwnPropertyDescriptor(globalThis, 'Error')!;
+    const NativeError = Error;
+    let hookCalls = 0;
+    const privateName = 'customerPrivateNonConfigurableHook84';
+    class HostileError extends NativeError {}
+    Object.defineProperty(HostileError, 'prepareStackTrace', {
+      configurable: false,
+      value() { hookCalls++; return `Error\n    at ${privateName} (http://other.test/private.js:1:1)`; },
+    });
+    try {
+      Object.defineProperty(globalThis, 'Error', { ...globalError, value: HostileError });
+      const capture = createDrawCallsiteCapture({ locationHref: base, fetch: vi.fn() as unknown as typeof fetch });
+      const target = {};
+      expect(() => captureDrawCallsite(capture, target, 0, ['first-raster'])).not.toThrow();
+      resolveDrawCallsiteBoundary(capture, target, 1);
+      const result = finishDrawCallsiteCapture(capture);
+      expect(hookCalls).toBe(0);
+      expect(result.stacks[0].frames).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain(privateName);
+    } finally {
+      Object.defineProperty(globalThis, 'Error', globalError);
+    }
+  });
+
+  it('does not inspect or invoke a hostile Error proxy installed before module load', async () => {
+    const globalError = Object.getOwnPropertyDescriptor(globalThis, 'Error')!;
+    const NativeError = Error;
+    let descriptorTraps = 0;
+    let callbackCalls = 0;
+    const privateName = 'customerPrivatePreloadedError84';
+    const HostileError = new Proxy(NativeError, {
+      getOwnPropertyDescriptor(target, property) {
+        descriptorTraps++;
+        if (property === 'captureStackTrace') return { configurable: true, value() { callbackCalls++; throw new TypeError(privateName); }, writable: true };
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    try {
+      Object.defineProperty(globalThis, 'Error', { ...globalError, value: HostileError });
+      vi.resetModules();
+      const isolated = await import('../src/draw-callsite');
+      const capture = isolated.createDrawCallsiteCapture({ locationHref: base, fetch: vi.fn() as unknown as typeof fetch });
+      const target = {};
+      expect(() => isolated.captureDrawCallsite(capture, target, 0, ['first-raster'])).not.toThrow();
+      isolated.resolveDrawCallsiteBoundary(capture, target, 1);
+      const result = isolated.finishDrawCallsiteCapture(capture);
+      expect(descriptorTraps).toBe(0);
+      expect(callbackCalls).toBe(0);
+      expect(result.stacks[0].frames).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain(privateName);
+    } finally {
+      Object.defineProperty(globalThis, 'Error', globalError);
+      vi.resetModules();
+    }
+  });
+
   it('drops a sample whose target boundary was not resolved before disable', () => {
     const capture = createDrawCallsiteCapture({ locationHref: base, fetch: vi.fn() as unknown as typeof fetch });
     captureDrawCallsite(capture, {}, 0, ['first-raster'], stack('draw (http://other.test/app.js:1:0)'));
     disableDrawCallsiteCapture(capture);
     const result = finishDrawCallsiteCapture(capture);
     expect(result.stacks).toEqual([]);
-    expect(result.droppedEntryCounts.stackSamples).toBe(1);
+    expect(result.droppedEntryCounts.stackSamples).toBe(0);
     expect(JSON.stringify(result)).not.toContain('"windowIndex":-1');
   });
 });

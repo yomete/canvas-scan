@@ -2200,6 +2200,10 @@ describe('overlay explanation action', () => {
       expect(artifact.droppedEntryCounts.stackFrames).toBe(dropped);
       expect(visible).toContain(`Dropped frames: ${dropped}`);
       expect(visible).toContain(`stackFrames=${dropped}`);
+      expect(visible).toContain('Command result: unknown');
+      expect(visible).toContain('Callsite coverage: incomplete');
+      expect(visible).toContain('Callsite limits: stack-frame-limit');
+      expect(visible).toContain(`frames-per-stack: maximum=20, rejected=${dropped}, reason=stack-frame-limit`);
     } finally {
       error.stackTraceLimit = previousLimit;
     }

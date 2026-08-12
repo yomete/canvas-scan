@@ -74,6 +74,15 @@ function completeSource(canvasId = 'source-canvas') {
   return stopRecording()!;
 }
 
+function completeTwoSources() {
+  startRecording();
+  for (const windowIndex of [getCurrentWindowIndex() + 1, getCurrentWindowIndex() + 2]) {
+    emitReport(report('source-a'), {}, { windowIndex, timestampMs: windowIndex });
+    emitReport(report('source-b'), {}, { windowIndex, timestampMs: windowIndex });
+  }
+  return stopRecording()!;
+}
+
 afterEach(() => {
   resetRecordingForTests();
   records.clear();
@@ -104,7 +113,7 @@ describe('explanation state', () => {
     const artifact = stopExplanation()!;
     expect(artifact).toEqual(fixture);
     expect(artifact.collectionLimits).toEqual({ maxDurationMs: 10000, maxSelectedCanvases: 1, maxActiveWindows: 120, maxCommandEntries: 5000, maxArgumentsPerCommand: 20, maxValueTokens: 1024, maxStackSamples: 8, maxFramesPerStack: 20, maxSourceMapLookups: 8, maxSourceMapResponseBytes: 2097152 });
-    expect(artifact.droppedEntryCounts).toEqual({ activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 });
+    expect(artifact.droppedEntryCounts).toEqual({ durationStops: 0, selectedCanvasRejections: 0, activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 });
     expect(getLastSession()?.sessionId).toBe(artifact.followUp.sessionId);
     artifact.source.canvasId = 'changed-stop-result';
     artifact.followUp.canvasId = 'changed-stop-result';
@@ -192,7 +201,12 @@ describe('explanation state', () => {
     vi.advanceTimersByTime(9999);
     expect(getLastExplanation()).toBeUndefined();
     vi.advanceTimersByTime(1);
-    expect(getLastExplanation()?.stopReason).toBe('max-duration');
+    const timedOut = getLastExplanation()!;
+    expect(timedOut).toMatchObject({
+      stopReason: 'max-duration',
+      droppedEntryCounts: { durationStops: 1 },
+    });
+    expect(timedOut.limitResults[0]).toEqual({ name: 'duration-ms', maximum: 10000, rejectedCount: 1, reason: 'max-duration', firstAffected: { scope: 'explanation', windowIndex: null, commandOrdinal: null } });
     expect(stopRecording()).toBeUndefined();
   });
 
@@ -234,5 +248,23 @@ describe('explanation state', () => {
     records.add(nextRecord);
     expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
     expect(getLastExplanation()).toBeUndefined();
+  });
+
+  it('keeps an active selection and counts only a different valid selection', () => {
+    const source = completeTwoSources();
+    records.add(record('source-a')); records.add(record('source-b'));
+    const first = source.findings.findIndex(finding => finding.canvasId === 'source-a');
+    const second = source.findings.findIndex(finding => finding.canvasId === 'source-b');
+    expect(first).toBeGreaterThanOrEqual(0); expect(second).toBeGreaterThanOrEqual(0);
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: first })).toEqual({ status: 'started' });
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: first })).toEqual({ status: 'already-active' });
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 999 })).toEqual({ status: 'already-active' });
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: second })).toEqual({ status: 'already-active' });
+    expect(stopExplanation()).toMatchObject({
+      source: { findingIndex: first, canvasId: 'source-a' },
+      followUp: { canvasId: 'source-a' },
+      droppedEntryCounts: { selectedCanvasRejections: 1 },
+      limitResults: expect.arrayContaining([{ name: 'selected-canvases', maximum: 1, rejectedCount: 1, reason: 'selected-canvas-limit', firstAffected: { scope: 'explanation', windowIndex: null, commandOrdinal: null } }]),
+    });
   });
 });

@@ -33,13 +33,29 @@
     "maxSourceMapResponseBytes": 2097152
   },
   "droppedEntryCounts": {
+    "durationStops": 0,
+    "selectedCanvasRejections": 0,
     "activeWindows": 0,
     "commandEntries": 0,
     "commandArguments": 0,
     "valueTokens": 0,
     "stackSamples": 0,
     "stackFrames": 0,
-    "sourceMapLookups": 0
+    "sourceMapLookups": 0,
+    "sourceMapResponses": 0
   },
+  "limitResults": [
+    { "name": "duration-ms", "maximum": 10000, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "selected-canvases", "maximum": 1, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "active-windows", "maximum": 120, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "command-entries", "maximum": 5000, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "arguments-per-command", "maximum": 20, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "value-tokens", "maximum": 1024, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "stack-samples", "maximum": 8, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "frames-per-stack", "maximum": 20, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "source-map-lookups", "maximum": 8, "rejectedCount": 0, "reason": null, "firstAffected": null },
+    { "name": "source-map-response-bytes", "maximum": 2097152, "rejectedCount": 0, "reason": null, "firstAffected": null }
+  ],
+  "callsiteCoverage": { "status": "complete", "incompleteReasons": [] },
   "firstGap": null
 }

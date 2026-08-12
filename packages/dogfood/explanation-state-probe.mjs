@@ -20,7 +20,11 @@ const failures = [];
 const checks = { servedCandidateBundle: false, publicApi: false, manualStop: false, manualArtifact: false, maxDuration: false, maxDurationArtifact: false, recordingActive: false, canvasUnavailable: false, deepCopy: false, jsonOnly: false };
 const explanations = { manual: null, maxDuration: null };
 const collectionLimits = { maxDurationMs: 10000, maxSelectedCanvases: 1, maxActiveWindows: 120, maxCommandEntries: 5000, maxArgumentsPerCommand: 20, maxValueTokens: 1024, maxStackSamples: 8, maxFramesPerStack: 20, maxSourceMapLookups: 8, maxSourceMapResponseBytes: 2097152 };
-const droppedEntryCounts = { activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 };
+const droppedEntryCounts = { durationStops: 0, selectedCanvasRejections: 0, activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 };
+const limitResults = [
+  ['duration-ms', 10000], ['selected-canvases', 1], ['active-windows', 120], ['command-entries', 5000], ['arguments-per-command', 20],
+  ['value-tokens', 1024], ['stack-samples', 8], ['frames-per-stack', 20], ['source-map-lookups', 8], ['source-map-response-bytes', 2097152],
+].map(([name, maximum]) => ({ name, maximum, rejectedCount: 0, reason: null, firstAffected: null }));
 
 const hasExactArtifact = ({ artifact, followUp, source, stopReason }) => artifact?.schemaVersion === 1 &&
   typeof artifact.explanationId === 'string' && artifact.explanationId.length > 0 &&
@@ -30,7 +34,9 @@ const hasExactArtifact = ({ artifact, followUp, source, stopReason }) => artifac
   artifact.source.findingType === source.session.findings[source.findingIndex].type && artifact.source.canvasId === source.session.findings[source.findingIndex].canvasId &&
   artifact.followUp.sessionId === followUp?.sessionId && artifact.followUp.canvasId === artifact.source.canvasId &&
   JSON.stringify(artifact.collectionLimits) === JSON.stringify(collectionLimits) &&
-  JSON.stringify(artifact.droppedEntryCounts) === JSON.stringify(droppedEntryCounts) &&
+  JSON.stringify(artifact.droppedEntryCounts) === JSON.stringify(stopReason === 'max-duration' ? { ...droppedEntryCounts, durationStops: 1 } : droppedEntryCounts) &&
+  JSON.stringify(artifact.limitResults) === JSON.stringify(stopReason === 'max-duration' ? [{ ...limitResults[0], rejectedCount: 1, reason: 'max-duration', firstAffected: { scope: 'explanation', windowIndex: null, commandOrdinal: null } }, ...limitResults.slice(1)] : limitResults) &&
+  JSON.stringify(artifact.callsiteCoverage) === JSON.stringify({ status: 'complete', incompleteReasons: [] }) &&
   Array.isArray(artifact.windows) && artifact.windows.length === 0 && Array.isArray(artifact.comparisons) && artifact.comparisons.length === 0 &&
   artifact.firstDifference === null && Array.isArray(artifact.stacks) && artifact.stacks.length === 0 && artifact.firstGap === null;
 

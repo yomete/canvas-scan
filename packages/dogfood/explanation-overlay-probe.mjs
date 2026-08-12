@@ -81,6 +81,13 @@ function shownChangedEvidence(artifact) {
   ];
   const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
   if (drops.length) expected.push(`Drops: ${drops.map(([name, value]) => `${name}=${value}`).join(' · ')}`);
+  expected.push('Explanation limits');
+  for (const limit of artifact.limitResults) {
+    const coordinate = limit.firstAffected ? `${limit.firstAffected.scope}:${limit.firstAffected.windowIndex ?? 'none'}:${limit.firstAffected.commandOrdinal ?? 'none'}` : 'none';
+    expected.push(`${limit.name}: maximum=${limit.maximum}, rejected=${limit.rejectedCount}, reason=${limit.reason ?? 'none'}, first=${coordinate}`);
+  }
+  expected.push(`Callsite coverage: ${artifact.callsiteCoverage.status}`);
+  if (artifact.callsiteCoverage.incompleteReasons.length) expected.push(`Callsite limits: ${artifact.callsiteCoverage.incompleteReasons.join(', ')}`);
   if (artifact.firstGap) expected.push(`First gap: window ${artifact.firstGap.windowIndex}, command ${artifact.firstGap.commandOrdinal ?? 'none'} (${artifact.firstGap.reason})`);
   return { difference, expected };
 }

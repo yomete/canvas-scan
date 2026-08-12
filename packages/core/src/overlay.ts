@@ -1164,7 +1164,14 @@ function updateExplanationPanel(): void {
     }
     appendExplanationLine(panel, `Limits: ${Object.entries(artifact.collectionLimits).map(([name, value]) => `${name}=${value}`).join(' · ')}`);
     const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
-    if (drops.length) appendExplanationLine(panel, `Drops: ${drops.map(([name, value]) => `${name}=${value}`).join(' · ')}`);
+    appendExplanationLine(panel, `Drops: ${drops.length ? drops.map(([name, value]) => `${name}=${value}`).join(' · ') : 'none'}`);
+    appendExplanationLine(panel, 'Explanation limits');
+    for (const limit of artifact.limitResults) {
+      const coordinate = limit.firstAffected ? `${limit.firstAffected.scope}:${limit.firstAffected.windowIndex ?? 'none'}:${limit.firstAffected.commandOrdinal ?? 'none'}` : 'none';
+      appendExplanationLine(panel, `${limit.name}: maximum=${limit.maximum}, rejected=${limit.rejectedCount}, reason=${limit.reason ?? 'none'}, first=${coordinate}`);
+    }
+    appendExplanationLine(panel, `Callsite coverage: ${artifact.callsiteCoverage.status}`);
+    if (artifact.callsiteCoverage.incompleteReasons.length) appendExplanationLine(panel, `Callsite limits: ${artifact.callsiteCoverage.incompleteReasons.join(', ')}`);
     if (artifact.firstGap) appendExplanationLine(panel, `First gap: window ${artifact.firstGap.windowIndex}, command ${artifact.firstGap.commandOrdinal ?? 'none'} (${artifact.firstGap.reason})`);
     const copy = document.createElement('button');
     copy.className = 'explanation-copy'; copy.type = 'button'; copy.dataset.action = 'copy-explanation'; copy.textContent = 'Copy explanation JSON';

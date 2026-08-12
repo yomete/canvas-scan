@@ -115,6 +115,7 @@ describe('command capture limits', () => {
     const result = finishCommandCapture(value, 3, 3);
     expect(result.windows[1].commands[0].arguments).toHaveLength(MAX_COMMAND_ARGUMENTS);
     expect(result.droppedEntryCounts.commandArguments).toBe(1);
+    expect(result.firstAffected.commandArguments).toEqual({ windowIndex: 2, commandOrdinal: 0 });
     expect(result.windows[1]).toMatchObject({ complete: false, unknownReason: 'argument-limit' });
     expect(result.firstGap).toEqual({ windowIndex: 1, commandOrdinal: 0, reason: 'sampling-gap' });
   });
@@ -128,8 +129,25 @@ describe('command capture limits', () => {
     expect(result.windows[1].commands[MAX_VALUE_TOKENS - 1].arguments[0].token).not.toBeNull();
     expect(result.windows[1].commands[MAX_VALUE_TOKENS].arguments[0].token).toBeNull();
     expect(result.droppedEntryCounts.valueTokens).toBe(1);
+    expect(result.firstAffected.valueTokens).toEqual({ windowIndex: 2, commandOrdinal: MAX_VALUE_TOKENS });
     expect(result.windows[1]).toMatchObject({ complete: false, unknownReason: 'value-token-limit' });
     expect(result.firstGap).toEqual({ windowIndex: 1, commandOrdinal: 0, reason: 'sampling-gap' });
+  });
+
+  it('records both coordinates when argument and value-token limits fail on one command', () => {
+    const value = capture();
+    captureBoundary(value, 1, 1, true, true);
+    for (let start = 0; start < MAX_VALUE_TOKENS; start += MAX_COMMAND_ARGUMENTS) {
+      captureCommand(value, 'call', 'save', Array.from({ length: Math.min(MAX_COMMAND_ARGUMENTS, MAX_VALUE_TOKENS - start) }, (_, index) => `value-${start + index}`), true);
+    }
+    captureCommand(value, 'call', 'save', Array.from({ length: MAX_COMMAND_ARGUMENTS + 1 }, (_, index) => `overflow-${index}`), true);
+    captureBoundary(value, 2, 2, true, true);
+    const result = finishCommandCapture(value, 3, 3);
+    expect(result.droppedEntryCounts.commandArguments).toBe(1);
+    expect(result.droppedEntryCounts.valueTokens).toBe(MAX_COMMAND_ARGUMENTS);
+    expect(result.firstAffected.commandArguments).toEqual({ windowIndex: 2, commandOrdinal: 52 });
+    expect(result.firstAffected.valueTokens).toEqual({ windowIndex: 2, commandOrdinal: 52 });
+    expect(result.windows[1].commands[52]).toMatchObject({ unknownReason: 'argument-limit' });
   });
 
   it('stores 5,000 commands and drops the first omitted command', () => {
@@ -141,6 +159,7 @@ describe('command capture limits', () => {
     expect(result.windows[1].commands).toHaveLength(MAX_COMMAND_ENTRIES);
     expect(result.windows[1].commands.at(-1)?.ordinal).toBe(MAX_COMMAND_ENTRIES - 1);
     expect(result.droppedEntryCounts.commandEntries).toBe(1);
+    expect(result.firstAffected.commandEntries).toEqual({ windowIndex: 2, commandOrdinal: MAX_COMMAND_ENTRIES });
     expect(result.windows[1]).toMatchObject({ complete: false, unknownReason: 'command-limit' });
     expect(result.firstGap).toEqual({ windowIndex: 1, commandOrdinal: 0, reason: 'sampling-gap' });
   });
@@ -151,6 +170,7 @@ describe('command capture limits', () => {
     const result = finishCommandCapture(value, MAX_ACTIVE_WINDOWS + 2, MAX_ACTIVE_WINDOWS + 2);
     expect(result.windows).toHaveLength(MAX_ACTIVE_WINDOWS);
     expect(result.droppedEntryCounts.activeWindows).toBe(1);
+    expect(result.firstAffected.activeWindows).toEqual({ windowIndex: MAX_ACTIVE_WINDOWS + 1, commandOrdinal: null });
     expect(result.firstGap).toEqual({ windowIndex: 1, commandOrdinal: 0, reason: 'sampling-gap' });
     expect(result.comparisons.at(-1)).toEqual({ referenceWindowIndex: MAX_ACTIVE_WINDOWS, targetWindowIndex: MAX_ACTIVE_WINDOWS + 1, status: 'unknown', difference: null, unknownReason: 'window-limit' });
   });
@@ -163,9 +183,33 @@ describe('command capture limits', () => {
     captureBoundary(value, 2, 2, true, true);
     const result = finishCommandCapture(value, 3, 3);
     expect(getCommandEntryAllocationCount()).toBe(0);
-    expect(result.droppedEntryCounts.commandEntries).toBe(1);
+    expect(result.droppedEntryCounts.commandEntries).toBe(0);
     expect(result.windows[1]).toMatchObject({ complete: false, unknownReason: 'sampling-gap' });
     expect(JSON.stringify(result)).not.toContain('private');
+  });
+
+  it('records no limit coordinate at every exact command boundary', () => {
+    const argumentsCapture = capture();
+    captureBoundary(argumentsCapture, 1, 1, true, true);
+    captureCommand(argumentsCapture, 'call', 'save', Array.from({ length: MAX_COMMAND_ARGUMENTS }), true);
+    captureBoundary(argumentsCapture, 2, 2, true, true);
+    expect(finishCommandCapture(argumentsCapture, 3, 3)).toMatchObject({ droppedEntryCounts: { commandArguments: 0 }, firstAffected: {} });
+
+    const tokenCapture = capture();
+    captureBoundary(tokenCapture, 1, 1, true, true);
+    for (let index = 0; index < MAX_VALUE_TOKENS; index++) captureCommand(tokenCapture, 'call', 'save', [`value-${index}`], true);
+    captureBoundary(tokenCapture, 2, 2, true, true);
+    expect(finishCommandCapture(tokenCapture, 3, 3)).toMatchObject({ droppedEntryCounts: { valueTokens: 0 }, firstAffected: {} });
+
+    const commandCapture = capture();
+    captureBoundary(commandCapture, 1, 1, true, true);
+    for (let index = 0; index < MAX_COMMAND_ENTRIES; index++) captureCommand(commandCapture, 'call', 'save', [], true);
+    captureBoundary(commandCapture, 2, 2, true, true);
+    expect(finishCommandCapture(commandCapture, 3, 3)).toMatchObject({ droppedEntryCounts: { commandEntries: 0 }, firstAffected: {} });
+
+    const windowCapture = capture();
+    for (let index = 1; index <= MAX_ACTIVE_WINDOWS; index++) captureBoundary(windowCapture, index, index, true, true);
+    expect(finishCommandCapture(windowCapture, MAX_ACTIVE_WINDOWS, MAX_ACTIVE_WINDOWS)).toMatchObject({ droppedEntryCounts: { activeWindows: 0 }, firstAffected: {} });
   });
 });
 

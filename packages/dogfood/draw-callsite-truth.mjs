@@ -21,7 +21,9 @@ const collectionLimits = {
   maxSourceMapLookups: 8,
   maxSourceMapResponseBytes: 2097152,
 };
-const dropKeys = ['activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups'];
+const dropKeys = ['durationStops', 'selectedCanvasRejections', 'activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups', 'sourceMapResponses'];
+const limitNames = ['duration-ms', 'selected-canvases', 'active-windows', 'command-entries', 'arguments-per-command', 'value-tokens', 'stack-samples', 'frames-per-stack', 'source-map-lookups', 'source-map-response-bytes'];
+const limitMaximums = [10000, 1, 120, 5000, 20, 1024, 8, 20, 8, 2097152];
 const causalCopy = /\b(?:cause|caused|responsible|waste|wasted|avoidable|same pixels|unchanged pixels)\b/i;
 function fail(message) { throw new Error(message); }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
@@ -79,7 +81,7 @@ function checkDifference(name, value) {
 
 export function checkArtifact(name, artifact, expected) {
   const row = rowFor(expected, name);
-  const artifactKeys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'firstGap'];
+  const artifactKeys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'];
   if (!sameKeys(artifact, artifactKeys) || artifact.schemaVersion !== 1 || typeof artifact.explanationId !== 'string' || typeof artifact.startedAt !== 'string' || typeof artifact.endedAt !== 'string' || !Number.isFinite(artifact.durationMs) || typeof artifact.stopReason !== 'string' || typeof artifact.canvasScanVersion !== 'string' || !Array.isArray(artifact.stacks) || !Array.isArray(artifact.windows) || !Array.isArray(artifact.comparisons)) fail(`${name}: artifact shape`);
   if (!sameKeys(artifact.source, ['sessionId', 'findingIndex', 'findingType', 'canvasId']) || !sameKeys(artifact.followUp, ['sessionId', 'canvasId'])) fail(`${name}: session shape`);
   if (!sameKeys(artifact.firstGap, ['windowIndex', 'commandOrdinal', 'reason']) || !Number.isInteger(artifact.firstGap.windowIndex) || !Number.isInteger(artifact.firstGap.commandOrdinal) || typeof artifact.firstGap.reason !== 'string') fail(`${name}: gap shape`);
@@ -95,6 +97,8 @@ export function checkArtifact(name, artifact, expected) {
   if (!sameKeys(artifact.collectionLimits, Object.keys(collectionLimits)) || Object.entries(collectionLimits).some(([key, value]) => artifact.collectionLimits[key] !== value)) fail(`${name}: collection limits`);
   if (!sameKeys(expected.expectedDroppedEntryCounts, dropKeys) || dropKeys.some(key => !Number.isInteger(expected.expectedDroppedEntryCounts[key]) || expected.expectedDroppedEntryCounts[key] < 0)) fail(`${name}: expected drop counts`);
   if (!sameKeys(artifact.droppedEntryCounts, dropKeys) || dropKeys.some(key => !Number.isInteger(artifact.droppedEntryCounts[key]) || artifact.droppedEntryCounts[key] !== expected.expectedDroppedEntryCounts[key])) fail(`${name}: drop counts`);
+  if (!Array.isArray(artifact.limitResults) || artifact.limitResults.length !== limitNames.length || artifact.limitResults.some((limit, index) => limit?.name !== limitNames[index] || limit.maximum !== limitMaximums[index] || !Number.isInteger(limit.rejectedCount) || limit.rejectedCount < 0 || (limit.rejectedCount === 0 && (limit.reason !== null || limit.firstAffected !== null)))) fail(`${name}: limit results`);
+  if (!artifact.callsiteCoverage || !['complete', 'incomplete'].includes(artifact.callsiteCoverage.status) || !Array.isArray(artifact.callsiteCoverage.incompleteReasons)) fail(`${name}: callsite coverage`);
   if (artifact.stacks.length > limits.maxStackSamples) fail(`${name}: sample limit`);
   const reasons = new Set(artifact.stacks.map(sample => sample.reason));
   if (!Array.isArray(row.expectedReasons) || row.expectedReasons.some(reason => !reasons.has(reason))) fail(`${name}: sample reasons`);

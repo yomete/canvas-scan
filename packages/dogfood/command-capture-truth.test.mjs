@@ -32,6 +32,12 @@ function commands(index, changed = false, unsupported = false) {
 function changedDifference(reference, target) {
   return { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, ordinal: 2, reason: 'argument-token', reference: reference.commands[2], target: target.commands[2] };
 }
+function emptyLimitResults() {
+  return [
+    ['duration-ms', 10000], ['selected-canvases', 1], ['active-windows', 120], ['command-entries', 5000], ['arguments-per-command', 20],
+    ['value-tokens', 1024], ['stack-samples', 8], ['frames-per-stack', 20], ['source-map-lookups', 8], ['source-map-response-bytes', 2097152],
+  ].map(([name, maximum]) => ({ name, maximum, rejectedCount: 0, reason: null, firstAffected: null }));
+}
 function artifact(name, index) {
   const resetOnly = name === 'reset-only-start';
   const unknown = ['unsupported-value', 'unsupported-gap', 'revoked-proxy'].includes(name);
@@ -60,7 +66,9 @@ function artifact(name, index) {
     firstDifference: changed ? comparisons[1].difference : null,
     stacks: [],
     collectionLimits: { ...limits },
-    droppedEntryCounts: { activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 },
+    droppedEntryCounts: { durationStops: 0, selectedCanvasRejections: 0, activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 },
+    limitResults: emptyLimitResults(),
+    callsiteCoverage: { status: 'complete', incompleteReasons: [] },
     firstGap: { windowIndex: 10, commandOrdinal: 0, reason: 'sampling-gap' },
   };
 }

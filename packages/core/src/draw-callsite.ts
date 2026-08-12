@@ -19,10 +19,14 @@ type Lookup = {
   mapRequested: boolean;
   done: boolean;
   result: SourceMapResult;
+  target: CommandWindowIdentity;
+  commandOrdinal: number;
 };
 type Capture = {
   stacks: ExplanationStackSample[];
-  dropped: { stackSamples: number; stackFrames: number; sourceMapLookups: number };
+  dropped: { stackSamples: number; stackFrames: number; sourceMapLookups: number; sourceMapResponses: number };
+  firstAffected: Partial<Record<'stackSamples' | 'stackFrames' | 'sourceMapLookups' | 'sourceMapResponses', { identity: CommandWindowIdentity; commandOrdinal: number; windowIndex: number }>>;
+  resolvedWindows: WeakMap<CommandWindowIdentity, number>;
   firstRaster: boolean;
   firstDifferences: Set<CommandWindowIdentity>;
   targets: Map<ExplanationStackSample, CommandWindowIdentity>;
@@ -34,6 +38,19 @@ type Capture = {
 type CaptureOptions = { locationHref?: string; fetch?: typeof fetch };
 
 const SOURCE_MAP_DIRECTIVE = /(?:\/\/[@#][ \t]+sourceMappingURL=([^\s'"]+?)[ \t]*$)|(?:\/\*[@#][ \t]+sourceMappingURL=([^*]+?)[ \t]*(?:\*\/)[ \t]*$)/m;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const defineProperty = Object.defineProperty;
+const deleteProperty = Reflect.deleteProperty;
+const apply = Reflect.apply;
+const createObject = Object.create;
+const globalErrorDescriptor = getOwnPropertyDescriptor(globalThis, 'Error');
+const globalError = globalErrorDescriptor && 'value' in globalErrorDescriptor && typeof globalErrorDescriptor.value === 'function' ? globalErrorDescriptor.value : null;
+const nativeErrorSource = globalError ? apply(Function.prototype.toString, globalError, []) === 'function Error() { [native code] }' : false;
+const StackError = nativeErrorSource ? globalError as ErrorConstructor : null;
+const captureStackTraceDescriptor = StackError ? getOwnPropertyDescriptor(StackError, 'captureStackTrace') : undefined;
+const nativeCaptureStackTrace = captureStackTraceDescriptor && 'value' in captureStackTraceDescriptor && typeof captureStackTraceDescriptor.value === 'function'
+  ? captureStackTraceDescriptor.value as (target: object, boundary?: (...args: unknown[]) => unknown) => void
+  : null;
 let stackAllocations = 0;
 let sourceMapLookups = 0;
 
@@ -91,6 +108,9 @@ function sourceMapReference(content: string): string | null {
 function markFailure(lookup: Lookup, reason: UnresolvedReason): void {
   if (!lookup.failure) lookup.failure = reason;
 }
+function firstAffected(capture: Capture, name: keyof Capture['firstAffected'], target: CommandWindowIdentity, commandOrdinal: number): void {
+  if (!capture.firstAffected[name]) capture.firstAffected[name] = { identity: target, commandOrdinal, windowIndex: capture.resolvedWindows.get(target) ?? -1 };
+}
 async function guardedFetch(capture: Capture, lookup: Lookup, value: string): Promise<Response> {
   const request = safeResourceUrl(value, capture.locationHref);
   if (!request) { markFailure(lookup, 'cross-origin-source-map'); throw new Error('unsafe source map resource'); }
@@ -109,6 +129,8 @@ async function guardedFetch(capture: Capture, lookup: Lookup, value: string): Pr
   if (!response.ok) markFailure(lookup, 'source-map-load-failed');
   const length = Number(response.headers.get('content-length'));
   if (Number.isFinite(length) && length > MAX_SOURCE_MAP_RESPONSE_BYTES) {
+    capture.dropped.sourceMapResponses++;
+    firstAffected(capture, 'sourceMapResponses', lookup.target, lookup.commandOrdinal);
     markFailure(lookup, 'source-map-too-large');
     throw new RangeError('source map response too large');
   }
@@ -116,6 +138,7 @@ async function guardedFetch(capture: Capture, lookup: Lookup, value: string): Pr
   try { bytes = await response.arrayBuffer(); }
   catch (error) { markFailure(lookup, 'source-map-load-failed'); throw error; }
   if (bytes.byteLength > MAX_SOURCE_MAP_RESPONSE_BYTES) {
+    if (lookup.failure !== 'source-map-too-large') { capture.dropped.sourceMapResponses++; firstAffected(capture, 'sourceMapResponses', lookup.target, lookup.commandOrdinal); }
     markFailure(lookup, 'source-map-too-large');
     throw new RangeError('source map response too large');
   }
@@ -155,16 +178,16 @@ function applyLookup(pending: PendingFrame, lookup: Lookup): void {
     pending.frame.unresolvedReason = null;
   } catch { pending.frame.unresolvedReason = 'source-map-parse-failed'; }
 }
-function addFrame(capture: Capture, frame: ExplanationStackFrame, file: string, line: number, column: number): void {
+function addFrame(capture: Capture, frame: ExplanationStackFrame, file: string, line: number, column: number, target: CommandWindowIdentity, commandOrdinal: number): void {
   const url = safeResourceUrl(file, capture.locationHref);
   if (!url) { frame.unresolvedReason = parsedHttpUrl(file, capture.locationHref) ? 'cross-origin-source-map' : 'mapping-missing'; return; }
   url.hash = '';
   const key = url.href;
   let lookup = capture.lookups.get(key);
   if (!lookup) {
-    if (capture.lookups.size >= MAX_SOURCE_MAP_LOOKUPS) { capture.dropped.sourceMapLookups++; frame.unresolvedReason = 'mapping-missing'; return; }
+    if (capture.lookups.size >= MAX_SOURCE_MAP_LOOKUPS) { capture.dropped.sourceMapLookups++; firstAffected(capture, 'sourceMapLookups', target, commandOrdinal); frame.unresolvedReason = 'source-map-lookup-limit'; return; }
     sourceMapLookups++;
-    lookup = { frames: [], work: Promise.resolve(), failure: null, declaredMap: false, mapRequested: false, done: false, result: null };
+    lookup = { frames: [], work: Promise.resolve(), failure: null, declaredMap: false, mapRequested: false, done: false, result: null, target, commandOrdinal };
     capture.lookups.set(key, lookup);
     lookup.frames.push({ frame, line, column });
     lookup.work = resolveLookup(capture, key, lookup);
@@ -178,43 +201,78 @@ function internalFrame(item: { fileName?: string | null }): boolean {
   const file = item.fileName?.toLowerCase() ?? '';
   return file.includes('draw-callsite') || file.includes('wrap-context');
 }
+function automaticStack(stackBoundary?: (...args: unknown[]) => unknown): { rawStack: string; bounded: boolean } {
+  if (!StackError || !nativeCaptureStackTrace) return { rawStack: '', bounded: false };
+  const currentError = getOwnPropertyDescriptor(globalThis, 'Error');
+  if (!currentError || !('value' in currentError) || currentError.value !== StackError) return { rawStack: '', bounded: false };
+  const prepareStackTrace = getOwnPropertyDescriptor(StackError, 'prepareStackTrace');
+  const canMask = !prepareStackTrace || prepareStackTrace.configurable || ('value' in prepareStackTrace && prepareStackTrace.writable);
+  if (!canMask) return { rawStack: '', bounded: false };
+  try {
+    defineProperty(StackError, 'prepareStackTrace', {
+      configurable: prepareStackTrace?.configurable ?? true,
+      enumerable: prepareStackTrace?.enumerable ?? false,
+      value: undefined,
+      writable: true,
+    });
+  } catch { return { rawStack: '', bounded: false }; }
+  let rawStack = '';
+  let bounded = false;
+  let restored = true;
+  try {
+    const error = createObject(null) as { stack?: unknown };
+    defineProperty(error, 'name', { configurable: true, value: 'Error' });
+    defineProperty(error, 'message', { configurable: true, value: '' });
+    apply(nativeCaptureStackTrace, StackError, stackBoundary ? [error, stackBoundary] : [error]);
+    bounded = Boolean(stackBoundary);
+    const stack = getOwnPropertyDescriptor(error, 'stack');
+    const value = stack && ('value' in stack ? stack.value : typeof stack.get === 'function' ? apply(stack.get, error, []) : undefined);
+    if (typeof value === 'string') rawStack = value;
+  } catch { rawStack = ''; bounded = false; }
+  finally {
+    try {
+      if (prepareStackTrace) defineProperty(StackError, 'prepareStackTrace', prepareStackTrace);
+      else restored = deleteProperty(StackError, 'prepareStackTrace');
+    } catch { restored = false; }
+  }
+  return restored ? { rawStack, bounded } : { rawStack: '', bounded: false };
+}
 
 export function createDrawCallsiteCapture(options: CaptureOptions = {}): Capture {
   const locationHref = options.locationHref ?? (typeof location === 'undefined' ? 'http://localhost/' : location.href);
   const captureFetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  return { stacks: [], dropped: { stackSamples: 0, stackFrames: 0, sourceMapLookups: 0 }, firstRaster: false, firstDifferences: new Set(), targets: new Map(), lookups: new Map(), locationHref, fetch: captureFetch, active: true };
+  return { stacks: [], dropped: { stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 }, firstAffected: {}, resolvedWindows: new WeakMap(), firstRaster: false, firstDifferences: new Set(), targets: new Map(), lookups: new Map(), locationHref, fetch: captureFetch, active: true };
 }
 export function captureDrawCallsite(capture: Capture, target: CommandWindowIdentity, commandOrdinal: number, reasons: Reason[], rawStack?: string, stackBoundary?: (...args: unknown[]) => unknown): void {
   if (!capture.active) return;
   const unique = reasons.filter((reason, index) => reasons.indexOf(reason) === index);
   const allowed = unique.slice(0, Math.max(0, MAX_STACK_SAMPLES - capture.stacks.length));
   capture.dropped.stackSamples += unique.length - allowed.length;
+  if (unique.length > allowed.length) firstAffected(capture, 'stackSamples', target, commandOrdinal);
   if (!allowed.length) return;
   stackAllocations++;
-  const error = rawStack === undefined ? new Error() : null;
-  const captureStackTrace = (Error as ErrorConstructor & { captureStackTrace?: (target: Error, boundary?: (...args: unknown[]) => unknown) => void }).captureStackTrace;
-  let bounded = false;
-  if (error && stackBoundary && typeof captureStackTrace === 'function') {
-    captureStackTrace(error, stackBoundary);
-    bounded = true;
-  }
-  const parsed = parseStack(rawStack ?? error?.stack ?? '', { includeInElement: false });
+  const automatic = rawStack === undefined ? automaticStack(stackBoundary) : null;
+  const parsed = parseStack(rawStack ?? automatic?.rawStack ?? '', { includeInElement: false });
+  const bounded = automatic?.bounded ?? false;
   const kept = bounded ? parsed : parsed.filter(item => !internalFrame(item));
   for (const reason of allowed) {
     const sample: ExplanationStackSample = { windowIndex: -1, commandOrdinal, reason, frames: [], droppedFrameCount: Math.max(0, kept.length - MAX_FRAMES_PER_STACK) };
     capture.dropped.stackFrames += sample.droppedFrameCount;
+    if (sample.droppedFrameCount) firstAffected(capture, 'stackFrames', target, commandOrdinal);
     for (const item of kept.slice(0, MAX_FRAMES_PER_STACK)) {
       const generated = generatedLocation(item.fileName ?? '', item.lineNumber, item.columnNumber, capture.locationHref);
       const frame = unresolved(item.functionName, generated, generated ? 'source-map-load-failed' : 'mapping-missing');
       sample.frames.push(frame);
-      if (generated && typeof item.fileName === 'string') addFrame(capture, frame, item.fileName, generated.line, generated.column);
+      if (generated && typeof item.fileName === 'string') addFrame(capture, frame, item.fileName, generated.line, generated.column, target, commandOrdinal);
     }
     capture.targets.set(sample, target);
     capture.stacks.push(sample);
   }
 }
 export function resolveDrawCallsiteBoundary(capture: Capture, identity: CommandWindowIdentity, windowIndex: number): void {
+  capture.resolvedWindows.set(identity, windowIndex);
   for (const [sample, target] of capture.targets) if (target === identity) { sample.windowIndex = windowIndex; capture.targets.delete(sample); }
+  for (const value of Object.values(capture.firstAffected)) if (value?.identity === identity) value.windowIndex = windowIndex;
 }
 export function shouldCaptureFirstRaster(capture: Capture): boolean {
   if (capture.firstRaster) return false;
@@ -230,14 +288,14 @@ function dropPendingSamples(capture: Capture): void {
   if (!capture.targets.size) return;
   const pending = new Set(capture.targets.keys());
   capture.stacks = capture.stacks.filter(sample => !pending.has(sample));
-  capture.dropped.stackSamples += pending.size;
   capture.targets.clear();
 }
 export function finishDrawCallsiteCapture(capture: Capture) {
   capture.active = false;
   capture.lookups.clear();
   dropPendingSamples(capture);
-  return { stacks: JSON.parse(JSON.stringify(capture.stacks)) as ExplanationStackSample[], droppedEntryCounts: { ...capture.dropped } };
+  const first = Object.fromEntries(Object.entries(capture.firstAffected).map(([name, value]) => [name, value && value.windowIndex >= 0 ? { windowIndex: value.windowIndex, commandOrdinal: value.commandOrdinal } : null]));
+  return { stacks: JSON.parse(JSON.stringify(capture.stacks)) as ExplanationStackSample[], droppedEntryCounts: { ...capture.dropped }, firstAffected: first };
 }
 export function disableDrawCallsiteCapture(capture: Capture): void {
   capture.active = false;
