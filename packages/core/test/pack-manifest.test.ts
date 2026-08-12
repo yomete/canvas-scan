@@ -74,14 +74,14 @@ describe('packed version rules', () => {
 });
 
 describe('public package rules', () => {
-  const api = 'export { start, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation };';
-  const iife = 'window.__CANVAS_SCAN__={startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation};';
+  const api = 'export { start, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
+  const iife = 'window.__CANVAS_SCAN__={startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
 
   it('accepts every required public operation', () => {
     expect(() => assertPublicContract({ runtime: api, declarations: api, iife })).not.toThrow();
   });
 
-  it.each(['startExplanation', 'stopExplanation', 'getLastExplanation'])('rejects %s from every packed surface', (operation) => {
+  it.each(['startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'])('rejects %s from every packed surface', (operation) => {
     expect(() => assertPublicContract({ runtime: api.replace(operation, ''), declarations: api, iife })).toThrow(new RegExp(operation));
     expect(() => assertPublicContract({ runtime: api, declarations: api.replace(operation, ''), iife })).toThrow(new RegExp(operation));
     expect(() => assertPublicContract({ runtime: api, declarations: api, iife: iife.replace(operation, '') })).toThrow(new RegExp(operation));
@@ -94,7 +94,7 @@ describe('public package rules', () => {
   });
 
   it('rejects public names that exist but are not exported', () => {
-    const unexported = 'const start = startRecording = stopRecording = getLastSession = mark = startExplanation = stopExplanation = getLastExplanation = () => {}; export {};';
+    const unexported = 'const start = startRecording = stopRecording = getLastSession = mark = startExplanation = stopExplanation = getLastExplanation = compareSessions = () => {}; export {};';
     expect(() => assertPublicContract({ runtime: unexported, declarations: api, iife })).toThrow(/missing ESM/);
     expect(() => assertPublicContract({ runtime: api, declarations: unexported, iife })).toThrow(/missing ESM/);
   });

@@ -378,6 +378,68 @@ export interface InvestigationSessionV1 {
   droppedEntryCounts: { canvasWindowReports: number; canvasLifetimes: number; resetEvents: number; lifecycleEvents: number; documentEvents: number; eventTiming: number; userMarks: number; longAnimationFrames: number };
 }
 
+export interface SessionFindingPairing {
+  baselineFindingIndex: number;
+  candidateFindingIndex: number;
+}
+
+export type ComparisonMeasureId =
+  | 'active-window-count'
+  | 'raster-operation-count'
+  | 'canvas-api-self-time-ms'
+  | 'maximum-window-self-time-ms'
+  | 'unknown-command-window-count'
+  | 'heavy-episode-operation-count'
+  | 'heavy-episode-self-time-ms'
+  | 'repeated-window-count'
+  | 'repeated-raster-operation-count'
+  | 'comparison-gap-count'
+  | 'active-reset-count'
+  | 'observed-reset-count'
+  | 'affected-episode-count'
+  | 'same-command-window-count'
+  | 'changed-command-window-count'
+  | 'affected-backing-window-count'
+  | 'maximum-backing-area-ratio'
+  | `method:${string}:operation-count`
+  | `method:${string}:self-time-ms`;
+
+export interface ComparisonMeasure {
+  id: ComparisonMeasureId;
+  unit: 'count' | 'ms' | 'ratio';
+  baseline: number | null;
+  candidate: number | null;
+  delta: number | null;
+  direction: 'increased' | 'decreased' | 'unchanged' | 'unknown';
+  interpretation: 'structural' | 'observed-timing-pair';
+}
+
+export interface ComparisonFindingRef {
+  sessionId: string;
+  findingIndex: number;
+  findingType: InvestigationFinding['type'] | null;
+  canvasId: string | null;
+}
+
+export interface ComparisonArtifactV1 {
+  schemaVersion: 1;
+  comparisonId: string;
+  createdAt: string;
+  canvasScanVersion: string;
+  pairingMethod: 'user-selected';
+  baseline: ComparisonFindingRef;
+  candidate: ComparisonFindingRef;
+  status: 'comparable' | 'incomparable';
+  incomparableReasons: Array<
+    | 'finding-not-found'
+    | 'finding-type-mismatch'
+    | 'unsupported-schema'
+    | 'incomplete-evidence'
+  >;
+  measures: ComparisonMeasure[];
+  improvementEstablished: false;
+}
+
 export interface ExplanationArtifactV1 {
   schemaVersion: 1;
   explanationId: string;

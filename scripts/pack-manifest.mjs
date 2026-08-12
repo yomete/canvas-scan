@@ -56,7 +56,7 @@ export function assertPackedVersion(sources, version) {
   }
 }
 
-const publicOperations = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation'];
+const publicOperations = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
 const labMarkers = ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth'];
 
 function exportedNames(source) {

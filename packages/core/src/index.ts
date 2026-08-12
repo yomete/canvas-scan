@@ -7,6 +7,7 @@ import {
   startFrameLoop,
 } from './frame-loop';
 import { mountOverlay } from './overlay';
+import { compareSessions } from './comparison';
 import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';
 import type {
   CanvasScanOptions,
@@ -45,6 +46,7 @@ export function start(options: CanvasScanOptions = {}): void {
     startExplanation,
     stopExplanation,
     getLastExplanation,
+    compareSessions,
   };
 }
 
@@ -93,6 +95,12 @@ export type {
   ExplanationStackFrame,
   ExplanationStackSample,
   ExplanationArtifactV1,
+  SessionFindingPairing,
+  ComparisonMeasureId,
+  ComparisonMeasure,
+  ComparisonFindingRef,
+  ComparisonArtifactV1,
 } from './types';
 
 export { getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';
+export { compareSessions } from './comparison';
