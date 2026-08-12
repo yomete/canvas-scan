@@ -298,9 +298,10 @@ export function startFrameLoop(options: CanvasScanOptions): void {
   const captureEvery = options.captureEvery ?? 1;
   setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
-  const tick = (timestampMs: number) => {
+  const tick = () => {
+    const observedAtTimestampMs = performance.now();
     const recordedStart = recordingWindowStartTimestampMs;
-    if (recordedStart !== undefined) recordingWindowStartTimestampMs = timestampMs;
+    if (recordedStart !== undefined) recordingWindowStartTimestampMs = observedAtTimestampMs;
     windowIndex++;
     drainAttributeRecords();
 
@@ -314,7 +315,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       }
       record.lastConnected = connected;
       const hadActivity = record.activeInWindow;
-      notifySelectedCommandBoundary(record, windowIndex, timestampMs, hadActivity, windowIndex % captureEvery === 0);
+      notifySelectedCommandBoundary(record, windowIndex, observedAtTimestampMs, hadActivity, windowIndex % captureEvery === 0);
       const processed = resetEventListeners.size === 0
         ? processRecord(record, windowIndex, captureEvery)
         : processRecordWithResetEvents(record, windowIndex, captureEvery, processedResetEvents);
@@ -331,7 +332,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
           canvasId: record.id,
           type: event.type,
           windowIndex,
-          timestampMs,
+          timestampMs: observedAtTimestampMs,
           connected: event.connected,
           activeRegistrySize: event.activeRegistrySize,
           evidenceLevel: 'measured',
@@ -339,7 +340,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       }
     }
     for (const event of lifecycleEvents) emitLifecycleEvent(event);
-    for (const event of processedResetEvents) emitResetEvent({ ...event, timestampMs });
+    for (const event of processedResetEvents) emitResetEvent({ ...event, timestampMs: observedAtTimestampMs });
 
     for (const [record, processed] of processedRecords) {
       latestReports.set(processed.report.canvasId, processed.report);
@@ -366,12 +367,12 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       }
       if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
       emitReport(processed.report, record.canvas, recordedStart === undefined
-        ? { windowIndex, timestampMs }
+        ? { windowIndex, timestampMs: observedAtTimestampMs }
         : {
             windowIndex,
-            timestampMs,
+            timestampMs: observedAtTimestampMs,
             startedAtTimestampMs: recordedStart,
-            endedAtTimestampMs: timestampMs,
+            endedAtTimestampMs: observedAtTimestampMs,
           });
     }
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);

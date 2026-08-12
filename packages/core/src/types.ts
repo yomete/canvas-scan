@@ -131,8 +131,11 @@ export interface ExplanationStackSample {
 
 export interface RecordedCanvasWindow extends DrawBatchReport {
   windowIndex: number;
+  /** Monotonic time when the frame loop observed and closed this window. */
   timestampMs: number;
+  /** The prior recorder observation boundary, or the recording start for the first window. */
   startedAtTimestampMs: number;
+  /** The monotonic frame-loop observation time after this window's canvas work. */
   endedAtTimestampMs: number;
   geometry: RecordedCanvasGeometry;
 }

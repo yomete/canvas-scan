@@ -143,20 +143,41 @@ describe('recording', () => {
     const record = makeLoopRecord(); records.add(record);
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     try {
-      startRecording(); startFrameLoop({}); callbacks.shift()!(10);
+      startRecording(); startFrameLoop({}); clock = 10; callbacks.shift()!(1);
       expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 1, endedAtTimestampMs: 10 });
-      record.activeInWindow = true; callbacks.shift()!(20);
-      clock = 30; startRecording(); record.activeInWindow = true; callbacks.shift()!(40);
+      clock = 20; record.activeInWindow = true; callbacks.shift()!(2);
+      clock = 30; startRecording(); clock = 40; record.activeInWindow = true; callbacks.shift()!(3);
       expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 30, endedAtTimestampMs: 40 });
-      clock = 50; startRecording(); resetRecordingForTests(); record.activeInWindow = true; callbacks.shift()!(60);
-      clock = 70; startRecording(); record.activeInWindow = true; callbacks.shift()!(80);
+      clock = 50; startRecording(); resetRecordingForTests(); clock = 60; record.activeInWindow = true; callbacks.shift()!(4);
+      clock = 70; startRecording(); clock = 80; record.activeInWindow = true; callbacks.shift()!(5);
       expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 70, endedAtTimestampMs: 80 });
       vi.useFakeTimers(); vi.spyOn(performance, 'now').mockImplementation(() => clock);
       clock = 90; startRecording(); vi.advanceTimersByTime(30000);
       expect(getLastSession()?.stopReason).toBe('max-duration');
-      record.activeInWindow = true; callbacks.shift()!(100);
-      clock = 110; startRecording(); record.activeInWindow = true; callbacks.shift()!(120);
+      clock = 100; record.activeInWindow = true; callbacks.shift()!(6);
+      clock = 110; startRecording(); clock = 120; record.activeInWindow = true; callbacks.shift()!(7);
       expect(stopRecording()!.windows[0]).toMatchObject({ startedAtTimestampMs: 110, endedAtTimestampMs: 120 });
+    } finally {
+      records.delete(record);
+      latestReports.delete(record.id);
+      debug.mockRestore();
+    }
+  });
+
+  it('ends a recorded window when the frame loop observes it, not at an older animation-frame timestamp', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('window', { requestAnimationFrame: (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; } });
+    let clock = 100; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const record = makeLoopRecord(); record.id = 'observation-time'; record.activeInWindow = false; records.add(record);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      startRecording(); startFrameLoop({});
+      const interactionStartedAt = 110;
+      clock = interactionStartedAt; record.activeInWindow = true; record.rasterOps = 1;
+      clock = 120; callbacks.shift()!(90);
+      const window = stopRecording()!.windows[0];
+      expect(window).toMatchObject({ startedAtTimestampMs: 100, endedAtTimestampMs: 120 });
+      expect(window.endedAtTimestampMs).toBeGreaterThanOrEqual(interactionStartedAt);
     } finally {
       records.delete(record);
       latestReports.delete(record.id);
