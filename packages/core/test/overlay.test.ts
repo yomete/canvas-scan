@@ -101,7 +101,7 @@ function refreshOverlay(): void {
 
 function explanationRecord(id: string): CanvasRecord {
   return {
-    canvas: {}, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+    canvas: makeCanvas(), contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
     id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
     activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
     matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
@@ -1958,27 +1958,36 @@ describe('overlay explanation action', () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     mountOverlay();
-    const canvas = makeCanvas();
+    const { canvas, record } = explanationCanvas('explain-selected');
     startRecording();
-    emitReport(makeReport({ canvasId: 'explain-selected', rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
     stopRecording();
+    records.delete(record);
+    record.retired = true;
     refreshOverlay();
     const root = getShadowRoot();
     const action = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+    const sourceSessionId = getLastSession()!.sessionId;
+    expect(root.querySelectorAll('.explanation-action')).toHaveLength(1);
+    expect(action.hidden).toBe(false);
     expect(action.textContent).toBe('Explain next interaction');
-    expect(action.dataset.sessionId).toBe(getLastSession()?.sessionId);
+    expect(action.dataset.sessionId).toBe(sourceSessionId);
     expect(action.dataset.findingIndex).toBe('0');
-    records.add(explanationRecord('explain-selected'));
     action.click();
     refreshOverlay();
     expect(getRecordingState()).toBe('recording');
     expect(root.querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Repeat the interaction now. Capture stops after 10 seconds.');
     expect(action.getAttribute('aria-pressed')).toBe('true');
     root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
     refreshOverlay();
     expect(action.getAttribute('aria-pressed')).toBe('false');
     expect(root.querySelector('.explanation-panel')?.textContent).toContain('Command result: unknown');
     expect(root.querySelector('.explanation-panel')?.textContent).toContain('missing-reference');
+    expect(getLastExplanation()).toMatchObject({
+      source: { sessionId: sourceSessionId, findingIndex: 0, canvasId: record.id },
+      followUp: { canvasId: record.id },
+    });
     const copy = root.querySelector<HTMLButtonElement>('.explanation-copy')!;
     copy.click();
     await Promise.resolve();
@@ -2011,7 +2020,7 @@ describe('overlay explanation action', () => {
     expect(copyStatus.textContent).toBe('Copy failed');
 
     startRecording();
-    emitReport(makeReport({ canvasId: 'explain-selected', rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
     stopRecording();
     refreshOverlay();
     expect(root.querySelector('.explanation-panel')?.textContent).not.toContain('EXPLANATION COMPLETE');

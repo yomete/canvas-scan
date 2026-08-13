@@ -58,7 +58,7 @@ const report = (canvasId: string): DrawBatchReport => ({
 });
 
 const record = (id: string): CanvasRecord => ({
-  canvas: {}, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+  canvas: { isConnected: true }, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
   id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
   activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
   matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
@@ -74,11 +74,27 @@ function completeSource(canvasId = 'source-canvas') {
   return stopRecording()!;
 }
 
+function completeSourceForCanvas(canvas: ExplanationCanvas, sourceRecord: CanvasRecord) {
+  startRecording();
+  emitReport(report(sourceRecord.id), canvas, { windowIndex: getCurrentWindowIndex() + 1, timestampMs: 1 });
+  emitReport(report(sourceRecord.id), canvas, { windowIndex: getCurrentWindowIndex() + 2, timestampMs: 2 });
+  return stopRecording()!;
+}
+
 function completeTwoSources() {
   startRecording();
   for (const windowIndex of [getCurrentWindowIndex() + 1, getCurrentWindowIndex() + 2]) {
     emitReport(report('source-a'), {}, { windowIndex, timestampMs: windowIndex });
     emitReport(report('source-b'), {}, { windowIndex, timestampMs: windowIndex });
+  }
+  return stopRecording()!;
+}
+
+function completeTwoCanvasSources(first: ExplanationCanvas, firstRecord: CanvasRecord, second: ExplanationCanvas, secondRecord: CanvasRecord) {
+  startRecording();
+  for (const windowIndex of [getCurrentWindowIndex() + 1, getCurrentWindowIndex() + 2]) {
+    emitReport(report(firstRecord.id), first, { windowIndex, timestampMs: windowIndex });
+    emitReport(report(secondRecord.id), second, { windowIndex, timestampMs: windowIndex });
   }
   return stopRecording()!;
 }
@@ -136,6 +152,128 @@ describe('explanation state', () => {
     expect(secondRead.collectionLimits.maxDurationMs).toBe(10000);
     expect(secondRead.droppedEntryCounts.commandEntries).toBe(0);
     expect(stopExplanation()).toBeUndefined();
+  });
+
+  it('starts a completed finding from its connected retired record', () => {
+    const canvas = new ExplanationCanvas();
+    canvas.getContext('2d');
+    const sourceRecord = getRecord(canvas)!;
+    const source = completeSourceForCanvas(canvas, sourceRecord);
+    records.delete(sourceRecord);
+    sourceRecord.retired = true;
+
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'started' });
+    expect(records.has(sourceRecord)).toBe(true);
+    expect(getRecord(canvas)).toBe(sourceRecord);
+    expect(records.size).toBe(1);
+
+    const artifact = stopExplanation()!;
+    expect(artifact).toMatchObject({
+      source: { sessionId: source.sessionId, findingIndex: 0, findingType: source.findings[0].type, canvasId: sourceRecord.id },
+      followUp: { canvasId: sourceRecord.id },
+      collectionLimits: { maxDurationMs: 10000 },
+    });
+  });
+
+  it('rejects disconnected and replacement canvases for a completed finding', () => {
+    const canvas = new ExplanationCanvas();
+    canvas.getContext('2d');
+    const sourceRecord = getRecord(canvas)!;
+    const source = completeSourceForCanvas(canvas, sourceRecord);
+    records.delete(sourceRecord);
+    sourceRecord.retired = true;
+    canvas.isConnected = false;
+
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'canvas-unavailable' });
+    expect(getRecordingState()).toBe('complete');
+    expect(getLastExplanation()).toBeUndefined();
+
+    const replacement = new ExplanationCanvas();
+    replacement.id = canvas.id;
+    replacement.getContext('2d');
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'canvas-unavailable' });
+    expect(getRecordingState()).toBe('complete');
+    expect(getLastExplanation()).toBeUndefined();
+  });
+
+  it('rejects a disconnected active fallback record without reactivating it', () => {
+    const source = completeSource();
+    const detached = record(source.findings[0].canvasId);
+    detached.canvas = { isConnected: false };
+    detached.retired = true;
+    records.add(detached);
+
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'canvas-unavailable' });
+    expect(records.has(detached)).toBe(true);
+    expect(detached.retired).toBe(true);
+  });
+
+  it('rejects an active fallback record without connected canvas evidence', () => {
+    const source = completeSource();
+    const unavailable = record(source.findings[0].canvasId);
+    unavailable.canvas = {};
+    records.add(unavailable);
+
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'canvas-unavailable' });
+    expect(getRecordingState()).toBe('complete');
+  });
+
+  it('does not count a detached mapped alternative against the selected canvas limit', () => {
+    const first = new ExplanationCanvas(); first.getContext('2d');
+    const second = new ExplanationCanvas(); second.getContext('2d');
+    const firstRecord = getRecord(first)!;
+    const secondRecord = getRecord(second)!;
+    const source = completeTwoCanvasSources(first, firstRecord, second, secondRecord);
+    records.delete(firstRecord); firstRecord.retired = true;
+    records.delete(secondRecord); secondRecord.retired = true; second.isConnected = false;
+    const firstIndex = source.findings.findIndex(finding => finding.canvasId === firstRecord.id);
+    const secondIndex = source.findings.findIndex(finding => finding.canvasId === secondRecord.id);
+
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: firstIndex })).toEqual({ status: 'started' });
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: secondIndex })).toEqual({ status: 'already-active' });
+    expect(stopExplanation()).toMatchObject({ droppedEntryCounts: { selectedCanvasRejections: 0 } });
+  });
+
+  it('keeps only retained canvas identities for a capped completed session', () => {
+    const canvases = Array.from({ length: 129 }, () => new ExplanationCanvas());
+    const canvasRecords = canvases.map(canvas => { canvas.getContext('2d'); return getRecord(canvas)!; });
+    startRecording();
+    for (const [index, canvas] of canvases.entries()) {
+      const sourceRecord = canvasRecords[index];
+      emitReport(report(sourceRecord.id), canvas, { windowIndex: getCurrentWindowIndex() + index + 1, timestampMs: index + 1 });
+    }
+    const retained = canvasRecords.at(-1)!;
+    emitReport(report(retained.id), canvases.at(-1)!, { windowIndex: getCurrentWindowIndex() + 130, timestampMs: 130 });
+    const source = stopRecording()!;
+    const retainedIndex = source.findings.findIndex(finding => finding.canvasId === retained.id);
+
+    expect(source.canvases.some(canvas => canvas.canvasId === canvasRecords[0].id)).toBe(false);
+    expect(source.findings.some(finding => finding.canvasId === canvasRecords[0].id)).toBe(false);
+    expect(retainedIndex).toBeGreaterThanOrEqual(0);
+    records.delete(retained); retained.retired = true;
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex: retainedIndex })).toEqual({ status: 'started' });
+    stopExplanation();
+  });
+
+  it('keeps a renewed canvas identity when window eviction removes its old window', () => {
+    const renewedCanvas = new ExplanationCanvas(); renewedCanvas.getContext('2d');
+    const otherCanvas = new ExplanationCanvas(); otherCanvas.getContext('2d');
+    const renewedRecord = getRecord(renewedCanvas)!;
+    const otherRecord = getRecord(otherCanvas)!;
+    const firstWindowIndex = getCurrentWindowIndex() + 1;
+    startRecording();
+    emitReport(report(renewedRecord.id), renewedCanvas, { windowIndex: firstWindowIndex, timestampMs: 1 });
+    for (let index = 0; index < 9999; index++) {
+      emitReport(report(otherRecord.id), otherCanvas, { windowIndex: firstWindowIndex + index + 1, timestampMs: index + 2 });
+    }
+    emitReport(report(renewedRecord.id), renewedCanvas, { windowIndex: firstWindowIndex + 10000, timestampMs: 10001 });
+    const source = stopRecording()!;
+    const findingIndex = source.findings.findIndex(finding => finding.canvasId === renewedRecord.id);
+
+    expect(findingIndex).toBeGreaterThanOrEqual(0);
+    records.delete(renewedRecord); renewedRecord.retired = true;
+    expect(startExplanation({ sessionId: source.sessionId, findingIndex })).toEqual({ status: 'started' });
+    stopExplanation();
   });
 
   it('deep-copies nested command windows, comparisons, and first differences', () => {

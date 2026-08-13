@@ -1,5 +1,5 @@
 import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
-import { drainAttributeRecords, isKilled, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
+import { drainAttributeRecords, getConnectionState, getRecord, isKilled, reactivateRecord, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
 import { collectCanvasGeometry } from './geometry';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
 import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture';
@@ -81,6 +81,8 @@ let droppedLifecycleEvents = 0;
 let sequence = 0;
 let explanationSequence = 0;
 let lastExplanation: ExplanationArtifactV1 | undefined;
+let recordsForCompletedSession = new Map<string, CanvasRecord>();
+let recordsForRecordingSession = new Map<string, CanvasRecord>();
 let activeExplanation: {
   explanationId: string;
   sessionId: string;
@@ -202,6 +204,7 @@ function notify(): void {
 
 function removeCanvas(canvasId: string): void {
   canvasIds = canvasIds.filter(id => id !== canvasId);
+  recordsForRecordingSession.delete(canvasId);
   const kept: RecordedCanvasWindow[] = [];
   for (const window of windows) {
     if (window.canvasId === canvasId) droppedWindows++;
@@ -225,6 +228,7 @@ function removeCanvas(canvasId: string): void {
 function removeCanvasIfEmpty(canvasId: string): void {
   if (windows.some(window => window.canvasId === canvasId) || resetEvents.some(event => event.canvasId === canvasId) || lifecycleEvents.some(event => event.canvasId === canvasId)) return;
   canvasIds = canvasIds.filter(id => id !== canvasId);
+  recordsForRecordingSession.delete(canvasId);
 }
 
 function retainCanvas(canvasId: string): void {
@@ -465,6 +469,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
+  recordsForCompletedSession = recordsForRecordingSession;
   if (explanation) {
     const durationStops = stopReason === 'max-duration' ? 1 : 0;
     const limits = explanationLimits(detail!, callsites!, durationStops, explanation.selectedCanvasRejections);
@@ -537,6 +542,7 @@ function startRecordingWithDuration(durationMs: number): void {
   episodeAssociations = [];
   browserFeatures = startBrowserEvidence(startedMonotonic);
   browserDropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
+  recordsForRecordingSession = new Map();
   unsubscribe = subscribeToReports((report, canvas, metadata) => {
     if (!metadata) return;
     if (metadata.windowIndex <= recordingStartWindowIndex) return;
@@ -548,6 +554,8 @@ function startRecordingWithDuration(durationMs: number): void {
       copied.canvasApiSelfTimeMs = rounded(Math.max(0, copied.canvasApiSelfTimeMs - offset.canvasApiSelfTimeMs));
     }
     capture({ ...copied, ...metadata, startedAtTimestampMs: metadata.startedAtTimestampMs ?? metadata.timestampMs, endedAtTimestampMs: metadata.endedAtTimestampMs ?? metadata.timestampMs, geometry: collectCanvasGeometry(canvas) });
+    const record = getRecord(canvas);
+    if (record?.id === report.canvasId && canvasIds.includes(report.canvasId)) recordsForRecordingSession.set(report.canvasId, record);
   });
   unsubscribeResetEvents = subscribeToResetEvents(event => {
     if (state !== 'recording' || event.windowIndex <= recordingStartWindowIndex) return;
@@ -585,10 +593,13 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
   if (selection.sessionId !== lastSession.sessionId) return { status: 'unavailable', reason: 'session-mismatch' };
   if (!Number.isInteger(selection.findingIndex) || selection.findingIndex < 0 || selection.findingIndex >= lastSession.findings.length) return { status: 'unavailable', reason: 'finding-not-found' };
   const finding = lastSession.findings[selection.findingIndex];
-  const record = [...records].find(candidate => candidate.id === finding.canvasId);
+  const completedRecord = recordsForCompletedSession.get(finding.canvasId);
+  const record = completedRecord ?? [...records].find(candidate => candidate.id === finding.canvasId);
   if (!record) return { status: 'unavailable', reason: 'canvas-unavailable' };
+  if (!getConnectionState(record)) return { status: 'unavailable', reason: 'canvas-unavailable' };
   const capture = createCommandCapture();
   if (!capture) return { status: 'unavailable', reason: 'instrumentation-disabled' };
+  reactivateRecord(record);
   const callsites = createDrawCallsiteCapture();
   const started = new Date().toISOString();
   const unsubscribeDetail = subscribeToSelectedCommands(
@@ -620,7 +631,11 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
     callsites,
     unsubscribeDetail,
     selectedCanvasRejections: 0,
-    selectableFindingIndexes: new Set(lastSession.findings.flatMap((candidate, index) => [...records].some(item => item.id === candidate.canvasId) ? [index] : [])),
+    selectableFindingIndexes: new Set(lastSession.findings.flatMap((candidate, index) => {
+      const completedRecord = recordsForCompletedSession.get(candidate.canvasId);
+      const record = completedRecord ?? [...records].find(item => item.id === candidate.canvasId);
+      return record && getConnectionState(record) ? [index] : [];
+    })),
   };
   startRecordingWithDuration(EXPLANATION_MAX_DURATION_MS);
   return { status: 'started' };
@@ -655,6 +670,8 @@ export function resetRecordingForTests(): void {
   activeExplanation?.unsubscribeDetail();
   state = 'idle';
   lastSession = undefined;
+  recordsForCompletedSession.clear();
+  recordsForRecordingSession.clear();
   lastExplanation = undefined;
   activeExplanation = undefined;
   resetCommandCaptureForTests();
