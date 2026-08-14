@@ -1,6 +1,6 @@
 # canvas-scan
 
-`canvas-scan@0.4.0` is on npm.
+This source builds `canvas-scan@0.5.0`.
 
 canvas-scan is a drop-in Canvas2D investigation tool. It observes main-thread
 Canvas2D work. React owner data is optional attribution, not the product
