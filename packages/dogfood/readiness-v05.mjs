@@ -13,7 +13,7 @@ const defaultDirectory = '/private/tmp/sidproj-105-readiness-v05';
 const port = 5211;
 const origin = `http://127.0.0.1:${port}`;
 export const ACTION_IDS = ['early-load', 'record-baseline', 'explain-baseline', 'copy-explanation', 'keep-baseline', 'apply-change', 'record-candidate', 'pair-findings', 'copy-comparison'];
-const diagnosticKeys = ['warnings', 'errors', 'pageErrors', 'requestFailures'];
+const diagnosticKeys = ['warnings', 'errors', 'pageErrors', 'requestFailures', 'cleanupErrors'];
 const demoTruth = {
   baseline: { activeWindowCount: 8, clearRects: 8, fillRects: 32, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [4, 5] },
   candidate: { activeWindowCount: 8, clearRects: 8, fillRects: 16, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [2, 3] },
@@ -29,6 +29,133 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 const text = value => typeof value === 'string' && value.length > 0;
 const stable = value => `${JSON.stringify(value, null, 2)}\n`;
+const sessionKeys = ['schemaVersion', 'sessionId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'browserFeatures', 'canvases', 'windows', 'resetEvents', 'lifecycleEvents', 'episodes', 'browserEntries', 'episodeAssociations', 'findings', 'collectionLimits', 'droppedEntryCounts'];
+const sessionLimitKeys = ['maxDurationMs', 'maxCanvasWindowReports', 'maxCanvasLifetimes', 'maxResetEvents', 'maxLifecycleEvents', 'maxBrowserEvidenceEntries', 'maxLongFrameScriptAttributions'];
+const sessionDroppedKeys = ['canvasWindowReports', 'canvasLifetimes', 'resetEvents', 'lifecycleEvents', 'documentEvents', 'eventTiming', 'userMarks', 'longAnimationFrames'];
+const explanationLimitNames = ['duration-ms', 'selected-canvases', 'active-windows', 'command-entries', 'arguments-per-command', 'value-tokens', 'stack-samples', 'frames-per-stack', 'source-map-lookups', 'source-map-response-bytes'];
+
+function shape(value, keys, label) {
+  if (!exact(value, keys)) throw new Error(`${label} shape changed`);
+}
+
+function list(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} shape changed`);
+  return value;
+}
+
+function validateSourceLocation(value, label) {
+  if (value === null) return;
+  shape(value, ['file', 'line', 'column'], label);
+  if (!text(value.file) || value.file.includes('?') || value.file.includes('#') || !Number.isInteger(value.line) || !Number.isInteger(value.column)) throw new Error(`${label} value changed`);
+}
+
+function validateMethodEvidence(value, label) {
+  shape(value, ['clearRect', 'fillRect', 'fillStyle'], label);
+  for (const name of ['clearRect', 'fillRect', 'fillStyle']) shape(value[name], ['count', 'canvasApiSelfTimeMs'], `${label}.${name}`);
+}
+
+function validateSessionSchema(session) {
+  shape(session, sessionKeys, 'raw session root');
+  shape(session.browserFeatures, ['monotonicTime', 'eventTiming', 'longAnimationFrames'], 'raw session browser features');
+  shape(session.collectionLimits, sessionLimitKeys, 'raw session collection limits');
+  shape(session.droppedEntryCounts, sessionDroppedKeys, 'raw session dropped counts');
+
+  for (const canvas of list(session.canvases, 'raw session canvases')) {
+    shape(canvas, ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'evidenceLevel', 'methodEvidence', 'commandStatuses'], 'raw session canvas');
+    validateSourceLocation(canvas.sourceLocation, 'raw session canvas source location');
+    validateMethodEvidence(canvas.methodEvidence, 'raw session canvas methods');
+    shape(canvas.commandStatuses, ['same', 'changed', 'unknown'], 'raw session command statuses');
+  }
+  for (const window of list(session.windows, 'raw session windows')) {
+    shape(window, ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'signatureStatus', 'unknownReason', 'sampled', 'comparisonGap', 'methodEvidence', 'windowIndex', 'timestampMs', 'startedAtTimestampMs', 'endedAtTimestampMs', 'geometry'], 'raw session window');
+    validateSourceLocation(window.sourceLocation, 'raw session window source location');
+    validateMethodEvidence(window.methodEvidence, 'raw session window methods');
+    shape(window.geometry, ['backingWidth', 'backingHeight', 'cssWidth', 'cssHeight', 'devicePixelRatio', 'expectedBackingWidth', 'expectedBackingHeight', 'expectedPixelArea', 'actualToExpectedAreaRatio', 'unavailableReason'], 'raw session window geometry');
+  }
+  for (const event of list(session.resetEvents, 'raw session reset events')) shape(event, ['canvasId', 'windowIndex', 'timestampMs', 'source', 'width', 'height', 'rasterOperationCount', 'activeRasterOverlap', 'commandStatus', 'unknownReason'], 'raw session reset event');
+  for (const event of list(session.lifecycleEvents, 'raw session lifecycle events')) shape(event, ['canvasId', 'type', 'windowIndex', 'timestampMs', 'connected', 'activeRegistrySize', 'evidenceLevel'], 'raw session lifecycle event');
+  for (const episode of list(session.episodes, 'raw session episodes')) {
+    shape(episode, ['episodeId', 'firstWindowIndex', 'lastWindowIndex', 'startedAtTimestampMs', 'endedAtTimestampMs', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'methodEvidence', 'canvases', 'resetEventCount'], 'raw session episode');
+    validateMethodEvidence(episode.methodEvidence, 'raw session episode methods');
+    for (const canvas of list(episode.canvases, 'raw session episode canvases')) {
+      shape(canvas, ['canvasId', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'methodEvidence', 'resetEventCount'], 'raw session episode canvas');
+      validateMethodEvidence(canvas.methodEvidence, 'raw session episode canvas methods');
+    }
+  }
+  for (const entry of list(session.browserEntries, 'raw session browser entries')) {
+    if (entry?.kind === 'document-event') {
+      shape(entry, ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName'], 'raw document event');
+      if (!['pointermove', 'pointerdown', 'pointerup'].includes(entry.eventType) || !['button', 'div'].includes(entry.targetTagName)) throw new Error('raw document event value changed');
+    } else if (entry?.kind === 'event-timing') {
+      shape(entry, ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName', 'durationMs', 'interactionId'], 'raw event timing');
+      if (!['pointerdown', 'pointerup'].includes(entry.eventType) || !['button', 'div'].includes(entry.targetTagName)) throw new Error('raw event timing value changed');
+    }
+    else if (entry?.kind === 'long-animation-frame') {
+      shape(entry, ['entryId', 'kind', 'startedAtTimestampMs', 'endedAtTimestampMs', 'durationMs', 'blockingDurationMs', 'scripts', 'droppedScriptAttributionCount'], 'raw long animation frame');
+      if (list(entry.scripts, 'raw long animation frame scripts').length) throw new Error('raw long animation frame script rows changed');
+    } else throw new Error('raw browser entry kind changed');
+  }
+  for (const association of list(session.episodeAssociations, 'raw session associations')) shape(association, ['entryId', 'entryKind', 'episodeId', 'startedAtTimestampMs', 'endedAtTimestampMs', 'evidenceLevel'], 'raw session association');
+  for (const finding of list(session.findings, 'raw session findings')) {
+    if (finding?.type !== 'repeated-draw-work') throw new Error('raw session finding type changed');
+    shape(finding, ['type', 'evidenceLevel', 'canvasId', 'episodeId', 'repeatedWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'repeatedWindows', 'unknownCoverage', 'claimBoundary', 'nextCheck'], 'raw repeated finding');
+    for (const window of list(finding.repeatedWindows, 'raw repeated windows')) shape(window, ['windowIndex', 'timestampMs', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'comparisonGap'], 'raw repeated window');
+    shape(finding.unknownCoverage, ['unknownWindowCount', 'activeWindowCount'], 'raw repeated finding coverage');
+    shape(finding.claimBoundary, ['observation', 'explanation', 'nonEstablishedFacts'], 'raw repeated finding claim boundary');
+  }
+}
+
+function validateCommand(command, label, expectedOrdinal = command?.ordinal) {
+  shape(command, ['ordinal', 'operationKind', 'name', 'argumentCount', 'arguments', 'unknownReason'], label);
+  const argumentsList = list(command.arguments, `${label} arguments`);
+  if (command.ordinal !== expectedOrdinal || !['call', 'set'].includes(command.operationKind) || !text(command.name) || command.argumentCount !== argumentsList.length) throw new Error(`${label} value changed`);
+  for (const [index, argument] of argumentsList.entries()) {
+    shape(argument, ['position', 'kind', 'token'], `${label} argument`);
+    if (argument.position !== index || !['number', 'string', 'boolean', 'null', 'undefined', 'array', 'typed-array', 'image', 'canvas', 'path', 'gradient', 'pattern', 'object'].includes(argument.kind) || (argument.token !== null && !/^[0-9a-f]{32}-\d+$/.test(argument.token))) throw new Error(`${label} argument value changed`);
+  }
+}
+
+function validateDifference(difference, label) {
+  if (difference === null) return;
+  shape(difference, ['referenceWindowIndex', 'targetWindowIndex', 'ordinal', 'reason', 'reference', 'target'], label);
+  if (difference.reference !== null) validateCommand(difference.reference, `${label} reference`);
+  if (difference.target !== null) validateCommand(difference.target, `${label} target`);
+}
+
+function validateExplanationSchema(artifact) {
+  const keys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'];
+  shape(artifact, keys, 'copied explanation root');
+  shape(artifact.source, ['sessionId', 'findingIndex', 'findingType', 'canvasId'], 'copied explanation source');
+  shape(artifact.followUp, ['sessionId', 'canvasId'], 'copied explanation follow-up');
+  for (const window of list(artifact.windows, 'copied explanation windows')) {
+    shape(window, ['windowIndex', 'timestampMs', 'commands', 'complete', 'unknownReason'], 'copied explanation window');
+    for (const [index, command] of list(window.commands, 'copied explanation commands').entries()) validateCommand(command, 'copied explanation command', index);
+  }
+  for (const comparison of list(artifact.comparisons, 'copied explanation comparisons')) {
+    shape(comparison, ['referenceWindowIndex', 'targetWindowIndex', 'status', 'difference', 'unknownReason'], 'copied explanation comparison');
+    validateDifference(comparison.difference, 'copied explanation difference');
+  }
+  validateDifference(artifact.firstDifference, 'copied explanation first difference');
+  for (const stack of list(artifact.stacks, 'copied explanation stacks')) {
+    shape(stack, ['windowIndex', 'commandOrdinal', 'reason', 'frames', 'droppedFrameCount'], 'copied explanation stack');
+    for (const frame of list(stack.frames, 'copied explanation stack frames')) {
+      shape(frame, ['functionName', 'generated', 'mapped', 'mappingStatus', 'unresolvedReason'], 'copied explanation stack frame');
+      validateSourceLocation(frame.generated, 'copied explanation generated location');
+      validateSourceLocation(frame.mapped, 'copied explanation mapped location');
+    }
+  }
+  shape(artifact.collectionLimits, ['maxDurationMs', 'maxSelectedCanvases', 'maxActiveWindows', 'maxCommandEntries', 'maxArgumentsPerCommand', 'maxValueTokens', 'maxStackSamples', 'maxFramesPerStack', 'maxSourceMapLookups', 'maxSourceMapResponseBytes'], 'copied explanation collection limits');
+  shape(artifact.droppedEntryCounts, ['durationStops', 'selectedCanvasRejections', 'activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups', 'sourceMapResponses'], 'copied explanation dropped counts');
+  const limits = list(artifact.limitResults, 'copied explanation limit results');
+  if (JSON.stringify(limits.map(result => result.name)) !== JSON.stringify(explanationLimitNames)) throw new Error('copied explanation limit result rows changed');
+  for (const result of limits) {
+    shape(result, ['name', 'maximum', 'rejectedCount', 'reason', 'firstAffected'], 'copied explanation limit result');
+    if (result.firstAffected !== null) shape(result.firstAffected, ['scope', 'windowIndex', 'commandOrdinal'], 'copied explanation limit coordinate');
+  }
+  shape(artifact.callsiteCoverage, ['status', 'incompleteReasons'], 'copied explanation callsite coverage');
+  list(artifact.callsiteCoverage.incompleteReasons, 'copied explanation incomplete reasons');
+  if (artifact.firstGap !== null) shape(artifact.firstGap, ['windowIndex', 'commandOrdinal', 'reason'], 'copied explanation first gap');
+}
 
 export function readinessStatus(failures, diagnostics, conditions = []) {
   return failures.length || diagnosticKeys.some(key => diagnostics[key].length) || conditions.some(condition => !condition) ? 'FAIL' : 'PASS';
@@ -56,6 +183,8 @@ function validateBrowserDrawCounts(drawCounts) {
 }
 
 function validateDemoSession(session, findingIndex, mode, drawCounts) {
+  validateSessionSchema(session);
+  if (session.canvases.length !== 1 || session.windows.length !== demoTruth[mode].activeWindowCount || session.resetEvents.length !== 0 || session.lifecycleEvents.length !== (mode === 'baseline' ? 1 : 0) || session.episodes.length !== 1 || session.findings.length !== 1) throw new Error(`${mode} raw session rows changed`);
   const selected = selectedRepeated(session, findingIndex);
   const expected = demoTruth[mode];
   const methods = selected.canvas.methodEvidence;
@@ -83,6 +212,13 @@ function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
     ['method:clearRect:operation-count', [drawCounts.baseline.clearRect, drawCounts.candidate.clearRect]], ['method:fillRect:operation-count', [drawCounts.baseline.fillRect, drawCounts.candidate.fillRect]], ['method:fillStyle:operation-count', [8, 8]],
     ['unknown-command-window-count', [baseline.finding.unknownCoverage.unknownWindowCount, candidate.finding.unknownCoverage.unknownWindowCount]], ['repeated-window-count', [baseline.finding.repeatedWindowCount, candidate.finding.repeatedWindowCount]], ['repeated-raster-operation-count', [baseline.finding.rasterOperationCount, candidate.finding.rasterOperationCount]], ['comparison-gap-count', [0, 0]],
   ]);
+  const timing = new Map([
+    ['canvas-api-self-time-ms', [baseline.canvas.canvasApiSelfTimeMs, candidate.canvas.canvasApiSelfTimeMs]],
+    ['maximum-window-self-time-ms', [baseline.canvas.maxWindowSelfTimeMs, candidate.canvas.maxWindowSelfTimeMs]],
+    ['method:clearRect:self-time-ms', [baseline.canvas.methodEvidence.clearRect.canvasApiSelfTimeMs, candidate.canvas.methodEvidence.clearRect.canvasApiSelfTimeMs]],
+    ['method:fillRect:self-time-ms', [baseline.canvas.methodEvidence.fillRect.canvasApiSelfTimeMs, candidate.canvas.methodEvidence.fillRect.canvasApiSelfTimeMs]],
+    ['method:fillStyle:self-time-ms', [baseline.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs, candidate.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs]],
+  ]);
   for (const item of measures) {
     if (!exact(item, ['id', 'unit', 'baseline', 'candidate', 'delta', 'direction', 'interpretation'])) throw new Error('copied comparison measure shape changed');
     const expected = structural.get(item.id);
@@ -90,13 +226,14 @@ function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
       if (JSON.stringify(item) !== JSON.stringify(measure(item.id, 'count', expected[0], expected[1]))) throw new Error(`copied comparison ${item.id} truth changed`);
       continue;
     }
-    const setterTiming = item.id === 'method:fillStyle:self-time-ms';
-    if (item.unit !== 'ms' || item.interpretation !== 'observed-timing-pair' || (setterTiming ? item.baseline !== null || item.candidate !== null : !Number.isFinite(item.baseline) || item.baseline < 0 || !Number.isFinite(item.candidate) || item.candidate < 0) || JSON.stringify(item) !== JSON.stringify(measure(item.id, 'ms', item.baseline, item.candidate))) throw new Error(`copied comparison ${item.id} timing changed`);
+    const expectedTiming = timing.get(item.id);
+    if (!expectedTiming || JSON.stringify(item) !== JSON.stringify(measure(item.id, 'ms', expectedTiming[0], expectedTiming[1]))) throw new Error(`copied comparison ${item.id} timing changed`);
   }
 }
 
 export function validateCopiedExplanation(artifact, selection) {
   const keys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'];
+  validateExplanationSchema(artifact);
   if (!exact(artifact, keys) || artifact.schemaVersion !== 1 || artifact.canvasScanVersion !== '0.5.0' || !text(artifact.explanationId) || artifact.stopReason !== 'manual') throw new Error('copied explanation root changed');
   if (!exact(artifact.source, ['sessionId', 'findingIndex', 'findingType', 'canvasId']) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || !text(artifact.source.canvasId)) throw new Error('copied explanation selection changed');
   if (!exact(artifact.followUp, ['sessionId', 'canvasId']) || !text(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new Error('copied explanation follow-up changed');
@@ -164,12 +301,34 @@ async function currentCandidate() {
   };
 }
 
-async function waitForServer(server) {
-  for (let end = Date.now() + 60_000; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 200))) {
+function listenerPids() {
+  const result = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  if (result.status === 1) return [];
+  if (result.status !== 0) throw new Error(`could not inspect readiness port\n${result.stderr}`);
+  return [...new Set(result.stdout.trim().split(/\s+/).filter(Boolean).map(Number))];
+}
+
+function processGroupId(pid) {
+  const result = spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`could not inspect process group ${pid}\n${result.stderr}`);
+  return Number(result.stdout.trim());
+}
+
+export function serverOwnsReadinessPort(server, listeners = listenerPids(), groupFor = processGroupId) {
+  if (!server?.pid || listeners.length !== 1) return false;
+  const serverGroup = groupFor(server.pid);
+  return Number.isInteger(serverGroup) && listeners.every(pid => groupFor(pid) === serverGroup);
+}
+
+export async function waitForOwnedServer(server, ownershipToken, serverOrigin = origin, timeoutMs = 60_000, retryMs = 200, ownsPort = serverOwnsReadinessPort, fetcher = fetch) {
+  for (let end = Date.now() + timeoutMs; Date.now() < end; await new Promise(resolve => setTimeout(resolve, retryMs))) {
     if (server.exitCode !== null || server.signalCode !== null) throw new Error('clean consumer server exited before readiness');
-    try { if ((await fetch(origin)).ok) return; } catch {}
+    try {
+      const response = await fetcher(`${serverOrigin}/readiness-owner.txt?token=${ownershipToken}`, { cache: 'no-store' });
+      if (response.ok && (await response.text()) === ownershipToken && ownsPort(server)) return;
+    } catch {}
   }
-  throw new Error('clean consumer server did not become ready');
+  throw new Error('clean consumer server did not prove ownership');
 }
 
 async function stopServer(server) {
@@ -177,6 +336,13 @@ async function stopServer(server) {
   try { process.kill(-server.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   await Promise.race([once(server, 'exit'), new Promise(resolve => setTimeout(resolve, 5000))]);
   if (server.exitCode === null && server.signalCode === null) throw new Error('clean consumer server did not stop');
+}
+
+export async function collectCleanupErrors(diagnostics, tasks) {
+  for (const [label, cleanup] of tasks) {
+    try { await cleanup(); }
+    catch (error) { diagnostics.cleanupErrors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
 }
 
 async function settle(page) {
@@ -224,15 +390,16 @@ async function readDrawCounter(page, counts) {
   return { clearRect: counts.clearRect, fillRect: counts.fillRect };
 }
 
-async function runBrowser(consumer, diagnostics) {
+async function runBrowser(consumer, diagnostics, ownershipToken) {
   let server;
   let browser;
   const actionIds = [];
   const counts = { clearRect: 0, fillRect: 0 };
   const result = { browserVersion: '', earlyLoad: false, publicMethods: [], actionIds, browserDrawCounts: { baseline: null, candidate: null }, baseline: null, explanation: null, candidate: null, comparison: null, artifacts: { baselineSession: null, candidateSession: null, copiedExplanation: null, copiedComparison: null } };
   try {
+    if (listenerPids().length) throw new Error(`readiness port ${port} already has a listener`);
     server = spawn('npx', ['vite', 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: consumer, detached: true, stdio: 'ignore' });
-    await waitForServer(server);
+    await waitForOwnedServer(server, ownershipToken);
     browser = await chromium.launch({ channel: 'chrome', headless: true });
     result.browserVersion = browser.version();
     const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] });
@@ -302,8 +469,11 @@ async function runBrowser(consumer, diagnostics) {
     if (error && typeof error === 'object') error.browserResult = result;
     throw error;
   } finally {
-    try { await browser?.close(); } catch {}
-    await stopServer(server);
+    await collectCleanupErrors(diagnostics, [
+      ['browser-close', async () => browser?.close()],
+      ['server-stop', async () => stopServer(server)],
+      ['server-port-release', async () => { if (listenerPids().length) throw new Error(`readiness port ${port} still has a listener`); }],
+    ]);
   }
 }
 
@@ -336,6 +506,7 @@ async function main() {
   let tarballSha256 = '';
   let packedIifeSha256 = '';
   let installedIifeSha256 = '';
+  const ownershipToken = hash(temporaryRoot);
   try {
     const packDirectory = path.join(temporaryRoot, 'pack');
     const consumer = path.join(temporaryRoot, 'consumer');
@@ -355,12 +526,13 @@ async function main() {
     run('npm', ['install', '--no-audit', '--no-fund', '--cache', path.join(temporaryRoot, 'npm-cache'), tarball, 'react@^19', 'react-dom@^19', '@vitejs/plugin-react@^4', 'typescript@^5.7', 'vite@^6'], consumer);
     installedIifeSha256 = hash(await readFile(path.join(consumer, 'node_modules/canvas-scan/dist/canvas-scan.iife.js')));
     run('npx', ['vite', 'build'], consumer);
-    browserResult = await runBrowser(consumer, diagnostics);
+    await writeFile(path.join(consumer, 'dist/readiness-owner.txt'), ownershipToken);
+    browserResult = await runBrowser(consumer, diagnostics, ownershipToken);
   } catch (error) {
     if (error && typeof error === 'object' && error.browserResult) browserResult = error.browserResult;
     failures.push(error instanceof Error ? error.stack ?? error.message : String(error));
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await collectCleanupErrors(diagnostics, [['temporary-directory-remove', async () => rm(temporaryRoot, { recursive: true, force: true })]]);
   }
 
   const cleanAfter = run('git', ['status', '--short', '--untracked-files=all'], root) === '';

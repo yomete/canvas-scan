@@ -70,9 +70,11 @@ and load it before other scripts. A pnpm workspace uses the same first import.
    JSON artifact.
 
 Explanation detail covers only the selected canvas. It excludes raw argument
-values, page text, pixels, URLs, application objects, and source content. A
-result can be an honest `unknown` when safe comparison is not possible. One
-measured pair does not prove that the application improved.
+values, page text, pixels, and raw application and argument URLs. It also
+excludes application objects and source content. Sanitized selected-callsite
+evidence can include generated script paths and mapped source paths. A result
+can be an honest `unknown` when safe comparison is not possible. One measured
+pair does not prove that the application improved.
 
 The state changes from `idle` to `recording` to `complete` to `recording`.
 The maximum duration is 30 seconds. Stops are `manual` or `max-duration`.

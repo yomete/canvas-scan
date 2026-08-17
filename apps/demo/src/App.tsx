@@ -84,8 +84,10 @@ export function App() {
       </ol>
       <p>
         Detail covers only the selected canvas. JSON excludes raw values, page text,
-        pixels, URLs, application objects, and source content. A result
-        can be an honest unknown. One pair does not prove improvement.
+        pixels, and raw application and argument URLs. It also excludes application objects
+        and source content. Sanitized selected-callsite evidence can include
+        generated script paths and mapped source paths. A result can be an honest unknown.
+        One pair does not prove improvement.
       </p>
     </main>
   );

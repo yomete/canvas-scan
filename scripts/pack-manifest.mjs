@@ -82,8 +82,8 @@ const demoStepTokens = [
   ['same finding type', 'Compare with baseline', 'explicit'],
   ['measured pair', 'Copy comparison JSON'],
 ];
-const readmeBoundaryTokens = ['selected canvas', 'raw argument', 'page text', 'pixels', 'URLs', 'application objects', 'source content', 'honest `unknown`', 'does not prove that the application improved'];
-const demoBoundaryTokens = ['selected canvas', 'raw values', 'page text', 'pixels', 'URLs', 'application objects', 'source content', 'honest unknown', 'does not prove improvement'];
+const readmeBoundaryTokens = ['selected canvas', 'raw argument', 'page text', 'pixels', 'raw application and argument URLs', 'application objects', 'source content', 'generated script paths', 'mapped source paths', 'honest `unknown`', 'does not prove that the application improved'];
+const demoBoundaryTokens = ['selected canvas', 'raw values', 'page text', 'pixels', 'raw application and argument URLs', 'application objects', 'source content', 'generated script paths', 'mapped source paths', 'honest unknown', 'does not prove improvement'];
 
 function ritualSection(source, label) {
   const heading = '## v0.5 investigation ritual';
