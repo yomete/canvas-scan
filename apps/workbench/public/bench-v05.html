@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Canvas Scan v0.5 benchmark</title>
+<canvas id="measured" width="640" height="480"></canvas>
+<script src="/bench-v05-diagnostic.js"></script>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode');
+  const allowed = new Set(['v04-full', 'v05-no-selection', 'v05-selected']);
+  const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const counters = () => window.__CANVAS_SCAN_V05_BENCH_DIAGNOSTIC__.getCounters();
+  const canvas = document.querySelector('#measured');
+  const context = canvas.getContext('2d');
+  const draw = () => { for (let i = 0; i < 1000; i++) context.fillRect(i % 640, (i * 7) % 480, 1, 1); };
+  window.__BENCH_V05__ = { mode, done: false, frames: [], sourceFindingIndex: -1, startResult: null, countersBefore: null, countersAfter: null, diagnostics: [], stopResult: null };
+  (async () => {
+    try {
+      if (!allowed.has(mode)) throw new Error('invalid benchmark mode');
+      for (let i = 0; i < 4; i++) { draw(); await nextFrame(); }
+      window.__CANVAS_SCAN__.startRecording();
+      for (let i = 0; i < 4; i++) { draw(); await nextFrame(); }
+      const source = window.__CANVAS_SCAN__.stopRecording();
+      const index = source.findings.findIndex(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('measured#'));
+      if (index < 0) throw new Error('source repeated-draw-work finding absent');
+      window.__BENCH_V05__.sourceFindingIndex = index;
+      if (mode === 'v05-selected') {
+        const result = window.__CANVAS_SCAN__.startExplanation({ sessionId: source.sessionId, findingIndex: index });
+        window.__BENCH_V05__.startResult = result.status;
+        if (result.status !== 'started') throw new Error(`explanation did not start: ${result.status}`);
+      } else {
+        window.__CANVAS_SCAN__.startRecording();
+        window.__BENCH_V05__.startResult = 'not-requested';
+      }
+      await nextFrame();
+      window.__CANVAS_SCAN_V05_BENCH_DIAGNOSTIC__.resetCounters();
+      window.__BENCH_V05__.countersBefore = counters();
+      for (let frame = 0; frame < 4; frame++) {
+        const start = performance.now(); draw();
+        const duration = performance.now() - start;
+        if (!Number.isFinite(duration)) throw new Error('non-finite frame duration');
+        window.__BENCH_V05__.frames.push(duration);
+        await nextFrame();
+      }
+      const after = counters();
+      window.__BENCH_V05__.countersAfter = {
+        commandEntryAllocations: after.commandEntryAllocations - window.__BENCH_V05__.countersBefore.commandEntryAllocations,
+        stackAllocations: after.stackAllocations,
+      };
+      window.__BENCH_V05__.stopResult = mode === 'v05-selected'
+        ? Boolean(window.__CANVAS_SCAN__.stopExplanation())
+        : Boolean(window.__CANVAS_SCAN__.stopRecording());
+      if (window.__BENCH_V05__.frames.length !== 4) throw new Error('wrong sample count');
+      window.__BENCH_V05__.done = true;
+    } catch (error) { window.__BENCH_V05__.diagnostics.push(error instanceof Error ? error.message : String(error)); }
+  })();
+</script>

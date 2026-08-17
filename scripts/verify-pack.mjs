@@ -9,6 +9,8 @@ import {
   assertManifestEntries,
   assertPublicContract,
   assertPackedVersion,
+  ESM_RUNTIME_EXPORTS,
+  TYPE_EXPORTS,
 } from './pack-manifest.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,7 +23,9 @@ const temporaryRoot = fs.mkdtempSync(
 );
 const summaries = [];
 let packDetails = {};
-const summaryPath = '/private/tmp/sidproj-56-pack-summary.json';
+let publicSurfaceProbe = null;
+const summaryPaths = ['/private/tmp/sidproj-70-pack-summary.json', '/private/tmp/sidproj-56-pack-summary.json'];
+const summaryPath = summaryPaths[0];
 const manualReleasePath = '/private/tmp/sidproj-56-manual-release-test.json';
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -201,7 +205,7 @@ createRoot(document.getElementById('root')).render(
     process.execPath,
     [
       '-e',
-      "import('canvas-scan').then(m => { if (!['start','startRecording','stopRecording','getLastSession','mark'].every(key => typeof m[key] === 'function')) process.exit(1) })",
+      `import('canvas-scan').then(m => { if (!${JSON.stringify(ESM_RUNTIME_EXPORTS)}.every(key => typeof m[key] === 'function')) process.exit(1) })`,
     ],
     fixture,
   );
@@ -214,6 +218,29 @@ createRoot(document.getElementById('root')).render(
       if (!body.includes('id="root"')) throw new Error('vite preview served unexpected body');
     },
   );
+}
+
+function verifyPublicSurface(tarball) {
+  const fixture = path.join(temporaryRoot, 'public-surface-fixture');
+  fs.mkdirSync(fixture, { recursive: true });
+  writeJson(path.join(fixture, 'package.json'), { private: true, type: 'module' });
+  const install = ['install', '--no-audit', '--no-fund', tarball, 'typescript@^5'];
+  run('npm', install, fixture);
+  const importSource = `import('canvas-scan').then(value => { if (!${JSON.stringify(ESM_RUNTIME_EXPORTS)}.every(name => typeof value[name] === 'function')) process.exit(1) })`;
+  run(process.execPath, ['-e', importSource], fixture);
+  fs.writeFileSync(path.join(fixture, 'surface.ts'), `import type { ${TYPE_EXPORTS.join(', ')} } from 'canvas-scan';\ntype PublicTypes = ${TYPE_EXPORTS.join(' | ')};\ndeclare const value: PublicTypes;\nvoid value;\n`);
+  writeJson(path.join(fixture, 'tsconfig.json'), { compilerOptions: { module: 'NodeNext', moduleResolution: 'NodeNext', target: 'ES2022', noEmit: true, strict: true, skipLibCheck: false }, files: ['surface.ts'] });
+  const tsc = path.join(fixture, 'node_modules/typescript/bin/tsc');
+  run(process.execPath, [tsc, '--project', 'tsconfig.json'], fixture);
+  publicSurfaceProbe = {
+    installCommand: 'npm install --no-audit --no-fund <exact-tarball> typescript@^5 --cache <temporary-cache>',
+    importCommand: 'node --eval <runtime-export-allowlist-probe>',
+    typecheckCommand: 'node <fixture-typescript>/bin/tsc --project tsconfig.json',
+    runtimeExports: ESM_RUNTIME_EXPORTS,
+    typeExports: TYPE_EXPORTS,
+    importStatus: 'PASS',
+    typecheckStatus: 'PASS',
+  };
 }
 
 async function verifyManualRelease(tarball) {
@@ -369,15 +396,21 @@ try {
     assertPackedVersion({ iife: sourceIndex, recording: sourceRecording }, version);
     summaries.push({ name: 'public contract', status: 'PASS' });
     summaries.push({ name: 'lab boundary', status: 'PASS' });
-    packDetails = { tarballSha256: sha256(fs.readFileSync(tarball)), esmSha256: sha256(esmEntry), runtimeSha256: sha256(esmRuntime), iifeSha256: sha256(iife), packageManifestVersion: JSON.parse(manifest).version, declarationHashes: Object.fromEntries(entries.filter((entry) => /^package\/dist\/.*\.d\.ts$/.test(entry)).map((entry) => [entry, sha256(readEntry(entry))])), manifestEntries: entries, publicContract: 'PASS', labBoundary: 'PASS' };
+    packDetails = { tarballSha256: sha256(fs.readFileSync(tarball)), esmSha256: sha256(esmEntry), runtimeSha256: sha256(esmRuntime), iifeSha256: sha256(iife), packageManifestVersion: JSON.parse(manifest).version, declarationHashes: Object.fromEntries(entries.filter((entry) => /^package\/dist\/.*\.d\.ts$/.test(entry)).map((entry) => [entry, sha256(readEntry(entry))])), manifestEntries: entries, runtimeExports: ESM_RUNTIME_EXPORTS, typeExports: TYPE_EXPORTS, publicContract: 'PASS', labBoundary: 'PASS' };
   });
 
   if (packed) {
+    await verify('clean public surface fixture', () => verifyPublicSurface(tarball));
     const vitePassed = await verify('Vite fixture', () => verifyVite(tarball));
     if (vitePassed) await verify('manual release test', () => verifyManualRelease(tarball));
     else summaries.push({ name: 'manual release test', status: 'FAIL', reason: 'Vite fixture failed' });
     await verify('Next fixture', () => verifyNext(tarball));
   } else {
+    summaries.push({
+      name: 'clean public surface fixture',
+      status: 'FAIL',
+      reason: 'package step failed',
+    });
     summaries.push({
       name: 'Vite fixture',
       status: 'FAIL',
@@ -399,7 +432,7 @@ try {
   const environmentErrors = summaries
     .filter((summary) => summary.status === 'FAIL' && /fixture|EPERM|EACCES|network|ECONNREFUSED|EADDRINUSE|server|cache|exit 255/i.test(`${summary.name} ${summary.reason ?? ''}`))
     .map((summary) => summary.reason);
-  writeJson(summaryPath, {
+  const summary = {
     schemaVersion: 1,
     packageVersion: version,
     baseGitSha: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim(),
@@ -408,9 +441,11 @@ try {
     fixtureResults: summaries,
     publicContractResults: summaries.filter((summary) => ['public contract', 'lab boundary'].includes(summary.name)),
     labBoundaryResults: summaries.filter((summary) => summary.name === 'lab boundary'),
+    publicSurfaceProbe,
     environmentErrors,
     finalStatus: failed ? 'FAIL' : 'PASS',
-  });
+  };
+  for (const file of summaryPaths) writeJson(file, summary);
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 

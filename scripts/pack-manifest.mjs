@@ -56,14 +56,17 @@ export function assertPackedVersion(sources, version) {
   }
 }
 
-const publicOperations = ['start', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
+export const ESM_RUNTIME_EXPORTS = ['start', 'getReports', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
+export const IIFE_RUNTIME_FIELDS = ['version', 'getHistory', 'getReports', 'startRecording', 'stopRecording', 'mark', 'getLastSession', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
+export const TYPE_EXPORTS = ['AttributionKind', 'CanvasMethodEvidence', 'CanvasScanOptions', 'DrawBatchReport', 'SignatureStatus', 'SourceLocation', 'InvestigationSessionV1', 'RecordedCanvasSummary', 'RecordedCanvasWindow', 'RecordedCanvasGeometry', 'CanvasGeometryUnavailableReason', 'RecordedResetEvent', 'CanvasResetSource', 'CanvasLifecycleEventType', 'RecordedCanvasLifecycleEvent', 'RecordedDrawEpisode', 'RecordedEpisodeCanvasSummary', 'RecordedTopMethod', 'HeavyCanvasWorkFinding', 'InvestigationFinding', 'RepeatedDrawWorkFinding', 'ResizeChurnFinding', 'BackingStoreMismatchFinding', 'RecordedRepeatedWindow', 'RecordingState', 'RecordingStopReason', 'RecordedDocumentEvent', 'RecordedEventTiming', 'RecordedUserMark', 'RecordedLongAnimationFrameScript', 'RecordedLongAnimationFrame', 'RecordedBrowserEvidenceEntry', 'RecordedEpisodeAssociation', 'ExplanationSelection', 'ExplanationStartResult', 'ExplanationUnknownReason', 'NormalizedCommandArgument', 'NormalizedCanvasCommand', 'ExplanationCommandWindow', 'CommandDifference', 'ExplanationWindowComparison', 'ExplanationStackFrame', 'ExplanationStackSample', 'ExplanationLimitName', 'ExplanationLimitReason', 'ExplanationLimitCoordinate', 'ExplanationLimitResult', 'ExplanationCallsiteLimitReason', 'ExplanationCallsiteCoverage', 'ExplanationArtifactV1', 'SessionFindingPairing', 'ComparisonMeasureId', 'ComparisonMeasure', 'ComparisonFindingRef', 'ComparisonArtifactV1'];
 const labMarkers = ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth'];
 
-function exportedNames(source) {
+function exportedNames(source, includeTypes = true) {
   const names = new Set();
   for (const match of source.matchAll(/export\s+(?:declare\s+)?function\s+(\w+)/g)) names.add(match[1]);
-  for (const match of source.matchAll(/export\s*\{([^}]*)\}/g)) {
-    for (const item of match[1].split(',')) {
+  for (const match of source.matchAll(/export\s+(type\s+)?\{([^}]*)\}/g)) {
+    if (!includeTypes && match[1]) continue;
+    for (const item of match[2].split(',')) {
       const value = item.trim().replace(/^type\s+/, '');
       const alias = value.match(/\bas\s+(\w+)$/)?.[1];
       const direct = value.match(/^(\w+)/)?.[1];
@@ -78,14 +81,21 @@ function iifeOperations(source) {
   return new Set(body.split(',').map((item) => item.trim().match(/^(\w+)/)?.[1]).filter(Boolean));
 }
 
+function assertExactNames(label, actual, expected) {
+  const missing = expected.filter((name) => !actual.has(name));
+  const extra = [...actual].filter((name) => !expected.includes(name));
+  if (missing.length || extra.length) {
+    throw new Error(`${label} changed: missing ${missing.join(', ') || 'none'}; extra ${extra.join(', ') || 'none'}`);
+  }
+}
+
 export function assertPublicContract({ runtime, declarations, iife }) {
-  const runtimeExports = exportedNames(runtime);
+  const runtimeExports = exportedNames(runtime, false);
   const declarationExports = exportedNames(declarations);
-  const missing = publicOperations.filter((name) => !runtimeExports.has(name) || !declarationExports.has(name));
-  if (missing.length) throw new Error(`missing ESM or declaration exports: ${missing.join(', ')}`);
+  assertExactNames('ESM runtime exports', runtimeExports, ESM_RUNTIME_EXPORTS);
+  assertExactNames('declaration exports', declarationExports, [...ESM_RUNTIME_EXPORTS, ...TYPE_EXPORTS]);
   const operations = iifeOperations(iife);
-  const iifeMissing = publicOperations.slice(1).filter((name) => !operations.has(name));
-  if (iifeMissing.length) throw new Error(`missing IIFE public operations: ${iifeMissing.join(', ')}`);
+  assertExactNames('IIFE public operations', operations, IIFE_RUNTIME_FIELDS);
 }
 
 export function assertLabBoundary(entries, sources) {

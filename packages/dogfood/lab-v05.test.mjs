@@ -8,6 +8,7 @@ import {
   safeArtifactPath,
   scanPrivateEvidence,
   validateManifest,
+  verificationCommandsFor,
 } from './lab-v05-truth.mjs';
 
 const truth = JSON.parse(await readFile(new URL('./fixtures/v05-lab/expected.json', import.meta.url)));
@@ -33,6 +34,12 @@ const reject = async mutate => {
   mutate(value, rows);
   await assert.rejects(check(value, rows), /v0\.5 lab evidence failed/);
 };
+
+test('uses the preceding v0.4 evidence in release mode', () => {
+  assert.ok(verificationCommandsFor(false).includes('pnpm --filter dogfood run lab:v0.4'));
+  assert.equal(verificationCommandsFor(true).includes('pnpm --filter dogfood run lab:v0.4'), false);
+  assert.equal(verificationCommandsFor(true).filter(command => command === 'pnpm --filter dogfood run lab:v0.4:check').length, 1);
+});
 
 test('accepts the complete ordered 59-row object', async () => {
   assert.equal(await check(evidence()), true);

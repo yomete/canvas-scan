@@ -17,18 +17,10 @@
       canvas { box-sizing: border-box; display: block; border: 1px solid #475569; background: #07111f; }
       .decoy-canvas { width: 8px; height: 8px; }
     </style>
-    <script>window.__CANVAS_SCAN_OPTS = { overlay: true };</script>
-    <script src="/canvas-scan.iife.js"></script>
+    <script>Object.defineProperty(window, '__CANVAS_SCAN_OPTS', { value: Object.freeze({ overlay: true }), writable: false, configurable: false });</script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module">
-      import RefreshRuntime from '/@react-refresh';
-      RefreshRuntime.injectIntoGlobalHook(window);
-      window.$RefreshReg$ = () => {};
-      window.$RefreshSig$ = () => type => type;
-      window.__vite_plugin_react_preamble_installed__ = true;
-    </script>
     <script type="module" src="/src/v04-lab-main.tsx"></script>
   </body>
 </html>

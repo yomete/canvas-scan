@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error plain JS module without declarations
-import { MANIFEST_REQUIRED, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
+import { MANIFEST_REQUIRED, TYPE_EXPORTS, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
 
 const FULL = [...MANIFEST_REQUIRED, 'package/dist/chunk-ABC123.js'];
 
@@ -74,33 +74,46 @@ describe('packed version rules', () => {
 });
 
 describe('public package rules', () => {
-  const api = 'export { start, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
-  const iife = 'window.__CANVAS_SCAN__={startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
+  const runtimeApi = 'export { start, getReports, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
+  const api = `${runtimeApi} export type { ${TYPE_EXPORTS.join(', ')} };`;
+  const iife = 'window.__CANVAS_SCAN__={version,getHistory,getReports,startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
 
   it('accepts every required public operation', () => {
-    expect(() => assertPublicContract({ runtime: api, declarations: api, iife })).not.toThrow();
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife })).not.toThrow();
   });
 
-  it.each(['startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'])('rejects %s from every packed surface', (operation) => {
-    expect(() => assertPublicContract({ runtime: api.replace(operation, ''), declarations: api, iife })).toThrow(new RegExp(operation));
-    expect(() => assertPublicContract({ runtime: api, declarations: api.replace(operation, ''), iife })).toThrow(new RegExp(operation));
-    expect(() => assertPublicContract({ runtime: api, declarations: api, iife: iife.replace(operation, '') })).toThrow(new RegExp(operation));
+  it.each(['getReports', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'])('rejects %s from every packed surface', (operation) => {
+    expect(() => assertPublicContract({ runtime: runtimeApi.replace(operation, ''), declarations: api, iife })).toThrow(new RegExp(operation));
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api.replace(operation, ''), iife })).toThrow(new RegExp(operation));
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife: iife.replace(operation, '') })).toThrow(new RegExp(operation));
   });
 
   it('keeps the v0.4 mark operation mandatory on every packed surface', () => {
-    expect(() => assertPublicContract({ runtime: api.replace('mark', ''), declarations: api, iife })).toThrow(/mark/);
-    expect(() => assertPublicContract({ runtime: api, declarations: api.replace('mark', ''), iife })).toThrow(/mark/);
-    expect(() => assertPublicContract({ runtime: api, declarations: api, iife: iife.replace('mark', '') })).toThrow(/mark/);
+    expect(() => assertPublicContract({ runtime: runtimeApi.replace('mark', ''), declarations: api, iife })).toThrow(/mark/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api.replace('mark', ''), iife })).toThrow(/mark/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife: iife.replace('mark', '') })).toThrow(/mark/);
   });
 
   it('rejects public names that exist but are not exported', () => {
     const unexported = 'const start = startRecording = stopRecording = getLastSession = mark = startExplanation = stopExplanation = getLastExplanation = compareSessions = () => {}; export {};';
-    expect(() => assertPublicContract({ runtime: unexported, declarations: api, iife })).toThrow(/missing ESM/);
-    expect(() => assertPublicContract({ runtime: api, declarations: unexported, iife })).toThrow(/missing ESM/);
+    expect(() => assertPublicContract({ runtime: unexported, declarations: api, iife })).toThrow(/ESM runtime exports.*start/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: unexported, iife })).toThrow(/declaration exports.*start/);
+  });
+
+  it('rejects each missing type export', () => {
+    for (const type of TYPE_EXPORTS) {
+      expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api.replace(type, ''), iife })).toThrow(new RegExp(type));
+    }
   });
 
   it('rejects IIFE operations outside the public global', () => {
-    expect(() => assertPublicContract({ runtime: api, declarations: api, iife: `const mark = true; ${iife.replace(',mark', '')}` })).toThrow(/IIFE.*mark/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife: `const mark = true; ${iife.replace(',mark', '')}` })).toThrow(/IIFE.*mark/);
+  });
+
+  it('rejects extra ESM, declaration, and IIFE exports', () => {
+    expect(() => assertPublicContract({ runtime: `${runtimeApi} export { extraRuntime };`, declarations: api, iife })).toThrow(/ESM runtime exports.*extraRuntime/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: `${api} export type { ExtraType };`, iife })).toThrow(/declaration exports.*ExtraType/);
+    expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife: iife.replace('compareSessions}', 'compareSessions,extraOperation}') })).toThrow(/IIFE public operations.*extraOperation/);
   });
 
   it('rejects lab-only entries and markers inside allowed entries', () => {

@@ -20,13 +20,79 @@ type FixtureSnapshot = {
   phase: string;
   visibleChecksum: string;
   visibleImageHash: string;
+  heavyCalibration: HeavyCalibration | null;
+  capabilityValidated: true;
+};
+type MethodName = 'putImageData' | 'fillRect' | 'clearRect';
+type SampleKind = 'primitive' | 'fixed-plan';
+type SampleEvent = { phase: 'warmup' | 'saved'; kind: SampleKind; value: number };
+type SampleResult = { primitive: number[]; 'fixed-plan': number[] };
+type NativeCanvas2D = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  putImageData: CanvasRenderingContext2D['putImageData'];
+  fillRect: CanvasRenderingContext2D['fillRect'];
+  clearRect: CanvasRenderingContext2D['clearRect'];
+};
+type NativeMethod = NativeCanvas2D[MethodName];
+type MethodArguments = [ImageData, number, number] | [number, number, number, number];
+type HeavyCalibration = {
+  targetMs: number; bandMinimumInclusiveMs: number; bandMaximumExclusiveMs: number;
+  maxIterations: number; maxMeasuredWorkElapsedMs: number; maxPreflightElapsedMs: number;
+  trailingOperations: number; finalPaintCount: number; finalPaintMethodCallCount: number; finalPaintStyleStepCount: number;
+  workloadScale: number; workloadWidth: number; workloadHeight: number; trailingXMultiplier: number; trailingYMultiplier: number;
+  trailingEdgeInset: number; trailingRectWidth: number; trailingRectHeight: number; scene: [number, number, number, number, number, number]; finalPaintColors: [string, string, string];
+  warmupPolicy: 'same-realm-native-before-ready'; calibrationSource: 'detached-html-canvas-2d-native'; timingModel: 'per-native-call'; operationPlan: 'heavy-negative-v1'; cap: 'call-count';
+  declaredWarmupCallCount: number; observedWarmupCallCount: number; declaredPrimitiveSampleCount: number; observedPrimitiveSampleCount: number; declaredFixedPlanSampleCount: number; observedFixedPlanSampleCount: number; maxCallCount: number;
+  primitiveSamplesMs: number[]; primitiveMedianMs: number; fixedPlanSamplesMs: number[]; fixedPlanMedianMs: number;
+  nativeWorkBudgetMs: number; callCount: number; planCallCount: number; planStyleStepCount: number;
+  calibrationCallDurationsMs: number[]; calibratedNativeSelfTimeMs: number; modeledNativeSelfTimeMs: number;
+  measuredOuterTimeMs: number; measuredOuterOverrunMs: number; preflightElapsedMs: number;
 };
 type LabFixture = { ready: boolean; completed: Promise<void>; snapshot: (includeImage?: boolean) => FixtureSnapshot };
 
 const scenarios = ['heavy-burst', 'repeated-continuous', 'resize-churn', 'backing-store-mismatch', 'lifecycle-reactivation', 'interaction-association', 'non-react-burst', 'integrated-continuous', 'integrated-burst'];
 const knownVariants = ['variant-a', 'variant-b', 'variant-c', 'nearest-negative'];
 const burstActions = ['Load', 'Zoom', 'Pan', 'Hover', 'Search', 'Filter', 'Resize'];
-const scene = [18, 24, 82, 44, 132, 56];
+const scene: [number, number, number, number, number, number] = [18, 24, 82, 44, 132, 56];
+const HEAVY_NEGATIVE_TARGET_MS = 7.4;
+const HEAVY_NEGATIVE_MAX_ITERATIONS = 2048;
+const HEAVY_NEGATIVE_MAX_MEASURED_WORK_ELAPSED_MS = 12;
+const HEAVY_NEGATIVE_MAX_PREFLIGHT_ELAPSED_MS = 50;
+const HEAVY_NEGATIVE_TRAILING_OPERATIONS = 200;
+const HEAVY_NEGATIVE_WORKLOAD_SCALE = 4;
+const HEAVY_NEGATIVE_WORKLOAD_WIDTH = 1280;
+const HEAVY_NEGATIVE_WORKLOAD_HEIGHT = 560;
+const HEAVY_NEGATIVE_WARMUP_CALL_COUNT = 2;
+const HEAVY_NEGATIVE_PRIMITIVE_SAMPLE_COUNT = 3;
+const HEAVY_NEGATIVE_FIXED_PLAN_SAMPLE_COUNT = 3;
+const HEAVY_NEGATIVE_MAX_CALL_COUNT = 32;
+const HEAVY_NEGATIVE_BAND_MINIMUM_MS = 7;
+const HEAVY_NEGATIVE_BAND_MAXIMUM_MS = 8;
+const HEAVY_NEGATIVE_BAND_MAXIMUM_EXCLUSIVE_MS = HEAVY_NEGATIVE_BAND_MAXIMUM_MS;
+const HEAVY_NEGATIVE_FINAL_PAINT_COUNT = 1;
+const HEAVY_NEGATIVE_FINAL_PAINT_METHOD_CALL_COUNT = 4;
+const HEAVY_NEGATIVE_FINAL_PAINT_STYLE_STEP_COUNT = 4;
+const HEAVY_NEGATIVE_TRAILING_X_MULTIPLIER = 13;
+const HEAVY_NEGATIVE_TRAILING_Y_MULTIPLIER = 7;
+const HEAVY_NEGATIVE_TRAILING_EDGE_INSET = 8;
+const HEAVY_NEGATIVE_TRAILING_RECT_WIDTH = 3;
+const HEAVY_NEGATIVE_TRAILING_RECT_HEIGHT = 2;
+const HEAVY_NEGATIVE_FINAL_PAINT_COLORS: [string, string, string] = ['#07111f', '#38bdf8', '#a78bfa'];
+const median = (values: number[]) => [...values].sort((left, right) => left - right)[1];
+
+const measureNativeCall: (now: () => number, method: NativeMethod, receiver: CanvasRenderingContext2D, args: MethodArguments) => number = function measureNativeCall(now, method, receiver, args) {
+  const startedAt = now();
+  Reflect.apply(method, receiver, args);
+  return now() - startedAt;
+};
+
+const selectHeavySamples: (events: SampleEvent[]) => SampleResult = function selectHeavySamples(events) {
+  return {
+    primitive: events.filter(event => event.phase === 'saved' && event.kind === 'primitive').map(event => event.value),
+    'fixed-plan': events.filter(event => event.phase === 'saved' && event.kind === 'fixed-plan').map(event => event.value),
+  };
+};
 
 function readControls(): Controls {
   const query = new URLSearchParams(location.search);
@@ -101,7 +167,33 @@ function canvasHash(canvases: HTMLCanvasElement[]) {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-export function V04Lab() {
+type Operation =
+  | { type: 'method'; method: 'putImageData'; args: [ImageData, number, number] }
+  | { type: 'method'; method: 'fillRect' | 'clearRect'; args: [number, number, number, number] }
+  | { type: 'style'; property: 'imageSmoothingEnabled'; value: false }
+  | { type: 'style'; property: 'fillStyle'; value: '#07111f' | '#38bdf8' | '#a78bfa' };
+const heavyPlan: (imageData: ImageData, callCount: number) => Operation[] = function heavyPlan(imageData, callCount) {
+  const plan: Operation[] = [];
+  for (let index = 0; index < callCount; index++) plan.push({ type: 'method', method: 'putImageData', args: [imageData, 0, 0] });
+  for (let index = 0; index < HEAVY_NEGATIVE_TRAILING_OPERATIONS; index++) plan.push({ type: 'method', method: 'fillRect', args: [(index * 13) % 1272, (index * 7) % 552, 3, 2] });
+  plan.push({ type: 'style', property: 'imageSmoothingEnabled', value: false });
+  plan.push({ type: 'method', method: 'clearRect', args: [0, 0, 1280, 560] });
+  plan.push({ type: 'style', property: 'fillStyle', value: '#07111f' });
+  plan.push({ type: 'method', method: 'fillRect', args: [0, 0, 1280, 560] });
+  plan.push({ type: 'style', property: 'fillStyle', value: '#38bdf8' });
+  plan.push({ type: 'method', method: 'fillRect', args: [72, 96, 328, 176] });
+  plan.push({ type: 'style', property: 'fillStyle', value: '#a78bfa' });
+  plan.push({ type: 'method', method: 'fillRect', args: [528, 96, 224, 176] });
+  return plan;
+};
+
+function validNativeCanvas2D(value: unknown): value is NativeCanvas2D {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join('|') !== 'canvas|clearRect|context|fillRect|putImageData') return false;
+  const capability = value as NativeCanvas2D;
+  return capability.canvas instanceof HTMLCanvasElement && capability.context instanceof CanvasRenderingContext2D && capability.canvas.width === 1280 && capability.canvas.height === 560 && capability.context.canvas === capability.canvas && typeof capability.putImageData === 'function' && typeof capability.fillRect === 'function' && typeof capability.clearRect === 'function';
+}
+
+export function V04Lab({ nativeCanvas2D }: { nativeCanvas2D: NativeCanvas2D }) {
   const controls = useMemo(readControls, []);
   const factors = useMemo(() => factorsFor(controls), [controls]);
   const host = useRef<HTMLDivElement>(null);
@@ -122,7 +214,8 @@ export function V04Lab() {
       const order = factors.identityOrder === 'first' ? [primary, ...decoys] : factors.identityOrder === 'middle' ? [decoys[0], primary, decoys[1]] : [...decoys, primary];
       canvasHost.append(...order); directCanvases.push(...order);
     }
-    configureCanvas(primary, factors);
+    configureCanvas(primary, factors, controls.scenario === 'heavy-burst' && controls.variant === 'nearest-negative' && controls.mode === 'negative' ? HEAVY_NEGATIVE_WORKLOAD_SCALE : 1);
+    if (controls.scenario === 'heavy-burst' && controls.variant === 'nearest-negative' && controls.mode === 'negative') { primary.width = HEAVY_NEGATIVE_WORKLOAD_WIDTH; primary.height = HEAVY_NEGATIVE_WORKLOAD_HEIGHT; }
     for (const decoy of decoys) { decoy.width = 8; decoy.height = 8; decoy.style.width = '8px'; decoy.style.height = '8px'; }
     const contexts = new Map<HTMLCanvasElement, CanvasRenderingContext2D>();
     const contextFor = (canvas: HTMLCanvasElement) => { const current = contexts.get(canvas) ?? canvas.getContext('2d')!; contexts.set(canvas, current); return current; };
@@ -139,28 +232,59 @@ export function V04Lab() {
     const [cssWidth, cssHeight] = dimensions(factors.geometry);
     const prepared = new Map(scenarioCanvases.map(canvas => [canvas, makePrepared(cssWidth, cssHeight)]));
     const heavyTile = makePrepared(12, 8);
-    const heavyPixels = contextFor(primary).createImageData(primary.width, primary.height);
+    const heavyPixels = new ImageData(primary.width, primary.height);
     const preparedFor = (canvas: HTMLCanvasElement) => prepared.get(canvas) ?? makePrepared(canvas.width, canvas.height);
     const paint = (canvas = activePrimary, change = 0) => { drawVisible(contextFor(canvas), canvas, preparedFor(canvas), factors.methodMix, change); state.drawCount++; };
+    if (!validNativeCanvas2D(nativeCanvas2D)) throw new Error('invalid native canvas capability');
+    let heavyCalibration: HeavyCalibration | null = null;
+    let measuredPlan: Operation[] | null = null;
+    const heavyNegative = controls.scenario === 'heavy-burst' && controls.variant === 'nearest-negative' && controls.mode === 'negative';
+    const replayNative = (plan: Operation[], durations: number[] = []) => {
+      for (const step of plan) {
+        if (step.type === 'style') nativeCanvas2D.context[step.property] = step.value as never;
+        else durations.push(measureNativeCall(performance.now.bind(performance), nativeCanvas2D[step.method], nativeCanvas2D.context, step.args));
+      }
+    };
+    const replayWrapped = (plan: Operation[]) => {
+      const context = contextFor(activePrimary);
+      for (const step of plan) {
+        if (step.type === 'style') context[step.property] = step.value as never;
+        else Reflect.apply(context[step.method], context, step.args);
+      }
+    };
+    if (heavyNegative) {
+      if (primary.width !== 1280 || primary.height !== 560) throw new Error('invalid heavy canvas dimensions');
+      const preflightStartedAt = performance.now();
+      const imageData = new ImageData(1280, 560); const events: { phase: 'warmup' | 'saved'; kind: 'primitive' | 'fixed-plan'; value: number }[] = []; let observedWarmupCallCount = 0; let observedPrimitiveSampleCount = 0; let observedFixedPlanSampleCount = 0;
+      for (let index = 0; index < 2; index++) { observedWarmupCallCount++; events.push({ phase: 'warmup', kind: 'primitive', value: measureNativeCall(performance.now.bind(performance), nativeCanvas2D.putImageData, nativeCanvas2D.context, [imageData, 0, 0]) }); }
+      const fixedPlan = heavyPlan(imageData, 0);
+      for (let index = 0; index < HEAVY_NEGATIVE_PRIMITIVE_SAMPLE_COUNT; index++) { observedPrimitiveSampleCount++; events.push({ phase: 'saved', kind: 'primitive', value: measureNativeCall(performance.now.bind(performance), nativeCanvas2D.putImageData, nativeCanvas2D.context, [imageData, 0, 0]) }); }
+      for (let index = 0; index < HEAVY_NEGATIVE_FIXED_PLAN_SAMPLE_COUNT; index++) { observedFixedPlanSampleCount++; const durations: number[] = []; replayNative(fixedPlan, durations); events.push({ phase: 'saved', kind: 'fixed-plan', value: durations.reduce((sum, value) => sum + value, 0) }); }
+      const samples = selectHeavySamples(events); const primitiveSamplesMs = samples.primitive; const fixedPlanSamplesMs = samples['fixed-plan']; const primitiveMedianMs = median(primitiveSamplesMs); const fixedPlanMedianMs = median(fixedPlanSamplesMs); const nativeWorkBudgetMs = HEAVY_NEGATIVE_TARGET_MS - fixedPlanMedianMs; const callCount = Math.ceil(nativeWorkBudgetMs / primitiveMedianMs); const modeledNativeSelfTimeMs = primitiveMedianMs * callCount + fixedPlanMedianMs;
+      if (primitiveSamplesMs.length !== HEAVY_NEGATIVE_PRIMITIVE_SAMPLE_COUNT || fixedPlanSamplesMs.length !== HEAVY_NEGATIVE_FIXED_PLAN_SAMPLE_COUNT || !primitiveSamplesMs.every(value => Number.isFinite(value) && value > 0) || !fixedPlanSamplesMs.every(value => Number.isFinite(value) && value >= 0) || !Number.isFinite(primitiveMedianMs) || primitiveMedianMs <= 0 || !Number.isFinite(fixedPlanMedianMs) || fixedPlanMedianMs < 0 || !Number.isFinite(nativeWorkBudgetMs) || nativeWorkBudgetMs <= 0 || !Number.isInteger(callCount) || callCount < 1 || callCount > HEAVY_NEGATIVE_MAX_CALL_COUNT || callCount > HEAVY_NEGATIVE_MAX_ITERATIONS || !Number.isFinite(modeledNativeSelfTimeMs) || modeledNativeSelfTimeMs < HEAVY_NEGATIVE_BAND_MINIMUM_MS || modeledNativeSelfTimeMs >= HEAVY_NEGATIVE_BAND_MAXIMUM_MS) throw new Error('heavy nearest-negative calibration failed');
+      const plan = heavyPlan(imageData, callCount); const calibrationCallDurationsMs: number[] = []; replayNative(plan, calibrationCallDurationsMs); const calibratedNativeSelfTimeMs = calibrationCallDurationsMs.reduce((sum, value) => sum + value, 0); const preflightElapsedMs = performance.now() - preflightStartedAt;
+      if (calibrationCallDurationsMs.length !== callCount + HEAVY_NEGATIVE_TRAILING_OPERATIONS + HEAVY_NEGATIVE_FINAL_PAINT_METHOD_CALL_COUNT || !calibrationCallDurationsMs.every(value => Number.isFinite(value) && value >= 0) || !Number.isFinite(calibratedNativeSelfTimeMs) || calibratedNativeSelfTimeMs < HEAVY_NEGATIVE_BAND_MINIMUM_MS || calibratedNativeSelfTimeMs >= HEAVY_NEGATIVE_BAND_MAXIMUM_MS || !Number.isFinite(preflightElapsedMs) || preflightElapsedMs < 0 || preflightElapsedMs > HEAVY_NEGATIVE_MAX_PREFLIGHT_ELAPSED_MS) throw new Error('heavy nearest-negative calibration failed');
+      measuredPlan = plan;
+      heavyCalibration = { targetMs: HEAVY_NEGATIVE_TARGET_MS, bandMinimumInclusiveMs: HEAVY_NEGATIVE_BAND_MINIMUM_MS, bandMaximumExclusiveMs: HEAVY_NEGATIVE_BAND_MAXIMUM_EXCLUSIVE_MS, maxIterations: HEAVY_NEGATIVE_MAX_ITERATIONS, maxMeasuredWorkElapsedMs: HEAVY_NEGATIVE_MAX_MEASURED_WORK_ELAPSED_MS, maxPreflightElapsedMs: HEAVY_NEGATIVE_MAX_PREFLIGHT_ELAPSED_MS, trailingOperations: HEAVY_NEGATIVE_TRAILING_OPERATIONS, finalPaintCount: HEAVY_NEGATIVE_FINAL_PAINT_COUNT, finalPaintMethodCallCount: HEAVY_NEGATIVE_FINAL_PAINT_METHOD_CALL_COUNT, finalPaintStyleStepCount: HEAVY_NEGATIVE_FINAL_PAINT_STYLE_STEP_COUNT, workloadScale: HEAVY_NEGATIVE_WORKLOAD_SCALE, workloadWidth: HEAVY_NEGATIVE_WORKLOAD_WIDTH, workloadHeight: HEAVY_NEGATIVE_WORKLOAD_HEIGHT, trailingXMultiplier: HEAVY_NEGATIVE_TRAILING_X_MULTIPLIER, trailingYMultiplier: HEAVY_NEGATIVE_TRAILING_Y_MULTIPLIER, trailingEdgeInset: HEAVY_NEGATIVE_TRAILING_EDGE_INSET, trailingRectWidth: HEAVY_NEGATIVE_TRAILING_RECT_WIDTH, trailingRectHeight: HEAVY_NEGATIVE_TRAILING_RECT_HEIGHT, scene: [...scene], finalPaintColors: [...HEAVY_NEGATIVE_FINAL_PAINT_COLORS], warmupPolicy: 'same-realm-native-before-ready', calibrationSource: 'detached-html-canvas-2d-native', timingModel: 'per-native-call', operationPlan: 'heavy-negative-v1', cap: 'call-count', declaredWarmupCallCount: HEAVY_NEGATIVE_WARMUP_CALL_COUNT, observedWarmupCallCount, declaredPrimitiveSampleCount: HEAVY_NEGATIVE_PRIMITIVE_SAMPLE_COUNT, observedPrimitiveSampleCount, declaredFixedPlanSampleCount: HEAVY_NEGATIVE_FIXED_PLAN_SAMPLE_COUNT, observedFixedPlanSampleCount, maxCallCount: HEAVY_NEGATIVE_MAX_CALL_COUNT, primitiveSamplesMs, primitiveMedianMs, fixedPlanSamplesMs, fixedPlanMedianMs, nativeWorkBudgetMs, callCount, planCallCount: callCount + HEAVY_NEGATIVE_TRAILING_OPERATIONS + HEAVY_NEGATIVE_FINAL_PAINT_METHOD_CALL_COUNT, planStyleStepCount: HEAVY_NEGATIVE_FINAL_PAINT_STYLE_STEP_COUNT, calibrationCallDurationsMs, calibratedNativeSelfTimeMs, modeledNativeSelfTimeMs, measuredOuterTimeMs: 0, measuredOuterOverrunMs: 0, preflightElapsedMs };
+    }
 
     async function heavy() {
       state.phase = 'heavy-start';
       const fixed = controls.mode === 'fixed' || controls.mutation === 'heavy-burst-seed-off';
+      let invalidHeavyCalibration = false;
       if (!fixed) {
         const context = contextFor(activePrimary);
         if (controls.scenario === 'heavy-burst' && controls.mode === 'negative') {
-          let measuredCallTimeMs = 0;
-          for (let index = 0; measuredCallTimeMs < 7.8 && index < 2048; index++) {
-            const callStartedAt = performance.now();
-            context.putImageData(heavyPixels, 0, 0);
-            measuredCallTimeMs += performance.now() - callStartedAt;
-          }
+          const calibrationStartedAt = performance.now();
+          if (!measuredPlan || !heavyCalibration) throw new Error('heavy nearest-negative calibration failed');
+          replayWrapped(measuredPlan);
+          const measuredOuterTimeMs = performance.now() - calibrationStartedAt; heavyCalibration.measuredOuterTimeMs = measuredOuterTimeMs; heavyCalibration.measuredOuterOverrunMs = Math.max(0, measuredOuterTimeMs - HEAVY_NEGATIVE_MAX_MEASURED_WORK_ELAPSED_MS); if (!Number.isFinite(measuredOuterTimeMs) || measuredOuterTimeMs < 0 || !Number.isFinite(heavyCalibration.measuredOuterOverrunMs) || heavyCalibration.measuredOuterOverrunMs !== 0) invalidHeavyCalibration = true;
         } else {
           const pixelPasses = controls.mode === 'negative' ? 16 : 512;
           for (let index = 0; index < pixelPasses; index++) context.putImageData(heavyPixels, 0, 0);
         }
         state.phase = 'heavy-factor-draws';
-        const operations = controls.mode === 'negative' ? 200 : 800;
+        const operations = heavyNegative ? 0 : controls.mode === 'negative' ? 200 : 800;
         for (let index = 0; index < operations; index++) {
           const x = (index * 13) % Math.max(1, activePrimary.width - 8); const y = (index * 7) % Math.max(1, activePrimary.height - 8);
           if (factors.methodMix === 'image') context.drawImage(heavyTile, x, y);
@@ -169,7 +293,7 @@ export function V04Lab() {
           else context.fillRect(x, y, 3, 2);
         }
       }
-      state.phase = 'heavy-final-paint'; paint(); state.phase = 'heavy-settle'; await frames(3); state.phase = 'heavy-done';
+      state.phase = 'heavy-final-paint'; if (!heavyNegative) paint(); else state.drawCount++; if (invalidHeavyCalibration) throw new Error('heavy nearest-negative calibration did not reach a stop condition'); state.phase = 'heavy-settle'; await frames(3); state.phase = 'heavy-done';
     }
     async function repeated() {
       if (controls.mode === 'negative') {
@@ -291,6 +415,8 @@ export function V04Lab() {
       actions: [...state.actions], acceptedRunCount: state.acceptedRunCount, drawCount: state.drawCount, interactionComplete: state.interactionComplete, interactionStartedAt: state.interactionStartedAt, boundaryCount: state.boundaryCount, phase: state.phase,
       visibleChecksum: `${controls.scenario}|${controls.variant}|${scene.join(',')}`,
       visibleImageHash: includeImage ? canvasHash(scenarioCanvases.map(canvas => canvas === primary ? activePrimary : canvas).filter(canvas => canvas.isConnected)) : '',
+      heavyCalibration,
+      capabilityValidated: true,
     });
     window.__CANVAS_LAB_FIXTURE__ = { ready: true, completed, snapshot };
     return () => {
@@ -301,7 +427,7 @@ export function V04Lab() {
       outsideReact?.remove();
       delete window.__CANVAS_LAB_FIXTURE__;
     };
-  }, [controls, factors]);
+  }, [controls, factors, nativeCanvas2D]);
 
   const reactOrder = factors.identityOrder === 'first' ? ['primary', 'decoy-a', 'decoy-b'] : factors.identityOrder === 'middle' ? ['decoy-a', 'primary', 'decoy-b'] : ['decoy-a', 'decoy-b', 'primary'];
   return <main className="lab-shell">

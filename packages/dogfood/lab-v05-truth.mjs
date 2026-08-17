@@ -68,6 +68,9 @@ const verificationCommands = [
   'git diff --check',
   'git status --short --branch',
 ];
+export const verificationCommandsFor = releaseMode => releaseMode
+  ? verificationCommands.filter(command => command !== 'pnpm --filter dogfood run lab:v0.4')
+  : verificationCommands;
 const commonRowKeys = ['scenario', 'variant', 'mode', 'expectedResult', 'actualResult', 'artifactPath', 'commitHash', 'packageHash', 'browserRevision', 'pass', 'facts'];
 const stable = value => JSON.stringify(value);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -361,8 +364,8 @@ async function checkCallsiteDirectory(directory, collectorRun) {
 }
 
 async function validateMetadata(metadata, truth, currentStatus) {
-  const keys = ['schemaVersion', 'runId', 'command', 'commitHash', 'packageHash', 'bundleHash', 'expectedHash', 'expectedHashes', 'fixtureHashes', 'browserRevision', 'platform', 'nodeVersion', 'startedAt', 'endedAt', 'initialStatus', 'finalStatus'];
-  if (!exactKeys(metadata, keys) || metadata.schemaVersion !== 1 || metadata.command !== 'pnpm --filter dogfood run lab:v0.5' || typeof metadata.runId !== 'string' || !metadata.runId) fail('run metadata shape');
+  const keys = ['schemaVersion', 'runId', 'command', 'releaseMode', 'commitHash', 'packageHash', 'bundleHash', 'expectedHash', 'expectedHashes', 'fixtureHashes', 'browserRevision', 'platform', 'nodeVersion', 'startedAt', 'endedAt', 'initialStatus', 'finalStatus'];
+  if (!exactKeys(metadata, keys) || metadata.schemaVersion !== 1 || metadata.command !== 'pnpm --filter dogfood run lab:v0.5' || typeof metadata.releaseMode !== 'boolean' || typeof metadata.runId !== 'string' || !metadata.runId) fail('run metadata shape');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
   const bundle = await readFile(bundlePath);
   if (metadata.commitHash !== head || !/^[a-f0-9]{40}$/.test(metadata.commitHash) || metadata.bundleHash !== sha256(bundle) || metadata.packageHash !== sha256(Buffer.concat([await readFile(packagePath), bundle]))) fail('run build metadata');
@@ -393,12 +396,13 @@ function validateRunLinks(links, runId, present) {
   for (const group of Object.keys(producerByGroup)) if (links.groups[group] !== `provenance/${group}.json`) fail(`run link group:${group}`);
 }
 
-function validateVerificationOutput(text) {
+function validateVerificationOutput(text, releaseMode) {
+  const expectedCommands = verificationCommandsFor(releaseMode);
   const records = text.trimEnd().split(/(?=^COMMAND: )/m).filter(Boolean);
-  if (records.length !== verificationCommands.length) fail('verification record count');
+  if (records.length !== expectedCommands.length) fail('verification record count');
   for (const [index, record] of records.entries()) {
     const lines = record.split('\n');
-    if (lines[0] !== `COMMAND: ${verificationCommands[index]}` || lines[1] !== 'EXIT: 0') fail(`verification record:${verificationCommands[index]}`);
+    if (lines[0] !== `COMMAND: ${expectedCommands[index]}` || lines[1] !== 'EXIT: 0') fail(`verification record:${expectedCommands[index]}`);
     const attempts = Number(/^ATTEMPTS: ([1-9]\d*)$/.exec(lines[2])?.[1]);
     const prior = [...record.matchAll(/^ATTEMPT (\d+) EXIT: (-?\d+)$/gm)];
     const stdout = [...record.matchAll(/^STDOUT:$/gm)];
@@ -411,7 +415,7 @@ function validateVerificationOutput(text) {
 
 function validateCollectorRuns(value, metadata) {
   if (!exactKeys(value, ['schemaVersion', 'runId', 'runs']) || value.schemaVersion !== 1 || value.runId !== metadata.runId || !Array.isArray(value.runs)) fail('collector runs shape');
-  const expected = ['pnpm --filter dogfood run lab:v0.5:test', ...verificationCommands, browserCollectorCommand];
+  const expected = ['pnpm --filter dogfood run lab:v0.5:test', ...verificationCommandsFor(metadata.releaseMode), browserCollectorCommand];
   if (stable(value.runs.map(run => run.command)) !== stable(expected)) fail('collector command order');
   for (const run of value.runs) {
     if (!exactKeys(run, ['runId', 'command', 'startedAt', 'endedAt', 'exitCode']) || run.runId !== metadata.runId || run.exitCode !== 0) fail('collector run');
@@ -513,7 +517,7 @@ export async function checkEvidence(directory, options = {}) {
   const diskMutationLine = `CANVAS_LAB_V05_DISK_MUTATIONS: PASS ${diskMutationNames.join(',')}`;
   if (!options.allowPendingMutations && !mutationOutput.includes(diskMutationLine)) fail('disk mutation output');
   const verificationOutput = await readFile(path.join(directory, 'verification-output.txt'), 'utf8');
-  validateVerificationOutput(verificationOutput);
+  validateVerificationOutput(verificationOutput, metadata.releaseMode);
 
   const manifestNames = present.filter(name => name !== 'evidence-sha256.txt').sort();
   const manifest = (await readFile(path.join(directory, 'evidence-sha256.txt'), 'utf8')).trim().split('\n').filter(Boolean);

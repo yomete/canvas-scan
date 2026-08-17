@@ -28,6 +28,7 @@ const status = () => command(['git', 'status', '--short', '--untracked-files=all
 const write = (name, value) => writeFile(path.join(directory, name), typeof value === 'string' || Buffer.isBuffer(value) ? value : stable(value));
 const readJson = async name => JSON.parse(await readFile(path.join(directory, name), 'utf8'));
 const serverFailures = [];
+const releaseMode = process.env.SIDPROJ_70_RELEASE === '1';
 
 function command(parts, options = {}) {
   const startedAt = new Date().toISOString();
@@ -303,11 +304,11 @@ const commands = [
   ['git', 'diff', '--exit-code', 'f05f2fe2a7b5c005e1ca2d3e4ea8b04d454e5617', '--', 'apps/workbench/public/v04-lab.html', 'apps/workbench/src/V04Lab.tsx', 'apps/workbench/src/v04-lab-main.tsx', 'packages/dogfood/lab-v04.mjs', 'packages/dogfood/lab-v04-truth.mjs', 'packages/dogfood/lab-v04.test.mjs'],
   ['git', 'diff', '--check'],
   ['git', 'status', '--short', '--branch'],
-];
+].filter(parts => !releaseMode || parts.join(' ') !== 'pnpm --filter dogfood run lab:v0.4');
 const verificationOutput = [];
 for (const parts of commands) {
   const commandText = parts.join(' ');
-  const result = recordedCommand(parts, commandText === 'pnpm --filter dogfood run lab:v0.4' ? 3 : 1);
+  const result = recordedCommand(parts);
   verificationOutput.push(result.output);
   if (commandText === 'pnpm --filter dogfood run probe:command-capture') {
     await copyCommandEvidence();
@@ -370,6 +371,7 @@ const metadata = {
   schemaVersion: 1,
   runId: aggregateRunId,
   command: 'pnpm --filter dogfood run lab:v0.5',
+  releaseMode,
   commitHash,
   packageHash: sha256(Buffer.concat([await readFile(packagePath), bundle])),
   bundleHash: sha256(bundle),

@@ -114,12 +114,17 @@ function hasReplacement(capture) {
   const detached = lifecycle(capture).filter(event => event.type === 'detached');
   return detached.some(event => canvases(capture).some(summary => summary.canvasId !== event.canvasId));
 }
+export function heavyNearestNegativeFailures(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 7 && value < 8) return [];
+  const observed = value === undefined || value === null ? 'missing' : Number.isNaN(value) ? 'NaN' : value === Infinity ? 'Infinity' : value === -Infinity ? '-Infinity' : `${String(value)} ms`;
+  return [`nearest-negative heavy self-time observed=${observed}; required=[7, 8) ms`];
+}
 function negativeBoundaryFailures(manifest, capture) {
   if (manifest.mode !== 'negative') return [];
   if (manifest.scenario === 'heavy-burst' || manifest.scenario === 'non-react-burst') {
     const measured = canvases(capture)[0]; const value = measured?.canvasApiSelfTimeMs;
     const minimum = manifest.scenario === 'heavy-burst' ? 7 : 0;
-    const failures = typeof value === 'number' && value >= minimum && value < 8 ? [] : ['nearest-negative heavy self-time is not in the required range below 8 ms'];
+    const failures = manifest.scenario === 'heavy-burst' ? heavyNearestNegativeFailures(value) : typeof value === 'number' && value >= minimum && value < 8 ? [] : ['nearest-negative heavy self-time is not in the required range below 8 ms'];
     if (manifest.scenario === 'non-react-burst' && (measured?.nearestReactOwner !== null || measured?.attributionKind !== 'unattributed')) failures.push('nearest-negative non-React owner evidence is invalid');
     return failures;
   }
