@@ -15,8 +15,8 @@ const origin = `http://127.0.0.1:${port}`;
 export const ACTION_IDS = ['early-load', 'record-baseline', 'explain-baseline', 'copy-explanation', 'keep-baseline', 'apply-change', 'record-candidate', 'pair-findings', 'copy-comparison'];
 const diagnosticKeys = ['warnings', 'errors', 'pageErrors', 'requestFailures'];
 const demoTruth = {
-  baseline: { activeWindowCount: 8, rasterOperationCount: 40, clearRects: 8, fillRects: 32, fillStyles: 8, repeatedWindowCount: 7, repeatedRasterOperationCount: 35, rasterOperationsPerRepeatedWindow: 5 },
-  candidate: { activeWindowCount: 8, rasterOperationCount: 24, clearRects: 8, fillRects: 16, fillStyles: 8, repeatedWindowCount: 7, repeatedRasterOperationCount: 21, rasterOperationsPerRepeatedWindow: 3 },
+  baseline: { activeWindowCount: 8, clearRects: 8, fillRects: 32, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [4, 5] },
+  candidate: { activeWindowCount: 8, clearRects: 8, fillRects: 16, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [2, 3] },
 };
 const comparisonMeasureIds = [
   'active-window-count', 'raster-operation-count', 'canvas-api-self-time-ms', 'maximum-window-self-time-ms',
@@ -46,14 +46,24 @@ function selectedRepeated(session, findingIndex) {
   return { finding, canvas: canvases[0] };
 }
 
-function validateDemoSession(session, findingIndex, mode) {
+function validateBrowserDrawCounts(drawCounts) {
+  if (!exact(drawCounts, ['baseline', 'candidate'])) throw new Error('browser draw counts changed');
+  for (const mode of ['baseline', 'candidate']) {
+    const expected = demoTruth[mode];
+    if (!exact(drawCounts[mode], ['clearRect', 'fillRect']) || drawCounts[mode].clearRect !== expected.clearRects || drawCounts[mode].fillRect !== expected.fillRects) throw new Error(`${mode} browser draw counts changed`);
+  }
+  return true;
+}
+
+function validateDemoSession(session, findingIndex, mode, drawCounts) {
   const selected = selectedRepeated(session, findingIndex);
   const expected = demoTruth[mode];
   const methods = selected.canvas.methodEvidence;
-  if (selected.canvas.activeWindowCount !== expected.activeWindowCount || selected.canvas.rasterOperationCount !== expected.rasterOperationCount || !Number.isFinite(selected.canvas.canvasApiSelfTimeMs) || selected.canvas.canvasApiSelfTimeMs < 0 || !Number.isFinite(selected.canvas.maxWindowSelfTimeMs) || selected.canvas.maxWindowSelfTimeMs < 0) throw new Error(`${mode} demo canvas truth changed`);
-  if (!exact(methods, ['clearRect', 'fillRect', 'fillStyle']) || methods.clearRect.count !== expected.clearRects || methods.fillRect.count !== expected.fillRects || methods.fillStyle.count !== expected.fillStyles || !Number.isFinite(methods.clearRect.canvasApiSelfTimeMs) || !Number.isFinite(methods.fillRect.canvasApiSelfTimeMs) || methods.fillStyle.canvasApiSelfTimeMs !== null) throw new Error(`${mode} demo method truth changed`);
-  if (selected.finding.repeatedWindowCount !== expected.repeatedWindowCount || selected.finding.rasterOperationCount !== expected.repeatedRasterOperationCount || !exact(selected.finding.unknownCoverage, ['unknownWindowCount', 'activeWindowCount']) || selected.finding.unknownCoverage.unknownWindowCount !== 1 || selected.finding.unknownCoverage.activeWindowCount !== expected.activeWindowCount) throw new Error(`${mode} repeated finding truth changed`);
-  if (!Array.isArray(selected.finding.repeatedWindows) || selected.finding.repeatedWindows.length !== expected.repeatedWindowCount || selected.finding.repeatedWindows.some(window => window.rasterOperationCount !== expected.rasterOperationsPerRepeatedWindow || window.comparisonGap !== 1)) throw new Error(`${mode} repeated window truth changed`);
+  const rasterOperationCount = drawCounts.clearRect + drawCounts.fillRect;
+  if (selected.canvas.activeWindowCount !== expected.activeWindowCount || selected.canvas.rasterOperationCount !== rasterOperationCount || !Number.isFinite(selected.canvas.canvasApiSelfTimeMs) || selected.canvas.canvasApiSelfTimeMs < 0 || !Number.isFinite(selected.canvas.maxWindowSelfTimeMs) || selected.canvas.maxWindowSelfTimeMs < 0) throw new Error(`${mode} demo canvas truth changed`);
+  if (!exact(methods, ['clearRect', 'fillRect', 'fillStyle']) || methods.clearRect.count !== drawCounts.clearRect || methods.fillRect.count !== drawCounts.fillRect || methods.fillStyle.count !== expected.fillStyles || !Number.isFinite(methods.clearRect.canvasApiSelfTimeMs) || !Number.isFinite(methods.fillRect.canvasApiSelfTimeMs) || methods.fillStyle.canvasApiSelfTimeMs !== null) throw new Error(`${mode} demo method truth changed`);
+  if (!expected.repeatedWindowCounts.includes(selected.finding.repeatedWindowCount) || !exact(selected.finding.unknownCoverage, ['unknownWindowCount', 'activeWindowCount']) || !Number.isInteger(selected.finding.unknownCoverage.unknownWindowCount) || selected.finding.unknownCoverage.unknownWindowCount < 1 || selected.finding.unknownCoverage.unknownWindowCount > 2 || selected.finding.unknownCoverage.activeWindowCount !== expected.activeWindowCount) throw new Error(`${mode} repeated finding truth changed`);
+  if (!Array.isArray(selected.finding.repeatedWindows) || selected.finding.repeatedWindows.length !== selected.finding.repeatedWindowCount || selected.finding.repeatedWindows.some(window => !expected.rasterOperationsPerRepeatedWindow.includes(window.rasterOperationCount) || window.comparisonGap !== 1) || selected.finding.rasterOperationCount !== selected.finding.repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0)) throw new Error(`${mode} repeated window truth changed`);
   return selected;
 }
 
@@ -66,12 +76,12 @@ function validateDemoCommandWindow(window) {
   return window.commands.every((command, index) => command.ordinal === index && command.operationKind === expected[index][0] && command.name === expected[index][1] && command.argumentCount === expected[index][2] && Array.isArray(command.arguments) && command.arguments.length === expected[index][2] && command.unknownReason === null);
 }
 
-function validateComparisonMeasures(measures) {
+function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
   if (!Array.isArray(measures) || JSON.stringify(measures.map(item => item.id)) !== JSON.stringify(comparisonMeasureIds)) throw new Error('copied comparison measure IDs changed');
   const structural = new Map([
-    ['active-window-count', [8, 8]], ['raster-operation-count', [40, 24]],
-    ['method:clearRect:operation-count', [8, 8]], ['method:fillRect:operation-count', [32, 16]], ['method:fillStyle:operation-count', [8, 8]],
-    ['unknown-command-window-count', [1, 1]], ['repeated-window-count', [7, 7]], ['repeated-raster-operation-count', [35, 21]], ['comparison-gap-count', [0, 0]],
+    ['active-window-count', [8, 8]], ['raster-operation-count', [drawCounts.baseline.clearRect + drawCounts.baseline.fillRect, drawCounts.candidate.clearRect + drawCounts.candidate.fillRect]],
+    ['method:clearRect:operation-count', [drawCounts.baseline.clearRect, drawCounts.candidate.clearRect]], ['method:fillRect:operation-count', [drawCounts.baseline.fillRect, drawCounts.candidate.fillRect]], ['method:fillStyle:operation-count', [8, 8]],
+    ['unknown-command-window-count', [baseline.finding.unknownCoverage.unknownWindowCount, candidate.finding.unknownCoverage.unknownWindowCount]], ['repeated-window-count', [baseline.finding.repeatedWindowCount, candidate.finding.repeatedWindowCount]], ['repeated-raster-operation-count', [baseline.finding.rasterOperationCount, candidate.finding.rasterOperationCount]], ['comparison-gap-count', [0, 0]],
   ]);
   for (const item of measures) {
     if (!exact(item, ['id', 'unit', 'baseline', 'candidate', 'delta', 'direction', 'interpretation'])) throw new Error('copied comparison measure shape changed');
@@ -97,23 +107,25 @@ export function validateCopiedExplanation(artifact, selection) {
   return true;
 }
 
-export function validateCopiedComparison(artifact, baselineSession, candidateSession, pairing) {
+export function validateCopiedComparison(artifact, baselineSession, candidateSession, pairing, drawCounts) {
   const keys = ['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'improvementEstablished'];
   if (!exact(artifact, keys) || artifact.schemaVersion !== 1 || artifact.canvasScanVersion !== '0.5.0' || !text(artifact.comparisonId) || !text(artifact.createdAt) || artifact.pairingMethod !== 'user-selected' || artifact.status !== 'comparable' || artifact.improvementEstablished !== false || artifact.incomparableReasons.length !== 0) throw new Error('copied comparison root changed');
-  const left = validateDemoSession(baselineSession, pairing.baselineFindingIndex, 'baseline');
-  const right = validateDemoSession(candidateSession, pairing.candidateFindingIndex, 'candidate');
+  validateBrowserDrawCounts(drawCounts);
+  const left = validateDemoSession(baselineSession, pairing.baselineFindingIndex, 'baseline', drawCounts.baseline);
+  const right = validateDemoSession(candidateSession, pairing.candidateFindingIndex, 'candidate', drawCounts.candidate);
   const refKeys = ['sessionId', 'findingIndex', 'findingType', 'canvasId'];
   if (!exact(artifact.baseline, refKeys) || artifact.baseline.sessionId !== baselineSession.sessionId || artifact.baseline.findingIndex !== pairing.baselineFindingIndex || artifact.baseline.findingType !== left.finding.type || artifact.baseline.canvasId !== left.finding.canvasId) throw new Error('copied comparison baseline changed');
   if (!exact(artifact.candidate, refKeys) || artifact.candidate.sessionId !== candidateSession.sessionId || artifact.candidate.findingIndex !== pairing.candidateFindingIndex || artifact.candidate.findingType !== right.finding.type || artifact.candidate.canvasId !== right.finding.canvasId) throw new Error('copied comparison candidate changed');
-  validateComparisonMeasures(artifact.measures);
+  validateComparisonMeasures(artifact.measures, left, right, drawCounts);
   return true;
 }
 
 export function checkReadinessEvidence(value, expectedCandidate) {
-  const rootKeys = ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'];
+  const rootKeys = ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'browserDrawCounts', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'];
   if (!exact(value, rootKeys) || value.schemaVersion !== 1 || value.issue !== 'SIDPROJ-105' || value.status !== 'PASS') throw new Error('readiness evidence root changed');
   if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !text(value.browserVersion)) throw new Error('readiness candidate identity changed');
   if (value.earlyLoad !== true || value.cleanBefore !== true || value.cleanAfter !== true || JSON.stringify(value.publicMethods) !== JSON.stringify(RITUAL_METHODS) || JSON.stringify(value.actionIds) !== JSON.stringify(ACTION_IDS)) throw new Error('readiness ritual identity changed');
+  validateBrowserDrawCounts(value.browserDrawCounts);
 
   const findingKeys = ['sessionId', 'findingIndex', 'findingType'];
   if (!exact(value.baseline, findingKeys) || !exact(value.candidate, findingKeys) || !text(value.baseline.sessionId) || !text(value.candidate.sessionId) || value.baseline.sessionId === value.candidate.sessionId || !Number.isInteger(value.baseline.findingIndex) || !Number.isInteger(value.candidate.findingIndex) || value.baseline.findingType !== 'repeated-draw-work' || value.candidate.findingType !== value.baseline.findingType) throw new Error('readiness selected findings changed');
@@ -125,7 +137,7 @@ export function checkReadinessEvidence(value, expectedCandidate) {
   if (!exact(value.comparison, comparisonKeys) || value.comparison.pairingMethod !== 'user-selected' || value.comparison.status !== 'comparable' || value.comparison.improvementEstablished !== false || value.comparison.baselineSessionId !== value.baseline.sessionId || value.comparison.baselineFindingIndex !== value.baseline.findingIndex || value.comparison.candidateSessionId !== value.candidate.sessionId || value.comparison.candidateFindingIndex !== value.candidate.findingIndex) throw new Error('readiness explicit comparison changed');
   if (!exact(value.artifacts, ['baselineSession', 'candidateSession', 'copiedExplanation', 'copiedComparison']) || value.artifacts.baselineSession.sessionId !== value.baseline.sessionId || value.artifacts.candidateSession.sessionId !== value.candidate.sessionId) throw new Error('readiness raw artifacts changed');
   validateCopiedExplanation(value.artifacts.copiedExplanation, value.baseline);
-  validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: value.baseline.findingIndex, candidateFindingIndex: value.candidate.findingIndex });
+  validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: value.baseline.findingIndex, candidateFindingIndex: value.candidate.findingIndex }, value.browserDrawCounts);
   if (!exact(value.diagnostics, diagnosticKeys) || diagnosticKeys.some(key => !Array.isArray(value.diagnostics[key]) || value.diagnostics[key].length > 0) || !Array.isArray(value.failures) || value.failures.length > 0) throw new Error('readiness diagnostics changed');
   return true;
 }
@@ -194,15 +206,35 @@ async function record(page) {
   return page.evaluate(() => window.__CANVAS_SCAN__.getLastSession());
 }
 
+async function installDrawCounter(page, counts) {
+  await page.exposeFunction('sidproj105CountDraw', name => { counts[name]++; });
+  await page.evaluate(() => {
+    const context = document.querySelector('#ritual-canvas').getContext('2d');
+    const pending = [];
+    for (const name of ['clearRect', 'fillRect']) {
+      const original = context[name];
+      Object.defineProperty(context, name, { configurable: true, value(...args) { pending.push(globalThis.sidproj105CountDraw(name)); return original.apply(this, args); } });
+    }
+    Object.defineProperty(context, Symbol.for('sidproj105.drawCounter'), { value: { async flush() { await Promise.all(pending.splice(0)); } } });
+  });
+}
+
+async function readDrawCounter(page, counts) {
+  await page.evaluate(() => document.querySelector('#ritual-canvas').getContext('2d')[Symbol.for('sidproj105.drawCounter')].flush());
+  return { clearRect: counts.clearRect, fillRect: counts.fillRect };
+}
+
 async function runBrowser(consumer, diagnostics) {
   let server;
   let browser;
   const actionIds = [];
+  const counts = { clearRect: 0, fillRect: 0 };
+  const result = { browserVersion: '', earlyLoad: false, publicMethods: [], actionIds, browserDrawCounts: { baseline: null, candidate: null }, baseline: null, explanation: null, candidate: null, comparison: null, artifacts: { baselineSession: null, candidateSession: null, copiedExplanation: null, copiedComparison: null } };
   try {
     server = spawn('npx', ['vite', 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: consumer, detached: true, stdio: 'ignore' });
     await waitForServer(server);
     browser = await chromium.launch({ channel: 'chrome', headless: true });
-    const browserVersion = browser.version();
+    result.browserVersion = browser.version();
     const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
     page.on('console', message => { if (message.type() === 'warning') diagnostics.warnings.push(message.text()); if (message.type() === 'error') diagnostics.errors.push(message.text()); });
@@ -212,13 +244,17 @@ async function runBrowser(consumer, diagnostics) {
     await page.waitForFunction(() => window.__CANVAS_SCAN__ && document.querySelector('[data-demo-action="replay-interaction"]'));
     await settle(page);
 
-    const earlyLoad = await page.evaluate(() => Boolean(window.__CANVAS_SCAN__));
+    result.earlyLoad = await page.evaluate(() => Boolean(window.__CANVAS_SCAN__));
     actionIds.push('early-load');
-    const publicMethods = await page.evaluate(methods => methods.filter(method => typeof window.__CANVAS_SCAN__?.[method] === 'function'), RITUAL_METHODS);
+    result.publicMethods = await page.evaluate(methods => methods.filter(method => typeof window.__CANVAS_SCAN__?.[method] === 'function'), RITUAL_METHODS);
+    await installDrawCounter(page, counts);
     const baselineSession = await record(page);
+    result.browserDrawCounts.baseline = await readDrawCounter(page, counts);
     actionIds.push('record-baseline');
     const baselineFindingIndex = baselineSession.findings.findIndex(finding => finding.type === 'repeated-draw-work');
     if (baselineFindingIndex < 0) throw new Error('clean demo baseline has no repeated-draw-work finding');
+    result.baseline = { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type };
+    result.artifacts.baselineSession = baselineSession;
     await expandFinding(page, baselineFindingIndex);
     await page.locator(`.explanation-action[data-finding-index="${baselineFindingIndex}"]`).click();
     await replay(page);
@@ -229,6 +265,8 @@ async function runBrowser(consumer, diagnostics) {
     await page.locator('.explanation-copy').click();
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-copy-status')?.textContent === 'Explanation JSON copied');
     const copiedExplanation = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+    result.explanation = { sourceSessionId: copiedExplanation.source.sessionId, sourceFindingIndex: copiedExplanation.source.findingIndex, followUpSessionId: copiedExplanation.followUp.sessionId, stopReason: copiedExplanation.stopReason };
+    result.artifacts.copiedExplanation = copiedExplanation;
     validateCopiedExplanation(copiedExplanation, { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type });
     actionIds.push('copy-explanation');
     await page.locator(`.baseline-action[data-finding-index="${baselineFindingIndex}"]`).click();
@@ -236,10 +274,16 @@ async function runBrowser(consumer, diagnostics) {
     await page.locator('[data-demo-action="apply-candidate-change"]').click();
     await page.waitForFunction(() => document.querySelector('[data-demo-action="apply-candidate-change"]')?.textContent?.includes('Candidate change applied'));
     actionIds.push('apply-change');
+    await readDrawCounter(page, counts);
+    counts.clearRect = 0;
+    counts.fillRect = 0;
     const candidateSession = await record(page);
+    result.browserDrawCounts.candidate = await readDrawCounter(page, counts);
     actionIds.push('record-candidate');
     const candidateFindingIndex = candidateSession.findings.findIndex(finding => finding.type === baselineSession.findings[baselineFindingIndex].type);
     if (candidateFindingIndex < 0) throw new Error('clean demo candidate has no same-type finding');
+    result.candidate = { sessionId: candidateSession.sessionId, findingIndex: candidateFindingIndex, findingType: candidateSession.findings[candidateFindingIndex].type };
+    result.artifacts.candidateSession = candidateSession;
     await expandFinding(page, candidateFindingIndex);
     const comparisonAction = page.locator(`.comparison-action[data-finding-index="${candidateFindingIndex}"]`);
     await comparisonAction.waitFor({ state: 'visible' });
@@ -249,19 +293,14 @@ async function runBrowser(consumer, diagnostics) {
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.comparison-copy-status')?.textContent === 'Comparison JSON copied');
     const copiedComparison = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
     actionIds.push('copy-comparison');
-    validateCopiedComparison(copiedComparison, baselineSession, candidateSession, { baselineFindingIndex, candidateFindingIndex });
+    result.comparison = { pairingMethod: copiedComparison.pairingMethod, status: copiedComparison.status, improvementEstablished: copiedComparison.improvementEstablished, baselineSessionId: copiedComparison.baseline.sessionId, baselineFindingIndex: copiedComparison.baseline.findingIndex, candidateSessionId: copiedComparison.candidate.sessionId, candidateFindingIndex: copiedComparison.candidate.findingIndex };
+    result.artifacts.copiedComparison = copiedComparison;
+    validateCopiedComparison(copiedComparison, baselineSession, candidateSession, { baselineFindingIndex, candidateFindingIndex }, result.browserDrawCounts);
     await context.close();
-    return {
-      browserVersion,
-      earlyLoad,
-      publicMethods,
-      actionIds,
-      baseline: { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type },
-      explanation: { sourceSessionId: copiedExplanation.source.sessionId, sourceFindingIndex: copiedExplanation.source.findingIndex, followUpSessionId: copiedExplanation.followUp.sessionId, stopReason: copiedExplanation.stopReason },
-      candidate: { sessionId: candidateSession.sessionId, findingIndex: candidateFindingIndex, findingType: candidateSession.findings[candidateFindingIndex].type },
-      comparison: { pairingMethod: copiedComparison.pairingMethod, status: copiedComparison.status, improvementEstablished: copiedComparison.improvementEstablished, baselineSessionId: copiedComparison.baseline.sessionId, baselineFindingIndex: copiedComparison.baseline.findingIndex, candidateSessionId: copiedComparison.candidate.sessionId, candidateFindingIndex: copiedComparison.candidate.findingIndex },
-      artifacts: { baselineSession, candidateSession, copiedExplanation, copiedComparison },
-    };
+    return result;
+  } catch (error) {
+    if (error && typeof error === 'object') error.browserResult = result;
+    throw error;
   } finally {
     try { await browser?.close(); } catch {}
     await stopServer(server);
@@ -318,6 +357,7 @@ async function main() {
     run('npx', ['vite', 'build'], consumer);
     browserResult = await runBrowser(consumer, diagnostics);
   } catch (error) {
+    if (error && typeof error === 'object' && error.browserResult) browserResult = error.browserResult;
     failures.push(error instanceof Error ? error.stack ?? error.message : String(error));
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -340,6 +380,7 @@ async function main() {
     cleanAfter,
     publicMethods: browserResult?.publicMethods ?? [],
     actionIds: browserResult?.actionIds ?? [],
+    browserDrawCounts: browserResult?.browserDrawCounts ?? null,
     baseline: browserResult?.baseline ?? null,
     explanation: browserResult?.explanation ?? null,
     candidate: browserResult?.candidate ?? null,

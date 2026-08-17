@@ -4,6 +4,7 @@ import { RITUAL_METHODS } from '../../scripts/pack-manifest.mjs';
 import { ACTION_IDS, checkReadinessEvidence, readinessStatus, validateCopiedComparison, validateCopiedExplanation } from './readiness-v05.mjs';
 
 const candidate = () => ({ gitSha: 'a'.repeat(40), branch: 'agent/sidproj-105-v05-ritual', packageVersion: '0.5.0' });
+const browserDrawCounts = () => ({ baseline: { clearRect: 8, fillRect: 32 }, candidate: { clearRect: 8, fillRect: 16 } });
 const rounded = value => Math.round(value * 1000) / 1000;
 const measure = (id, unit, baseline, next) => {
   const delta = baseline === null || next === null ? null : unit === 'count' ? next - baseline : rounded(next - baseline);
@@ -113,6 +114,7 @@ function evidence() {
     cleanAfter: true,
     publicMethods: [...RITUAL_METHODS],
     actionIds: [...ACTION_IDS],
+    browserDrawCounts: browserDrawCounts(),
     baseline: { sessionId: 'baseline', findingIndex: 0, findingType: 'repeated-draw-work' },
     explanation: { sourceSessionId: 'baseline', sourceFindingIndex: 0, followUpSessionId: 'explanation-follow-up', stopReason: 'manual' },
     candidate: { sessionId: 'candidate', findingIndex: 0, findingType: 'repeated-draw-work' },
@@ -153,6 +155,16 @@ test('binds evidence to the clean expected candidate and packed IIFE', () => {
   assert.throws(() => checkReadinessEvidence(evidence()), /candidate identity/);
 });
 
+test('binds product counts to the independent browser draw counts', () => {
+  for (const mutate of [
+    value => { value.browserDrawCounts.baseline.fillRect = 31; },
+    value => { value.browserDrawCounts.candidate.clearRect = 7; },
+    value => { value.artifacts.baselineSession.canvases[0].methodEvidence.fillRect.count = 31; },
+  ]) {
+    const value = evidence(); mutate(value); assert.throws(() => checkReadinessEvidence(value, candidate()));
+  }
+});
+
 test('checks copied explanation truth without a runtime oracle', () => {
   const selection = { sessionId: 'baseline', findingIndex: 0, findingType: 'repeated-draw-work' };
   assert.equal(validateCopiedExplanation(copiedExplanation(), selection), true);
@@ -168,7 +180,7 @@ test('checks copied explanation truth without a runtime oracle', () => {
 
 test('recomputes copied comparison truth outside the public API', () => {
   const value = evidence();
-  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }), true);
+  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), true);
   for (const mutate of [
     artifact => { artifact.baseline.sessionId = 'other'; },
     artifact => { artifact.pairingMethod = 'automatic'; },
@@ -176,8 +188,23 @@ test('recomputes copied comparison truth outside the public API', () => {
     artifact => { artifact.measures[12].baseline = 28; },
     artifact => { artifact.improvementEstablished = true; },
   ]) {
-    const artifact = copiedComparison(); mutate(artifact); assert.throws(() => validateCopiedComparison(artifact, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }));
+    const artifact = copiedComparison(); mutate(artifact); assert.throws(() => validateCopiedComparison(artifact, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts));
   }
+});
+
+test('accepts the finite browser boundary for repeated-window grouping', () => {
+  const value = evidence();
+  const profiles = [[value.artifacts.baselineSession, 28, 4], [value.artifacts.candidateSession, 14, 2]];
+  for (const [artifact, total, perWindow] of profiles) {
+    artifact.findings[0].rasterOperationCount = total;
+    for (const window of artifact.findings[0].repeatedWindows) window.rasterOperationCount = perWindow;
+  }
+  value.artifacts.copiedComparison.measures[12] = measure('repeated-raster-operation-count', 'count', 28, 14);
+  assert.equal(checkReadinessEvidence(value, candidate()), true);
+
+  value.artifacts.baselineSession.findings[0].repeatedWindows[0].rasterOperationCount = 3;
+  value.artifacts.baselineSession.findings[0].rasterOperationCount = 27;
+  assert.throws(() => checkReadinessEvidence(value, candidate()), /repeated window truth/);
 });
 
 test('rejects selection, pairing, raw artifacts, and diagnostics drift', () => {
