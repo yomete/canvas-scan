@@ -31,7 +31,17 @@ import 'canvas-scan/auto'; // first import
 You can also call the module API:
 
 ```ts
-import { start, startRecording, stopRecording, getLastSession, mark } from 'canvas-scan';
+import {
+  compareSessions,
+  getLastExplanation,
+  getLastSession,
+  mark,
+  start,
+  startExplanation,
+  startRecording,
+  stopExplanation,
+  stopRecording,
+} from 'canvas-scan';
 start();
 ```
 
@@ -39,13 +49,30 @@ The CLI supports Vite and Next. For a script tag, copy
 `node_modules/canvas-scan/dist/canvas-scan.iife.js` to your public directory
 and load it before other scripts. A pnpm workspace uses the same first import.
 
-## Investigation workflow
+## v0.5 investigation ritual
 
-1. Start a recording with the overlay or `startRecording()`.
-2. Reproduce one bounded continuous or burst interaction.
-3. Optionally call `mark(label)`.
-4. Stop with the overlay or `stopRecording()`.
-5. Read `getLastSession()` and its ranked findings.
+1. Load `canvas-scan/auto` before React and before application Canvas2D work.
+2. Start the baseline with the overlay or `startRecording()`. Reproduce one
+   bounded interaction, stop with `stopRecording()`, and read
+   `getLastSession()`.
+3. Open one baseline finding. Select **Explain next interaction**, or call
+   `startExplanation({ sessionId, findingIndex })` with that explicit finding.
+4. Reproduce the interaction again. Stop with the overlay or
+   `stopExplanation()`, read `getLastExplanation()`, and use
+   **Copy explanation JSON** when you need the artifact.
+5. Select **Keep as baseline** on the explained finding.
+6. Make the application change. Start a candidate with `startRecording()`,
+   reproduce the same bounded interaction, and stop with `stopRecording()`.
+7. Open a candidate of the same finding type. Select **Compare with baseline**,
+   or call `compareSessions(baseline, candidate, { baselineFindingIndex,
+   candidateFindingIndex })`. The pairing is always explicit.
+8. Review the measured pair. Select **Copy comparison JSON** to copy the plain
+   JSON artifact.
+
+Explanation detail covers only the selected canvas. It excludes raw argument
+values, page text, pixels, URLs, application objects, and source content. A
+result can be an honest `unknown` when safe comparison is not possible. One
+measured pair does not prove that the application improved.
 
 The state changes from `idle` to `recording` to `complete` to `recording`.
 The maximum duration is 30 seconds. Stops are `manual` or `max-duration`.

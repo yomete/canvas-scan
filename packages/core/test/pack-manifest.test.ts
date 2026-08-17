@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error plain JS module without declarations
-import { MANIFEST_REQUIRED, TYPE_EXPORTS, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
+import { ESM_RUNTIME_EXPORTS, MANIFEST_REQUIRED, RITUAL_METHODS, RITUAL_STEP_IDS, TYPE_EXPORTS, assertInvestigationRitual, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
 
 const FULL = [...MANIFEST_REQUIRED, 'package/dist/chunk-ABC123.js'];
 
@@ -120,6 +120,54 @@ describe('public package rules', () => {
     expect(() => assertLabBoundary([...FULL, 'package/dist/lab-v04.js'], {})).toThrow(/lab-only tarball entry/);
     for (const marker of ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth']) {
       expect(() => assertLabBoundary(FULL, { 'package/dist/index.js': marker })).toThrow(marker);
+    }
+  });
+});
+
+describe('v0.5 investigation ritual', () => {
+  const root = join(packageDir, '../..');
+  const sources = () => ({
+    sourceReadme: readFileSync(join(root, 'README.md'), 'utf8'),
+    packedReadme: readFileSync(join(packageDir, 'README.md'), 'utf8'),
+    demo: readFileSync(join(root, 'apps/demo/src/App.tsx'), 'utf8'),
+    demoEntry: readFileSync(join(root, 'apps/demo/src/main.tsx'), 'utf8'),
+    runtimeExports: [...ESM_RUNTIME_EXPORTS],
+  });
+
+  it('binds both READMEs, the demo, early load, and the public API', () => {
+    expect(() => assertInvestigationRitual(sources())).not.toThrow();
+  });
+
+  it('rejects independent and coordinated README drift', () => {
+    const actual = sources();
+    expect(() => assertInvestigationRitual({ ...actual, sourceReadme: actual.sourceReadme.replace('Copy comparison JSON', 'Copy result') })).toThrow(/README rituals differ/);
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('Copy explanation JSON', 'Copy result') })).toThrow(/README rituals differ/);
+    expect(() => assertInvestigationRitual({
+      ...actual,
+      sourceReadme: actual.sourceReadme.replaceAll('candidateFindingIndex', 'candidateIndex'),
+      packedReadme: actual.packedReadme.replaceAll('candidateFindingIndex', 'candidateIndex'),
+    })).toThrow(/step 7.*candidateFindingIndex/);
+  });
+
+  it('rejects every missing or reordered demo step', () => {
+    const actual = sources();
+    for (const id of RITUAL_STEP_IDS) {
+      expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace(`data-ritual-step="${id}"`, '') })).toThrow(/demo ritual step/);
+    }
+    expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace('data-ritual-step="baseline"', 'data-ritual-step="candidate"') })).toThrow(/demo ritual step/);
+  });
+
+  it('rejects missing demo actions, boundaries, and early load', () => {
+    const actual = sources();
+    expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace('data-demo-action="replay-interaction"', '') })).toThrow(/demo actions/);
+    expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace('honest unknown', 'unclear result') })).toThrow(/demo boundaries/);
+    expect(() => assertInvestigationRitual({ ...actual, demoEntry: actual.demoEntry.replace("import 'canvas-scan/auto';", '') })).toThrow(/load canvas-scan/);
+  });
+
+  it('rejects each missing public ritual method', () => {
+    const actual = sources();
+    for (const method of RITUAL_METHODS) {
+      expect(() => assertInvestigationRitual({ ...actual, runtimeExports: actual.runtimeExports.filter((name: string) => name !== method) })).toThrow(new RegExp(method));
     }
   });
 });

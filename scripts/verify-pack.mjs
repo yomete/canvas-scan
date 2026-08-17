@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertInvestigationRitual,
   assertLabBoundary,
   assertManifestEntries,
   assertPublicContract,
@@ -389,6 +390,13 @@ try {
       version,
     );
     assertPublicContract({ runtime: esmRuntime, declarations, iife });
+    assertInvestigationRitual({
+      sourceReadme: fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8'),
+      packedReadme: readme,
+      demo: fs.readFileSync(path.join(repoRoot, 'apps/demo/src/App.tsx'), 'utf8'),
+      demoEntry: fs.readFileSync(path.join(repoRoot, 'apps/demo/src/main.tsx'), 'utf8'),
+      runtimeExports: ESM_RUNTIME_EXPORTS,
+    });
     const contentEntries = entries.filter((entry) => /^(package\/(?:dist\/.*\.(?:js|d\.ts)|package\.json|README\.md|bin\/.*))$/.test(entry));
     assertLabBoundary(entries, Object.fromEntries(contentEntries.map((entry) => [entry, readEntry(entry)])));
     const sourceIndex = fs.readFileSync(path.join(packageDir, 'src/index.ts'), 'utf8');
