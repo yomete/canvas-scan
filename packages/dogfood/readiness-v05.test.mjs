@@ -199,12 +199,19 @@ test('accepts the finite browser boundary for repeated-window grouping', () => {
     artifact.findings[0].rasterOperationCount = total;
     for (const window of artifact.findings[0].repeatedWindows) window.rasterOperationCount = perWindow;
   }
+  value.artifacts.candidateSession.findings[0].unknownCoverage.unknownWindowCount = 0;
+  value.artifacts.copiedComparison.measures[10] = measure('unknown-command-window-count', 'count', 1, 0);
   value.artifacts.copiedComparison.measures[12] = measure('repeated-raster-operation-count', 'count', 28, 14);
   assert.equal(checkReadinessEvidence(value, candidate()), true);
 
   value.artifacts.baselineSession.findings[0].repeatedWindows[0].rasterOperationCount = 3;
   value.artifacts.baselineSession.findings[0].rasterOperationCount = 27;
   assert.throws(() => checkReadinessEvidence(value, candidate()), /repeated window truth/);
+
+  const invalidCoverage = evidence();
+  invalidCoverage.artifacts.candidateSession.findings[0].unknownCoverage.unknownWindowCount = -1;
+  invalidCoverage.artifacts.copiedComparison.measures[10] = measure('unknown-command-window-count', 'count', 1, -1);
+  assert.throws(() => checkReadinessEvidence(invalidCoverage, candidate()), /repeated finding truth/);
 });
 
 test('rejects selection, pairing, raw artifacts, and diagnostics drift', () => {
