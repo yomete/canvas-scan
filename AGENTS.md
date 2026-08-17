@@ -67,6 +67,18 @@ judge rounds: 0/2
 - At two hours, stop the same patch loop. Diagnose the model, redesign the check, split the work, or report a blocker.
 - Do not ask the user to approve routine continuation. Ask only for a material scope decision or a system-required gate.
 
+## Keep GitHub in Sync
+
+- Treat routine checkpoint commits and pushes as standing authorization for in-scope work in this repository.
+- Create a signed checkpoint commit after each coherent work slice passes its focused checks.
+- Push the current issue branch after each checkpoint commit.
+- If no slice completes within 60 minutes, create and push a signed `WIP:` checkpoint.
+- Always commit and push before a handoff, a machine switch, or a cloud chat.
+- Keep each checkpoint inside the current issue scope. Do not include unrelated files.
+- Do not create a checkpoint during a frozen evidence run. Push before the freeze and after the run finishes.
+- After each push, check that local `HEAD` matches the remote branch. Report the commit and completed checks.
+- Do not tag, publish, or open a pull request unless the user asks.
+
 ## Close an AFK Issue
 
 After all required checks, evidence upload, and judges pass:
