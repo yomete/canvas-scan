@@ -164,6 +164,12 @@ describe('v0.5 investigation ritual', () => {
     expect(() => assertInvestigationRitual({ ...actual, demoEntry: actual.demoEntry.replace("import 'canvas-scan/auto';", '') })).toThrow(/load canvas-scan/);
   });
 
+  it('rejects disconnected demo actions', () => {
+    const actual = sources();
+    expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace('onClick={() => void replayInteraction()}', '') })).toThrow(/demo replay behavior/);
+    expect(() => assertInvestigationRitual({ ...actual, demo: actual.demo.replace('onClick={() => setDrawsPerFrame(2)}', '') })).toThrow(/demo candidate behavior/);
+  });
+
   it('rejects each missing public ritual method', () => {
     const actual = sources();
     for (const method of RITUAL_METHODS) {

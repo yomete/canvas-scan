@@ -108,6 +108,14 @@ function markedSteps(source, label) {
   return matches.map((match, index) => source.slice(match.index, matches[index + 1]?.index ?? source.length));
 }
 
+function demoAction(source, id) {
+  const marker = `data-demo-action="${id}"`;
+  const start = source.indexOf(marker);
+  const end = source.indexOf('</button>', start);
+  if (start < 0 || end < 0) throw new Error(`demo action ${id} is missing`);
+  return source.slice(start, end);
+}
+
 function assertTokens(source, tokens, label) {
   const missing = tokens.filter(token => !source.includes(token));
   if (missing.length) throw new Error(`${label} is missing ${missing.join(', ')}`);
@@ -133,6 +141,8 @@ export function assertInvestigationRitual({ sourceReadme, packedReadme, demo, de
   for (let index = 0; index < RITUAL_STEP_IDS.length; index++) assertTokens(demoSteps[index], demoStepTokens[index], `demo step ${index + 1}`);
   assertTokens(demo, demoBoundaryTokens, 'demo boundaries');
   assertTokens(demo, ['data-demo-action="replay-interaction"', 'data-demo-action="apply-candidate-change"', 'requestAnimationFrame', 'fillRect'], 'demo actions');
+  assertTokens(demoAction(demo, 'replay-interaction'), ['disabled={busy}', 'onClick={() => void replayInteraction()}'], 'demo replay behavior');
+  assertTokens(demoAction(demo, 'apply-candidate-change'), ['disabled={busy || drawsPerFrame === 2}', 'onClick={() => setDrawsPerFrame(2)}'], 'demo candidate behavior');
 
   const firstEntryLine = demoEntry.split('\n').find(line => line.trim() && !line.trim().startsWith('//'))?.trim();
   if (!firstEntryLine?.startsWith("import 'canvas-scan/auto';")) throw new Error('demo must load canvas-scan before application imports');
