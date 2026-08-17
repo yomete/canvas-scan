@@ -28,6 +28,15 @@ export const readinessMutations = [
     session.browserEntries.push(entry);
     session.episodeAssociations.push({ entryId: entry.entryId, entryKind: entry.kind, episodeId: session.episodes[0].episodeId, startedAtTimestampMs: entry.startedAtTimestampMs, endedAtTimestampMs: entry.endedAtTimestampMs, evidenceLevel: 'associated' });
   }],
+  ['a raw session has two valid long animation frame rows', value => {
+    const session = value.artifacts.baselineSession;
+    const episode = session.episodes[0];
+    const longAnimationFrame = { entryId: '', kind: 'long-animation-frame', startedAtTimestampMs: episode.startedAtTimestampMs, endedAtTimestampMs: episode.startedAtTimestampMs, durationMs: 0, blockingDurationMs: 0, scripts: [], droppedScriptAttributionCount: 0 };
+    const missing = 2 - session.browserEntries.filter(entry => entry.kind === 'long-animation-frame').length;
+    session.browserEntries.splice(2, 0, ...Array.from({ length: missing }, () => structuredClone(longAnimationFrame)));
+    session.browserEntries.forEach((entry, index) => { entry.entryId = `browser-evidence-${index + 1}`; });
+    session.episodeAssociations = session.browserEntries.flatMap(entry => entry.startedAtTimestampMs > episode.endedAtTimestampMs || episode.startedAtTimestampMs > entry.endedAtTimestampMs ? [] : [{ entryId: entry.entryId, entryKind: entry.kind, episodeId: episode.episodeId, startedAtTimestampMs: Math.max(entry.startedAtTimestampMs, episode.startedAtTimestampMs), endedAtTimestampMs: Math.min(entry.endedAtTimestampMs, episode.endedAtTimestampMs), evidenceLevel: 'associated' }]);
+  }],
   ['a browser row changes to another valid target tag name', value => { value.artifacts.baselineSession.browserEntries[0].targetTagName = 'button'; }],
   ['an interaction ID change breaks a pointer pair', value => { value.artifacts.baselineSession.browserEntries[1].interactionId++; }],
   ['a copied explanation has an extra valid-shaped window row', value => {

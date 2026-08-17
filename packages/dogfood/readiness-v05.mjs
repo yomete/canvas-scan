@@ -180,14 +180,16 @@ function validateMethodEvidence(value, counts, label) {
 
 function validateBrowserEntries(entries) {
   const rows = list(entries, 'raw session browser entries');
-  const hasLongAnimationFrame = rows[5]?.kind === 'long-animation-frame';
-  const expectedRows = READINESS_CONTRACT.browserRows.filter(row => !row.optional || hasLongAnimationFrame);
-  if (rows.length !== expectedRows.length) throw new Error('raw browser entry rows changed');
+  const requiredRows = READINESS_CONTRACT.browserRows.filter(row => !row.optional);
+  const optionalRow = READINESS_CONTRACT.browserRows.find(row => row.optional);
+  const optionalRows = rows.filter(row => row?.kind === optionalRow.kind);
+  if (optionalRows.length > 1 || rows.length !== requiredRows.length + optionalRows.length) throw new Error('raw browser entry rows changed');
   const interactionIds = new Map();
+  let requiredIndex = 0;
   for (const [index, entry] of rows.entries()) {
-    const expected = expectedRows[index];
+    const expected = entry?.kind === optionalRow.kind ? optionalRow : requiredRows[requiredIndex++];
     if (entry?.entryId !== `browser-evidence-${index + 1}` || !finite(entry.startedAtTimestampMs) || !finite(entry.endedAtTimestampMs) || entry.endedAtTimestampMs < entry.startedAtTimestampMs) throw new Error('raw browser entry identity changed');
-    if (entry?.kind !== expected.kind) throw new Error('raw browser entry kind changed');
+    if (!expected || entry.kind !== expected.kind) throw new Error('raw browser entry kind changed');
     if (expected.kind === 'document-event') {
       shape(entry, READINESS_CONTRACT.keys.documentEvent, 'raw document event');
       if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName) throw new Error('raw document event value changed');
@@ -202,6 +204,7 @@ function validateBrowserEntries(entries) {
       if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new Error('raw long animation frame value changed');
     }
   }
+  if (requiredIndex !== requiredRows.length) throw new Error('raw browser entry rows changed');
   if (interactionIds.get('page') === interactionIds.get('replay')) throw new Error('raw event timing identities changed');
 }
 

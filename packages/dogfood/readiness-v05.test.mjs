@@ -221,6 +221,13 @@ function evidence() {
 
 test('accepts one complete clean-consumer ritual', () => {
   assert.equal(checkReadinessEvidence(evidence(), candidate()), true);
+  const withLongAnimationFrame = evidence();
+  for (const session of [withLongAnimationFrame.artifacts.baselineSession, withLongAnimationFrame.artifacts.candidateSession]) {
+    session.browserEntries.splice(2, 0, { entryId: '', kind: 'long-animation-frame', startedAtTimestampMs: 0.25, endedAtTimestampMs: 0.75, durationMs: 0.5, blockingDurationMs: 0, scripts: [], droppedScriptAttributionCount: 0 });
+    session.browserEntries.forEach((entry, index) => { entry.entryId = `browser-evidence-${index + 1}`; });
+    session.episodeAssociations = episodeAssociations(session.browserEntries, session.episodes[0].episodeId);
+  }
+  assert.equal(checkReadinessEvidence(withLongAnimationFrame, candidate()), true);
 });
 
 test('rejects missing, extra, and reordered actions', () => {
