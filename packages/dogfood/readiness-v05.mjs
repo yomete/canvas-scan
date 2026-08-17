@@ -19,6 +19,10 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 const text = value => typeof value === 'string' && value.length > 0;
 const stable = value => `${JSON.stringify(value, null, 2)}\n`;
 
+export function readinessStatus(failures, diagnostics) {
+  return failures.length || diagnosticKeys.some(key => diagnostics[key].length) ? 'FAIL' : 'PASS';
+}
+
 export function checkReadinessEvidence(value) {
   const rootKeys = ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'worktreeUnchanged', 'publicMethods', 'actionIds', 'baseline', 'explanation', 'candidate', 'comparison', 'diagnostics', 'failures'];
   if (!exact(value, rootKeys) || value.schemaVersion !== 1 || value.issue !== 'SIDPROJ-105' || value.status !== 'PASS') throw new Error('readiness evidence root changed');
@@ -223,7 +227,7 @@ async function main() {
   const evidence = {
     schemaVersion: 1,
     issue: 'SIDPROJ-105',
-    status: failures.length ? 'FAIL' : 'PASS',
+    status: readinessStatus(failures, diagnostics),
     gitSha,
     branch,
     packageVersion,
@@ -245,10 +249,10 @@ async function main() {
   const bytes = Buffer.from(stable(evidence));
   await writeFile(path.join(directory, 'evidence.json'), bytes);
   await writeFile(path.join(directory, 'evidence-sha256.txt'), `${hash(bytes)}  evidence.json\n`);
-  if (!failures.length) await checkDirectory(directory);
+  if (evidence.status === 'PASS') await checkDirectory(directory);
   console.log(`SIDPROJ_105_READINESS_EVIDENCE: ${directory}`);
-  console.log(`SIDPROJ_105_READINESS: ${failures.length ? 'FAIL' : 'PASS'}`);
-  if (failures.length) process.exitCode = 1;
+  console.log(`SIDPROJ_105_READINESS: ${evidence.status}`);
+  if (evidence.status === 'FAIL') process.exitCode = 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

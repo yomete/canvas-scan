@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RITUAL_METHODS } from '../../scripts/pack-manifest.mjs';
-import { ACTION_IDS, checkReadinessEvidence } from './readiness-v05.mjs';
+import { ACTION_IDS, checkReadinessEvidence, readinessStatus } from './readiness-v05.mjs';
 
 function evidence() {
   return {
@@ -67,4 +67,14 @@ test('rejects failed copy, diagnostics, and changed worktree state', () => {
   ]) {
     const value = evidence(); mutate(value); assert.throws(() => checkReadinessEvidence(value));
   }
+});
+
+test('reports failed execution or browser diagnostics as FAIL', () => {
+  const value = evidence();
+  assert.equal(readinessStatus(value.failures, value.diagnostics), 'PASS');
+  value.diagnostics.errors.push('favicon failed');
+  assert.equal(readinessStatus(value.failures, value.diagnostics), 'FAIL');
+  value.diagnostics.errors.length = 0;
+  value.failures.push('workflow failed');
+  assert.equal(readinessStatus(value.failures, value.diagnostics), 'FAIL');
 });
