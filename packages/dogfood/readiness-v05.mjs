@@ -14,10 +14,6 @@ const port = 5211;
 const origin = `http://127.0.0.1:${port}`;
 export const ACTION_IDS = ['early-load', 'record-baseline', 'explain-baseline', 'copy-explanation', 'keep-baseline', 'apply-change', 'record-candidate', 'pair-findings', 'copy-comparison'];
 const diagnosticKeys = ['warnings', 'errors', 'pageErrors', 'requestFailures', 'cleanupErrors'];
-const demoTruth = {
-  baseline: { activeWindowCount: 8, clearRects: 8, fillRects: 32, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [4, 5] },
-  candidate: { activeWindowCount: 8, clearRects: 8, fillRects: 16, fillStyles: 8, repeatedWindowCounts: [6, 7], rasterOperationsPerRepeatedWindow: [2, 3] },
-};
 const comparisonMeasureIds = [
   'active-window-count', 'raster-operation-count', 'canvas-api-self-time-ms', 'maximum-window-self-time-ms',
   'method:clearRect:operation-count', 'method:clearRect:self-time-ms',
@@ -29,10 +25,116 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 const text = value => typeof value === 'string' && value.length > 0;
 const stable = value => `${JSON.stringify(value, null, 2)}\n`;
-const sessionKeys = ['schemaVersion', 'sessionId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'browserFeatures', 'canvases', 'windows', 'resetEvents', 'lifecycleEvents', 'episodes', 'browserEntries', 'episodeAssociations', 'findings', 'collectionLimits', 'droppedEntryCounts'];
-const sessionLimitKeys = ['maxDurationMs', 'maxCanvasWindowReports', 'maxCanvasLifetimes', 'maxResetEvents', 'maxLifecycleEvents', 'maxBrowserEvidenceEntries', 'maxLongFrameScriptAttributions'];
-const sessionDroppedKeys = ['canvasWindowReports', 'canvasLifetimes', 'resetEvents', 'lifecycleEvents', 'documentEvents', 'eventTiming', 'userMarks', 'longAnimationFrames'];
-const explanationLimitNames = ['duration-ms', 'selected-canvases', 'active-windows', 'command-entries', 'arguments-per-command', 'value-tokens', 'stack-samples', 'frames-per-stack', 'source-map-lookups', 'source-map-response-bytes'];
+const READINESS_CONTRACT = {
+  keys: {
+    session: ['schemaVersion', 'sessionId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'browserFeatures', 'canvases', 'windows', 'resetEvents', 'lifecycleEvents', 'episodes', 'browserEntries', 'episodeAssociations', 'findings', 'collectionLimits', 'droppedEntryCounts'],
+    canvas: ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'evidenceLevel', 'methodEvidence', 'commandStatuses'],
+    window: ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'signatureStatus', 'unknownReason', 'sampled', 'comparisonGap', 'methodEvidence', 'windowIndex', 'timestampMs', 'startedAtTimestampMs', 'endedAtTimestampMs', 'geometry'],
+    methodEvidence: ['clearRect', 'fillRect', 'fillStyle'],
+    method: ['count', 'canvasApiSelfTimeMs'],
+    sourceLocation: ['file', 'line', 'column'],
+    geometry: ['backingWidth', 'backingHeight', 'cssWidth', 'cssHeight', 'devicePixelRatio', 'expectedBackingWidth', 'expectedBackingHeight', 'expectedPixelArea', 'actualToExpectedAreaRatio', 'unavailableReason'],
+    lifecycle: ['canvasId', 'type', 'windowIndex', 'timestampMs', 'connected', 'activeRegistrySize', 'evidenceLevel'],
+    episode: ['episodeId', 'firstWindowIndex', 'lastWindowIndex', 'startedAtTimestampMs', 'endedAtTimestampMs', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'methodEvidence', 'canvases', 'resetEventCount'],
+    episodeCanvas: ['canvasId', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'methodEvidence', 'resetEventCount'],
+    documentEvent: ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName'],
+    eventTiming: ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName', 'durationMs', 'interactionId'],
+    longAnimationFrame: ['entryId', 'kind', 'startedAtTimestampMs', 'endedAtTimestampMs', 'durationMs', 'blockingDurationMs', 'scripts', 'droppedScriptAttributionCount'],
+    association: ['entryId', 'entryKind', 'episodeId', 'startedAtTimestampMs', 'endedAtTimestampMs', 'evidenceLevel'],
+    finding: ['type', 'evidenceLevel', 'canvasId', 'episodeId', 'repeatedWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'repeatedWindows', 'unknownCoverage', 'claimBoundary', 'nextCheck'],
+    repeatedWindow: ['windowIndex', 'timestampMs', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'comparisonGap'],
+    unknownCoverage: ['unknownWindowCount', 'activeWindowCount'],
+    claimBoundary: ['observation', 'explanation', 'nonEstablishedFacts'],
+    command: ['ordinal', 'operationKind', 'name', 'argumentCount', 'arguments', 'unknownReason'],
+    argument: ['position', 'kind', 'token'],
+    explanation: ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'],
+    explanationSource: ['sessionId', 'findingIndex', 'findingType', 'canvasId'],
+    explanationFollowUp: ['sessionId', 'canvasId'],
+    explanationWindow: ['windowIndex', 'timestampMs', 'commands', 'complete', 'unknownReason'],
+    explanationComparison: ['referenceWindowIndex', 'targetWindowIndex', 'status', 'difference', 'unknownReason'],
+    stack: ['windowIndex', 'commandOrdinal', 'reason', 'frames', 'droppedFrameCount'],
+    stackFrame: ['functionName', 'generated', 'mapped', 'mappingStatus', 'unresolvedReason'],
+    limitResult: ['name', 'maximum', 'rejectedCount', 'reason', 'firstAffected'],
+    callsiteCoverage: ['status', 'incompleteReasons'],
+    firstGap: ['windowIndex', 'commandOrdinal', 'reason'],
+    copiedComparison: ['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'improvementEstablished'],
+    comparisonReference: ['sessionId', 'findingIndex', 'findingType', 'canvasId'],
+    measure: ['id', 'unit', 'baseline', 'candidate', 'delta', 'direction', 'interpretation'],
+    readiness: ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'browserDrawCounts', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'],
+    readinessFinding: ['sessionId', 'findingIndex', 'findingType'],
+    readinessExplanation: ['sourceSessionId', 'sourceFindingIndex', 'followUpSessionId', 'stopReason'],
+    readinessComparison: ['pairingMethod', 'status', 'improvementEstablished', 'baselineSessionId', 'baselineFindingIndex', 'candidateSessionId', 'candidateFindingIndex'],
+    artifacts: ['baselineSession', 'candidateSession', 'copiedExplanation', 'copiedComparison'],
+    browserDrawCounts: ['baseline', 'candidate'],
+    browserDrawMode: ['clearRect', 'fillRect'],
+    diagnostics: ['warnings', 'errors', 'pageErrors', 'requestFailures', 'cleanupErrors'],
+  },
+  fixed: {
+    session: { schemaVersion: 1, stopReason: 'manual', canvasScanVersion: '0.5.0' },
+    browserFeatures: { monotonicTime: true, eventTiming: true, longAnimationFrames: true },
+    sessionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
+    sessionDropped: { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 },
+    geometry: { backingWidth: 400, backingHeight: 150, cssWidth: 400, cssHeight: 150, devicePixelRatio: 1, expectedBackingWidth: 400, expectedBackingHeight: 150, expectedPixelArea: 60000, actualToExpectedAreaRatio: 1, unavailableReason: null },
+    claimBoundary: {
+      observation: 'The canvas sent repeated commands in the recorded windows and spent the measured Canvas2D API self-time shown here.',
+      explanation: 'The repeated commands are a review candidate.',
+      nonEstablishedFacts: 'The evidence does not establish that the output stayed unchanged or that the work can be removed.',
+    },
+    nextCheck: 'Check whether the application needs to send these repeated commands for the same scene and interaction.',
+    explanation: { schemaVersion: 1, stopReason: 'manual', canvasScanVersion: '0.5.0' },
+    copiedComparison: { schemaVersion: 1, canvasScanVersion: '0.5.0', pairingMethod: 'user-selected', status: 'comparable', improvementEstablished: false },
+    readiness: { schemaVersion: 1, issue: 'SIDPROJ-105', status: 'PASS' },
+    explanationLimits: { maxDurationMs: 10000, maxSelectedCanvases: 1, maxActiveWindows: 120, maxCommandEntries: 5000, maxArgumentsPerCommand: 20, maxValueTokens: 1024, maxStackSamples: 8, maxFramesPerStack: 20, maxSourceMapLookups: 8, maxSourceMapResponseBytes: 2097152 },
+    explanationDropped: { durationStops: 0, selectedCanvasRejections: 0, activeWindows: 0, commandEntries: 0, commandArguments: 0, valueTokens: 0, stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 },
+  },
+  modes: {
+    baseline: { drawsPerFrame: 4, lifecycleRows: 1, commandStatuses: { same: 6, changed: 1, unknown: 1 } },
+    candidate: { drawsPerFrame: 2, lifecycleRows: 0, commandStatuses: { same: 7, changed: 1, unknown: 0 } },
+  },
+  rows: { canvases: 1, windows: 8, resetEvents: 0, episodes: 1, findings: 1, explanationWindows: 8, explanationComparisons: 7, explanationStacks: 1 },
+  commandRows: [
+    { operationKind: 'call', name: 'clearRect', kinds: ['number', 'number', 'number', 'number'], tokens: [1, 1, 2, 3] },
+    { operationKind: 'set', name: 'fillStyle', kinds: ['string'], tokens: [4] },
+    ...Array.from({ length: 4 }, () => ({ operationKind: 'call', name: 'fillRect', kinds: ['number', 'number', 'number', 'number'], tokens: [5, 6, 7, 5] })),
+  ],
+  browserRows: [
+    { kind: 'event-timing', eventType: 'pointerdown', targetTagName: 'div', pair: 'page' },
+    { kind: 'event-timing', eventType: 'pointerup', targetTagName: 'div', pair: 'page' },
+    { kind: 'document-event', eventType: 'pointermove', targetTagName: 'button' },
+    { kind: 'document-event', eventType: 'pointerdown', targetTagName: 'button' },
+    { kind: 'document-event', eventType: 'pointerup', targetTagName: 'button' },
+    { kind: 'long-animation-frame', optional: true },
+    { kind: 'event-timing', eventType: 'pointerdown', targetTagName: 'button', pair: 'replay' },
+    { kind: 'event-timing', eventType: 'pointerup', targetTagName: 'button', pair: 'replay' },
+    { kind: 'document-event', eventType: 'pointermove', targetTagName: 'div' },
+    { kind: 'document-event', eventType: 'pointerdown', targetTagName: 'div' },
+    { kind: 'document-event', eventType: 'pointerup', targetTagName: 'div' },
+  ],
+  stackFrames: [
+    { functionName: 'CanvasRenderingContext2D.value', generated: false, unresolvedReason: 'mapping-missing' },
+    { functionName: 'd', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'onClick', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'Iv', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: null, generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'tm', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'Br', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'Fr', generated: true, unresolvedReason: 'no-source-map' },
+    { functionName: 'yS', generated: true, unresolvedReason: 'no-source-map' },
+  ],
+  explanationLimitRows: [
+    ['duration-ms', 'maxDurationMs'], ['selected-canvases', 'maxSelectedCanvases'], ['active-windows', 'maxActiveWindows'], ['command-entries', 'maxCommandEntries'], ['arguments-per-command', 'maxArgumentsPerCommand'], ['value-tokens', 'maxValueTokens'], ['stack-samples', 'maxStackSamples'], ['frames-per-stack', 'maxFramesPerStack'], ['source-map-lookups', 'maxSourceMapLookups'], ['source-map-response-bytes', 'maxSourceMapResponseBytes'],
+  ],
+  enums: {
+    documentEvents: ['pointermove', 'pointerdown', 'pointerup'],
+    eventTimingEvents: ['pointerdown', 'pointerup'],
+    targetTags: ['button', 'div'],
+    unresolvedReasons: ['no-source-map', 'cross-origin-source-map', 'source-map-lookup-limit', 'source-map-too-large', 'source-map-load-failed', 'source-map-parse-failed', 'mapping-missing'],
+  },
+  paths: {
+    generated: /^http:\/\/127\.0\.0\.1:5211\/assets\/[A-Za-z0-9_.-]+\.js$/,
+    mapped: /^\/?(?:src|apps|packages)\/[A-Za-z0-9_./-]+\.(?:js|jsx|ts|tsx)$/,
+  },
+};
 
 function shape(value, keys, label) {
   if (!exact(value, keys)) throw new Error(`${label} shape changed`);
@@ -43,118 +145,85 @@ function list(value, label) {
   return value;
 }
 
-function validateSourceLocation(value, label) {
+function fixed(value, expected, label) {
+  shape(value, Object.keys(expected), label);
+  for (const [key, expectedValue] of Object.entries(expected)) if (JSON.stringify(value[key]) !== JSON.stringify(expectedValue)) throw new Error(`${label} value changed`);
+}
+
+function finite(value) {
+  return Number.isFinite(value) && value >= 0;
+}
+
+function sameNumber(left, right) {
+  return finite(left) && finite(right) && Math.abs(left - right) < 0.001;
+}
+
+function isoDate(value) {
+  return text(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function validateSourceLocation(value, label, kind) {
   if (value === null) return;
-  shape(value, ['file', 'line', 'column'], label);
-  if (!text(value.file) || value.file.includes('?') || value.file.includes('#') || !Number.isInteger(value.line) || !Number.isInteger(value.column)) throw new Error(`${label} value changed`);
+  shape(value, READINESS_CONTRACT.keys.sourceLocation, label);
+  const generated = kind === 'generated' && READINESS_CONTRACT.paths.generated.test(value.file);
+  const mapped = kind === 'mapped' && !value.file.includes('..') && READINESS_CONTRACT.paths.mapped.test(value.file);
+  if ((!generated && !mapped) || value.file.includes('?') || value.file.includes('#') || !Number.isInteger(value.line) || value.line < 1 || !Number.isInteger(value.column) || value.column < 0) throw new Error(`${label} value changed`);
 }
 
-function validateMethodEvidence(value, label) {
-  shape(value, ['clearRect', 'fillRect', 'fillStyle'], label);
-  for (const name of ['clearRect', 'fillRect', 'fillStyle']) shape(value[name], ['count', 'canvasApiSelfTimeMs'], `${label}.${name}`);
+function validateMethodEvidence(value, counts, label) {
+  shape(value, READINESS_CONTRACT.keys.methodEvidence, label);
+  for (const [name, count] of Object.entries(counts)) {
+    shape(value[name], READINESS_CONTRACT.keys.method, `${label}.${name}`);
+    if (value[name].count !== count || (name === 'fillStyle' ? value[name].canvasApiSelfTimeMs !== null : !finite(value[name].canvasApiSelfTimeMs))) throw new Error(`${label}.${name} value changed`);
+  }
 }
 
-function validateSessionSchema(session) {
-  shape(session, sessionKeys, 'raw session root');
-  shape(session.browserFeatures, ['monotonicTime', 'eventTiming', 'longAnimationFrames'], 'raw session browser features');
-  shape(session.collectionLimits, sessionLimitKeys, 'raw session collection limits');
-  shape(session.droppedEntryCounts, sessionDroppedKeys, 'raw session dropped counts');
-
-  for (const canvas of list(session.canvases, 'raw session canvases')) {
-    shape(canvas, ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'evidenceLevel', 'methodEvidence', 'commandStatuses'], 'raw session canvas');
-    validateSourceLocation(canvas.sourceLocation, 'raw session canvas source location');
-    validateMethodEvidence(canvas.methodEvidence, 'raw session canvas methods');
-    shape(canvas.commandStatuses, ['same', 'changed', 'unknown'], 'raw session command statuses');
-  }
-  for (const window of list(session.windows, 'raw session windows')) {
-    shape(window, ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'signatureStatus', 'unknownReason', 'sampled', 'comparisonGap', 'methodEvidence', 'windowIndex', 'timestampMs', 'startedAtTimestampMs', 'endedAtTimestampMs', 'geometry'], 'raw session window');
-    validateSourceLocation(window.sourceLocation, 'raw session window source location');
-    validateMethodEvidence(window.methodEvidence, 'raw session window methods');
-    shape(window.geometry, ['backingWidth', 'backingHeight', 'cssWidth', 'cssHeight', 'devicePixelRatio', 'expectedBackingWidth', 'expectedBackingHeight', 'expectedPixelArea', 'actualToExpectedAreaRatio', 'unavailableReason'], 'raw session window geometry');
-  }
-  for (const event of list(session.resetEvents, 'raw session reset events')) shape(event, ['canvasId', 'windowIndex', 'timestampMs', 'source', 'width', 'height', 'rasterOperationCount', 'activeRasterOverlap', 'commandStatus', 'unknownReason'], 'raw session reset event');
-  for (const event of list(session.lifecycleEvents, 'raw session lifecycle events')) shape(event, ['canvasId', 'type', 'windowIndex', 'timestampMs', 'connected', 'activeRegistrySize', 'evidenceLevel'], 'raw session lifecycle event');
-  for (const episode of list(session.episodes, 'raw session episodes')) {
-    shape(episode, ['episodeId', 'firstWindowIndex', 'lastWindowIndex', 'startedAtTimestampMs', 'endedAtTimestampMs', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'methodEvidence', 'canvases', 'resetEventCount'], 'raw session episode');
-    validateMethodEvidence(episode.methodEvidence, 'raw session episode methods');
-    for (const canvas of list(episode.canvases, 'raw session episode canvases')) {
-      shape(canvas, ['canvasId', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'methodEvidence', 'resetEventCount'], 'raw session episode canvas');
-      validateMethodEvidence(canvas.methodEvidence, 'raw session episode canvas methods');
+function validateBrowserEntries(entries) {
+  const rows = list(entries, 'raw session browser entries');
+  const hasLongAnimationFrame = rows[5]?.kind === 'long-animation-frame';
+  const expectedRows = READINESS_CONTRACT.browserRows.filter(row => !row.optional || hasLongAnimationFrame);
+  if (rows.length !== expectedRows.length) throw new Error('raw browser entry rows changed');
+  const interactionIds = new Map();
+  for (const [index, entry] of rows.entries()) {
+    const expected = expectedRows[index];
+    if (entry?.entryId !== `browser-evidence-${index + 1}` || !finite(entry.startedAtTimestampMs) || !finite(entry.endedAtTimestampMs) || entry.endedAtTimestampMs < entry.startedAtTimestampMs) throw new Error('raw browser entry identity changed');
+    if (entry?.kind !== expected.kind) throw new Error('raw browser entry kind changed');
+    if (expected.kind === 'document-event') {
+      shape(entry, READINESS_CONTRACT.keys.documentEvent, 'raw document event');
+      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName) throw new Error('raw document event value changed');
+    } else if (expected.kind === 'event-timing') {
+      shape(entry, READINESS_CONTRACT.keys.eventTiming, 'raw event timing');
+      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName || !sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !Number.isInteger(entry.interactionId) || entry.interactionId < 1) throw new Error('raw event timing value changed');
+      const pairId = interactionIds.get(expected.pair);
+      if (pairId === undefined) interactionIds.set(expected.pair, entry.interactionId);
+      else if (pairId !== entry.interactionId) throw new Error('raw event timing pair changed');
+    } else if (expected.kind === 'long-animation-frame') {
+      shape(entry, READINESS_CONTRACT.keys.longAnimationFrame, 'raw long animation frame');
+      if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new Error('raw long animation frame value changed');
     }
   }
-  for (const entry of list(session.browserEntries, 'raw session browser entries')) {
-    if (entry?.kind === 'document-event') {
-      shape(entry, ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName'], 'raw document event');
-      if (!['pointermove', 'pointerdown', 'pointerup'].includes(entry.eventType) || !['button', 'div'].includes(entry.targetTagName)) throw new Error('raw document event value changed');
-    } else if (entry?.kind === 'event-timing') {
-      shape(entry, ['entryId', 'kind', 'eventType', 'startedAtTimestampMs', 'endedAtTimestampMs', 'targetTagName', 'durationMs', 'interactionId'], 'raw event timing');
-      if (!['pointerdown', 'pointerup'].includes(entry.eventType) || !['button', 'div'].includes(entry.targetTagName)) throw new Error('raw event timing value changed');
-    }
-    else if (entry?.kind === 'long-animation-frame') {
-      shape(entry, ['entryId', 'kind', 'startedAtTimestampMs', 'endedAtTimestampMs', 'durationMs', 'blockingDurationMs', 'scripts', 'droppedScriptAttributionCount'], 'raw long animation frame');
-      if (list(entry.scripts, 'raw long animation frame scripts').length) throw new Error('raw long animation frame script rows changed');
-    } else throw new Error('raw browser entry kind changed');
-  }
-  for (const association of list(session.episodeAssociations, 'raw session associations')) shape(association, ['entryId', 'entryKind', 'episodeId', 'startedAtTimestampMs', 'endedAtTimestampMs', 'evidenceLevel'], 'raw session association');
-  for (const finding of list(session.findings, 'raw session findings')) {
-    if (finding?.type !== 'repeated-draw-work') throw new Error('raw session finding type changed');
-    shape(finding, ['type', 'evidenceLevel', 'canvasId', 'episodeId', 'repeatedWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'repeatedWindows', 'unknownCoverage', 'claimBoundary', 'nextCheck'], 'raw repeated finding');
-    for (const window of list(finding.repeatedWindows, 'raw repeated windows')) shape(window, ['windowIndex', 'timestampMs', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'comparisonGap'], 'raw repeated window');
-    shape(finding.unknownCoverage, ['unknownWindowCount', 'activeWindowCount'], 'raw repeated finding coverage');
-    shape(finding.claimBoundary, ['observation', 'explanation', 'nonEstablishedFacts'], 'raw repeated finding claim boundary');
-  }
+  if (interactionIds.get('page') === interactionIds.get('replay')) throw new Error('raw event timing identities changed');
 }
 
-function validateCommand(command, label, expectedOrdinal = command?.ordinal) {
-  shape(command, ['ordinal', 'operationKind', 'name', 'argumentCount', 'arguments', 'unknownReason'], label);
+function validateCommand(command, expected, expectedOrdinal, namespace, label) {
+  shape(command, READINESS_CONTRACT.keys.command, label);
   const argumentsList = list(command.arguments, `${label} arguments`);
-  if (command.ordinal !== expectedOrdinal || !['call', 'set'].includes(command.operationKind) || !text(command.name) || command.argumentCount !== argumentsList.length) throw new Error(`${label} value changed`);
+  if (command.ordinal !== expectedOrdinal || command.operationKind !== expected.operationKind || command.name !== expected.name || command.argumentCount !== expected.kinds.length || argumentsList.length !== expected.kinds.length || command.unknownReason !== null) throw new Error(`${label} value changed`);
   for (const [index, argument] of argumentsList.entries()) {
-    shape(argument, ['position', 'kind', 'token'], `${label} argument`);
-    if (argument.position !== index || !['number', 'string', 'boolean', 'null', 'undefined', 'array', 'typed-array', 'image', 'canvas', 'path', 'gradient', 'pattern', 'object'].includes(argument.kind) || (argument.token !== null && !/^[0-9a-f]{32}-\d+$/.test(argument.token))) throw new Error(`${label} argument value changed`);
+    shape(argument, READINESS_CONTRACT.keys.argument, `${label} argument`);
+    if (argument.position !== index || argument.kind !== expected.kinds[index] || argument.token !== `${namespace}-${expected.tokens[index]}`) throw new Error(`${label} argument value changed`);
   }
 }
 
-function validateDifference(difference, label) {
-  if (difference === null) return;
-  shape(difference, ['referenceWindowIndex', 'targetWindowIndex', 'ordinal', 'reason', 'reference', 'target'], label);
-  if (difference.reference !== null) validateCommand(difference.reference, `${label} reference`);
-  if (difference.target !== null) validateCommand(difference.target, `${label} target`);
-}
-
-function validateExplanationSchema(artifact) {
-  const keys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'];
-  shape(artifact, keys, 'copied explanation root');
-  shape(artifact.source, ['sessionId', 'findingIndex', 'findingType', 'canvasId'], 'copied explanation source');
-  shape(artifact.followUp, ['sessionId', 'canvasId'], 'copied explanation follow-up');
-  for (const window of list(artifact.windows, 'copied explanation windows')) {
-    shape(window, ['windowIndex', 'timestampMs', 'commands', 'complete', 'unknownReason'], 'copied explanation window');
-    for (const [index, command] of list(window.commands, 'copied explanation commands').entries()) validateCommand(command, 'copied explanation command', index);
-  }
-  for (const comparison of list(artifact.comparisons, 'copied explanation comparisons')) {
-    shape(comparison, ['referenceWindowIndex', 'targetWindowIndex', 'status', 'difference', 'unknownReason'], 'copied explanation comparison');
-    validateDifference(comparison.difference, 'copied explanation difference');
-  }
-  validateDifference(artifact.firstDifference, 'copied explanation first difference');
-  for (const stack of list(artifact.stacks, 'copied explanation stacks')) {
-    shape(stack, ['windowIndex', 'commandOrdinal', 'reason', 'frames', 'droppedFrameCount'], 'copied explanation stack');
-    for (const frame of list(stack.frames, 'copied explanation stack frames')) {
-      shape(frame, ['functionName', 'generated', 'mapped', 'mappingStatus', 'unresolvedReason'], 'copied explanation stack frame');
-      validateSourceLocation(frame.generated, 'copied explanation generated location');
-      validateSourceLocation(frame.mapped, 'copied explanation mapped location');
-    }
-  }
-  shape(artifact.collectionLimits, ['maxDurationMs', 'maxSelectedCanvases', 'maxActiveWindows', 'maxCommandEntries', 'maxArgumentsPerCommand', 'maxValueTokens', 'maxStackSamples', 'maxFramesPerStack', 'maxSourceMapLookups', 'maxSourceMapResponseBytes'], 'copied explanation collection limits');
-  shape(artifact.droppedEntryCounts, ['durationStops', 'selectedCanvasRejections', 'activeWindows', 'commandEntries', 'commandArguments', 'valueTokens', 'stackSamples', 'stackFrames', 'sourceMapLookups', 'sourceMapResponses'], 'copied explanation dropped counts');
-  const limits = list(artifact.limitResults, 'copied explanation limit results');
-  if (JSON.stringify(limits.map(result => result.name)) !== JSON.stringify(explanationLimitNames)) throw new Error('copied explanation limit result rows changed');
-  for (const result of limits) {
-    shape(result, ['name', 'maximum', 'rejectedCount', 'reason', 'firstAffected'], 'copied explanation limit result');
-    if (result.firstAffected !== null) shape(result.firstAffected, ['scope', 'windowIndex', 'commandOrdinal'], 'copied explanation limit coordinate');
-  }
-  shape(artifact.callsiteCoverage, ['status', 'incompleteReasons'], 'copied explanation callsite coverage');
-  list(artifact.callsiteCoverage.incompleteReasons, 'copied explanation incomplete reasons');
-  if (artifact.firstGap !== null) shape(artifact.firstGap, ['windowIndex', 'commandOrdinal', 'reason'], 'copied explanation first gap');
+function validateStackFrame(frame, expected) {
+  shape(frame, READINESS_CONTRACT.keys.stackFrame, 'copied explanation stack frame');
+  if (frame.functionName !== expected.functionName) throw new Error('copied explanation stack function changed');
+  validateSourceLocation(frame.generated, 'copied explanation generated location', 'generated');
+  validateSourceLocation(frame.mapped, 'copied explanation mapped location', 'mapped');
+  const generated = expected.generated ? frame.generated !== null : frame.generated === null;
+  const mapped = expected.generated && frame.generated !== null && frame.mappingStatus === 'mapped' && frame.mapped !== null && frame.unresolvedReason === null;
+  const unresolved = generated && frame.mapped === null && frame.mappingStatus === 'unresolved' && frame.unresolvedReason === expected.unresolvedReason;
+  if (!mapped && !unresolved) throw new Error('copied explanation stack mapping changed');
 }
 
 export function readinessStatus(failures, diagnostics, conditions = []) {
@@ -174,35 +243,90 @@ function selectedRepeated(session, findingIndex) {
 }
 
 function validateBrowserDrawCounts(drawCounts) {
-  if (!exact(drawCounts, ['baseline', 'candidate'])) throw new Error('browser draw counts changed');
+  if (!exact(drawCounts, READINESS_CONTRACT.keys.browserDrawCounts)) throw new Error('browser draw counts changed');
   for (const mode of ['baseline', 'candidate']) {
-    const expected = demoTruth[mode];
-    if (!exact(drawCounts[mode], ['clearRect', 'fillRect']) || drawCounts[mode].clearRect !== expected.clearRects || drawCounts[mode].fillRect !== expected.fillRects) throw new Error(`${mode} browser draw counts changed`);
+    const drawsPerFrame = READINESS_CONTRACT.modes[mode].drawsPerFrame;
+    if (!exact(drawCounts[mode], READINESS_CONTRACT.keys.browserDrawMode) || drawCounts[mode].clearRect !== 8 || drawCounts[mode].fillRect !== 8 * drawsPerFrame) throw new Error(`${mode} browser draw counts changed`);
   }
   return true;
 }
 
 function validateDemoSession(session, findingIndex, mode, drawCounts) {
-  validateSessionSchema(session);
-  if (session.canvases.length !== 1 || session.windows.length !== demoTruth[mode].activeWindowCount || session.resetEvents.length !== 0 || session.lifecycleEvents.length !== (mode === 'baseline' ? 1 : 0) || session.episodes.length !== 1 || session.findings.length !== 1) throw new Error(`${mode} raw session rows changed`);
-  const selected = selectedRepeated(session, findingIndex);
-  const expected = demoTruth[mode];
-  const methods = selected.canvas.methodEvidence;
+  const expected = READINESS_CONTRACT.modes[mode];
+  const methodCounts = { clearRect: 8, fillRect: 8 * expected.drawsPerFrame, fillStyle: 8 };
+  const windowMethodCounts = { clearRect: 1, fillRect: expected.drawsPerFrame, fillStyle: 1 };
   const rasterOperationCount = drawCounts.clearRect + drawCounts.fillRect;
-  if (selected.canvas.activeWindowCount !== expected.activeWindowCount || selected.canvas.rasterOperationCount !== rasterOperationCount || !Number.isFinite(selected.canvas.canvasApiSelfTimeMs) || selected.canvas.canvasApiSelfTimeMs < 0 || !Number.isFinite(selected.canvas.maxWindowSelfTimeMs) || selected.canvas.maxWindowSelfTimeMs < 0) throw new Error(`${mode} demo canvas truth changed`);
-  if (!exact(methods, ['clearRect', 'fillRect', 'fillStyle']) || methods.clearRect.count !== drawCounts.clearRect || methods.fillRect.count !== drawCounts.fillRect || methods.fillStyle.count !== expected.fillStyles || !Number.isFinite(methods.clearRect.canvasApiSelfTimeMs) || !Number.isFinite(methods.fillRect.canvasApiSelfTimeMs) || methods.fillStyle.canvasApiSelfTimeMs !== null) throw new Error(`${mode} demo method truth changed`);
-  if (!expected.repeatedWindowCounts.includes(selected.finding.repeatedWindowCount) || !exact(selected.finding.unknownCoverage, ['unknownWindowCount', 'activeWindowCount']) || !Number.isInteger(selected.finding.unknownCoverage.unknownWindowCount) || selected.finding.unknownCoverage.unknownWindowCount < 0 || selected.finding.unknownCoverage.unknownWindowCount > 2 || selected.finding.unknownCoverage.activeWindowCount !== expected.activeWindowCount) throw new Error(`${mode} repeated finding truth changed`);
-  if (!Array.isArray(selected.finding.repeatedWindows) || selected.finding.repeatedWindows.length !== selected.finding.repeatedWindowCount || selected.finding.repeatedWindows.some(window => !expected.rasterOperationsPerRepeatedWindow.includes(window.rasterOperationCount) || window.comparisonGap !== 1) || selected.finding.rasterOperationCount !== selected.finding.repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0)) throw new Error(`${mode} repeated window truth changed`);
-  return selected;
-}
+  shape(session, READINESS_CONTRACT.keys.session, 'raw session root');
+  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.session)) if (session[key] !== value) throw new Error('raw session root value changed');
+  const sessionIdentity = session.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
+  const startedAtMs = Date.parse(session.startedAt);
+  const endedAtMs = Date.parse(session.endedAt);
+  if (!sessionIdentity || !isoDate(session.startedAt) || !isoDate(session.endedAt) || Number(sessionIdentity[1]) !== startedAtMs || Number(sessionIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(session.durationMs) || Math.abs(endedAtMs - startedAtMs - session.durationMs) > 1) throw new Error('raw session identity changed');
+  fixed(session.browserFeatures, READINESS_CONTRACT.fixed.browserFeatures, 'raw session browser features');
+  fixed(session.collectionLimits, READINESS_CONTRACT.fixed.sessionLimits, 'raw session collection limits');
+  fixed(session.droppedEntryCounts, READINESS_CONTRACT.fixed.sessionDropped, 'raw session dropped counts');
+  if (list(session.canvases, 'raw session canvases').length !== READINESS_CONTRACT.rows.canvases || list(session.windows, 'raw session windows').length !== READINESS_CONTRACT.rows.windows || list(session.resetEvents, 'raw session reset events').length !== READINESS_CONTRACT.rows.resetEvents || list(session.lifecycleEvents, 'raw session lifecycle events').length !== expected.lifecycleRows || list(session.episodes, 'raw session episodes').length !== READINESS_CONTRACT.rows.episodes || list(session.findings, 'raw session findings').length !== READINESS_CONTRACT.rows.findings) throw new Error(`${mode} raw session rows changed`);
 
-function validateDemoCommandWindow(window) {
-  const expected = [
-    ['call', 'clearRect', 4], ['set', 'fillStyle', 1],
-    ['call', 'fillRect', 4], ['call', 'fillRect', 4], ['call', 'fillRect', 4], ['call', 'fillRect', 4],
-  ];
-  if (!window || window.complete !== true || window.unknownReason !== null || !Array.isArray(window.commands) || window.commands.length !== expected.length) return false;
-  return window.commands.every((command, index) => command.ordinal === index && command.operationKind === expected[index][0] && command.name === expected[index][1] && command.argumentCount === expected[index][2] && Array.isArray(command.arguments) && command.arguments.length === expected[index][2] && command.unknownReason === null);
+  const canvas = session.canvases[0];
+  shape(canvas, READINESS_CONTRACT.keys.canvas, 'raw session canvas');
+  if (canvas.canvasId !== 'ritual-canvas#1' || canvas.nearestReactOwner !== 'yA' || canvas.attributionKind !== 'jsx-owner' || canvas.sourceLocation !== null || canvas.activeWindowCount !== 8 || canvas.rasterOperationCount !== rasterOperationCount || canvas.evidenceLevel !== 'measured') throw new Error(`${mode} demo canvas truth changed`);
+  validateMethodEvidence(canvas.methodEvidence, methodCounts, 'raw session canvas methods');
+  fixed(canvas.commandStatuses, expected.commandStatuses, 'raw session command statuses');
+
+  const firstWindowIndex = session.windows[0]?.windowIndex;
+  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new Error(`${mode} window identity changed`);
+  for (const [index, window] of session.windows.entries()) {
+    shape(window, READINESS_CONTRACT.keys.window, 'raw session window');
+    const baselineFirst = mode === 'baseline' && index === 0;
+    const changed = mode === 'candidate' ? index === 0 : index === 1;
+    const signatureStatus = baselineFirst ? 'unknown' : changed ? 'changed' : 'same';
+    const comparisonGap = baselineFirst ? null : mode === 'candidate' && index === 0 ? window.comparisonGap : 1;
+    if (window.canvasId !== canvas.canvasId || window.nearestReactOwner !== canvas.nearestReactOwner || window.attributionKind !== canvas.attributionKind || window.sourceLocation !== null || window.rasterOperationCount !== expected.drawsPerFrame + 1 || window.signatureStatus !== signatureStatus || window.unknownReason !== (baselineFirst ? 'first-window' : null) || window.sampled !== false || window.comparisonGap !== comparisonGap || (mode === 'candidate' && index === 0 && (!Number.isInteger(window.comparisonGap) || window.comparisonGap < 2)) || window.windowIndex !== firstWindowIndex + index || !finite(window.timestampMs) || !finite(window.startedAtTimestampMs) || window.endedAtTimestampMs !== window.timestampMs || window.endedAtTimestampMs < window.startedAtTimestampMs) throw new Error(`${mode} window truth changed`);
+    validateMethodEvidence(window.methodEvidence, windowMethodCounts, 'raw session window methods');
+    if (!sameNumber(window.canvasApiSelfTimeMs, window.methodEvidence.clearRect.canvasApiSelfTimeMs + window.methodEvidence.fillRect.canvasApiSelfTimeMs)) throw new Error(`${mode} window timing changed`);
+    fixed(window.geometry, READINESS_CONTRACT.fixed.geometry, 'raw session window geometry');
+    if (index > 0 && (window.startedAtTimestampMs !== session.windows[index - 1].endedAtTimestampMs || window.timestampMs <= session.windows[index - 1].timestampMs)) throw new Error(`${mode} window order changed`);
+  }
+  if (session.windows[7].endedAtTimestampMs - session.windows[0].startedAtTimestampMs > session.durationMs + 0.001) throw new Error(`${mode} window duration changed`);
+
+  if (!sameNumber(canvas.canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || !sameNumber(canvas.maxWindowSelfTimeMs, Math.max(...session.windows.map(window => window.canvasApiSelfTimeMs)))) throw new Error(`${mode} canvas timing changed`);
+  for (const name of ['clearRect', 'fillRect']) if (!sameNumber(canvas.methodEvidence[name].canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.methodEvidence[name].canvasApiSelfTimeMs, 0))) throw new Error(`${mode} method timing changed`);
+
+  if (mode === 'baseline') {
+    const lifecycle = session.lifecycleEvents[0];
+    shape(lifecycle, READINESS_CONTRACT.keys.lifecycle, 'raw session lifecycle event');
+    fixed(lifecycle, { canvasId: canvas.canvasId, type: 'active', windowIndex: firstWindowIndex, timestampMs: session.windows[0].timestampMs, connected: true, activeRegistrySize: 1, evidenceLevel: 'measured' }, 'raw session lifecycle event');
+  }
+
+  const episode = session.episodes[0];
+  shape(episode, READINESS_CONTRACT.keys.episode, 'raw session episode');
+  if (episode.episodeId !== `${session.sessionId}:episode:1` || episode.firstWindowIndex !== firstWindowIndex || episode.lastWindowIndex !== firstWindowIndex + 7 || episode.startedAtTimestampMs !== session.windows[0].startedAtTimestampMs || episode.endedAtTimestampMs !== session.windows[7].endedAtTimestampMs || episode.activeWindowCount !== 8 || episode.rasterOperationCount !== canvas.rasterOperationCount || !sameNumber(episode.canvasApiSelfTimeMs, canvas.canvasApiSelfTimeMs) || episode.resetEventCount !== 0 || list(episode.canvases, 'raw session episode canvases').length !== 1) throw new Error(`${mode} episode truth changed`);
+  validateMethodEvidence(episode.methodEvidence, methodCounts, 'raw session episode methods');
+  const episodeCanvas = episode.canvases[0];
+  shape(episodeCanvas, READINESS_CONTRACT.keys.episodeCanvas, 'raw session episode canvas');
+  fixed(episodeCanvas, { canvasId: canvas.canvasId, activeWindowCount: 8, rasterOperationCount: canvas.rasterOperationCount, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, maxWindowSelfTimeMs: canvas.maxWindowSelfTimeMs, methodEvidence: canvas.methodEvidence, resetEventCount: 0 }, 'raw session episode canvas');
+  for (const name of ['clearRect', 'fillRect', 'fillStyle']) if (JSON.stringify(episode.methodEvidence[name]) !== JSON.stringify(canvas.methodEvidence[name])) throw new Error(`${mode} episode method truth changed`);
+
+  validateBrowserEntries(session.browserEntries);
+  const expectedAssociations = session.browserEntries.flatMap(entry => entry.startedAtTimestampMs > episode.endedAtTimestampMs || episode.startedAtTimestampMs > entry.endedAtTimestampMs ? [] : [{ entryId: entry.entryId, entryKind: entry.kind, episodeId: episode.episodeId, startedAtTimestampMs: Math.max(entry.startedAtTimestampMs, episode.startedAtTimestampMs), endedAtTimestampMs: Math.min(entry.endedAtTimestampMs, episode.endedAtTimestampMs), evidenceLevel: 'associated' }]);
+  if (list(session.episodeAssociations, 'raw session associations').length !== expectedAssociations.length) throw new Error(`${mode} association rows changed`);
+  for (const [index, association] of session.episodeAssociations.entries()) {
+    shape(association, READINESS_CONTRACT.keys.association, 'raw session association');
+    fixed(association, expectedAssociations[index], 'raw session association');
+  }
+
+  const selected = selectedRepeated(session, findingIndex);
+  const finding = selected.finding;
+  shape(finding, READINESS_CONTRACT.keys.finding, 'raw repeated finding');
+  const repeated = session.windows.filter(window => window.signatureStatus === 'same');
+  if (findingIndex !== 0 || finding.type !== 'repeated-draw-work' || finding.evidenceLevel !== 'candidate' || finding.canvasId !== canvas.canvasId || finding.episodeId !== episode.episodeId || finding.repeatedWindowCount !== repeated.length || list(finding.repeatedWindows, 'raw repeated windows').length !== repeated.length || finding.rasterOperationCount !== repeated.reduce((total, window) => total + window.rasterOperationCount, 0) || !sameNumber(finding.canvasApiSelfTimeMs, repeated.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || finding.nextCheck !== READINESS_CONTRACT.fixed.nextCheck) throw new Error(`${mode} repeated finding truth changed`);
+  fixed(finding.claimBoundary, READINESS_CONTRACT.fixed.claimBoundary, 'raw repeated finding claim boundary');
+  fixed(finding.unknownCoverage, { unknownWindowCount: session.windows.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: 8 }, 'raw repeated finding coverage');
+  for (const [index, repeatedWindow] of finding.repeatedWindows.entries()) {
+    shape(repeatedWindow, READINESS_CONTRACT.keys.repeatedWindow, 'raw repeated window');
+    fixed(repeatedWindow, { windowIndex: repeated[index].windowIndex, timestampMs: repeated[index].timestampMs, rasterOperationCount: repeated[index].rasterOperationCount, canvasApiSelfTimeMs: repeated[index].canvasApiSelfTimeMs, comparisonGap: repeated[index].comparisonGap }, 'raw repeated window');
+  }
+  return selected;
 }
 
 function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
@@ -220,7 +344,7 @@ function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
     ['method:fillStyle:self-time-ms', [baseline.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs, candidate.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs]],
   ]);
   for (const item of measures) {
-    if (!exact(item, ['id', 'unit', 'baseline', 'candidate', 'delta', 'direction', 'interpretation'])) throw new Error('copied comparison measure shape changed');
+    if (!exact(item, READINESS_CONTRACT.keys.measure)) throw new Error('copied comparison measure shape changed');
     const expected = structural.get(item.id);
     if (expected) {
       if (JSON.stringify(item) !== JSON.stringify(measure(item.id, 'count', expected[0], expected[1]))) throw new Error(`copied comparison ${item.id} truth changed`);
@@ -232,25 +356,74 @@ function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
 }
 
 export function validateCopiedExplanation(artifact, selection) {
-  const keys = ['schemaVersion', 'explanationId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'source', 'followUp', 'windows', 'comparisons', 'firstDifference', 'stacks', 'collectionLimits', 'droppedEntryCounts', 'limitResults', 'callsiteCoverage', 'firstGap'];
-  validateExplanationSchema(artifact);
-  if (!exact(artifact, keys) || artifact.schemaVersion !== 1 || artifact.canvasScanVersion !== '0.5.0' || !text(artifact.explanationId) || artifact.stopReason !== 'manual') throw new Error('copied explanation root changed');
-  if (!exact(artifact.source, ['sessionId', 'findingIndex', 'findingType', 'canvasId']) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || !text(artifact.source.canvasId)) throw new Error('copied explanation selection changed');
-  if (!exact(artifact.followUp, ['sessionId', 'canvasId']) || !text(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new Error('copied explanation follow-up changed');
-  const windows = new Map(Array.isArray(artifact.windows) ? artifact.windows.map(window => [window.windowIndex, window]) : []);
-  const same = Array.isArray(artifact.comparisons) ? artifact.comparisons.find(comparison => exact(comparison, ['referenceWindowIndex', 'targetWindowIndex', 'status', 'difference', 'unknownReason']) && comparison.status === 'same' && comparison.difference === null && comparison.unknownReason === null) : undefined;
-  if (!same || !validateDemoCommandWindow(windows.get(same.referenceWindowIndex)) || !validateDemoCommandWindow(windows.get(same.targetWindowIndex)) || artifact.firstDifference !== null) throw new Error('copied explanation command truth changed');
-  if (JSON.stringify(artifact).includes('#2563eb')) throw new Error('copied explanation contains a raw demo argument');
+  shape(artifact, READINESS_CONTRACT.keys.explanation, 'copied explanation root');
+  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.explanation)) if (artifact[key] !== value) throw new Error('copied explanation root value changed');
+  const explanationIdentity = artifact.explanationId?.match(/^canvas-scan-explanation-(\d+)-(\d+)$/);
+  const followUpIdentity = artifact.followUp?.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
+  const startedAtMs = Date.parse(artifact.startedAt);
+  const endedAtMs = Date.parse(artifact.endedAt);
+  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || Number(explanationIdentity[1]) !== startedAtMs || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new Error('copied explanation identity changed');
+  if (!exact(artifact.source, READINESS_CONTRACT.keys.explanationSource) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || artifact.source.canvasId !== 'ritual-canvas#1') throw new Error('copied explanation selection changed');
+  if (!exact(artifact.followUp, READINESS_CONTRACT.keys.explanationFollowUp) || !/^canvas-scan-\d+-\d+$/.test(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new Error('copied explanation follow-up changed');
+
+  const windows = list(artifact.windows, 'copied explanation windows');
+  if (windows.length !== READINESS_CONTRACT.rows.explanationWindows) throw new Error('copied explanation window rows changed');
+  const namespace = windows[0]?.commands?.[0]?.arguments?.[0]?.token?.match(/^([0-9a-f]{32})-1$/)?.[1];
+  if (!namespace) throw new Error('copied explanation token namespace changed');
+  const firstWindowIndex = windows[0]?.windowIndex;
+  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new Error('copied explanation window identity changed');
+  for (const [windowOffset, window] of windows.entries()) {
+    shape(window, READINESS_CONTRACT.keys.explanationWindow, 'copied explanation window');
+    if (window.windowIndex !== firstWindowIndex + windowOffset || !finite(window.timestampMs) || window.complete !== (windowOffset > 0) || window.unknownReason !== (windowOffset === 0 ? 'sampling-gap' : null)) throw new Error('copied explanation window truth changed');
+    if (windowOffset > 0 && window.timestampMs <= windows[windowOffset - 1].timestampMs) throw new Error('copied explanation window order changed');
+    const commands = list(window.commands, 'copied explanation commands');
+    if (commands.length !== READINESS_CONTRACT.commandRows.length) throw new Error('copied explanation command rows changed');
+    for (const [commandIndex, command] of commands.entries()) validateCommand(command, READINESS_CONTRACT.commandRows[commandIndex], commandIndex, namespace, 'copied explanation command');
+  }
+
+  const comparisons = list(artifact.comparisons, 'copied explanation comparisons');
+  if (comparisons.length !== READINESS_CONTRACT.rows.explanationComparisons) throw new Error('copied explanation comparison rows changed');
+  for (const [index, comparison] of comparisons.entries()) {
+    shape(comparison, READINESS_CONTRACT.keys.explanationComparison, 'copied explanation comparison');
+    const reference = windows[index];
+    const target = windows[index + 1];
+    const comparisonIsSame = JSON.stringify(reference.commands) === JSON.stringify(target.commands);
+    const expected = index === 0
+      ? { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: 'unknown', difference: null, unknownReason: 'sampling-gap' }
+      : { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: comparisonIsSame ? 'same' : 'changed', difference: null, unknownReason: null };
+    if (!comparisonIsSame || JSON.stringify(comparison) !== JSON.stringify(expected)) throw new Error('copied explanation comparison truth changed');
+  }
+  if (artifact.firstDifference !== null) throw new Error('copied explanation first difference changed');
+
+  const stacks = list(artifact.stacks, 'copied explanation stacks');
+  if (stacks.length !== READINESS_CONTRACT.rows.explanationStacks) throw new Error('copied explanation stack rows changed');
+  const stack = stacks[0];
+  shape(stack, READINESS_CONTRACT.keys.stack, 'copied explanation stack');
+  if (stack.windowIndex !== firstWindowIndex || stack.commandOrdinal !== 0 || stack.reason !== 'first-raster' || stack.droppedFrameCount !== 0 || !Array.isArray(stack.frames) || stack.frames.length !== READINESS_CONTRACT.stackFrames.length) throw new Error('copied explanation stack truth changed');
+  for (const [index, frame] of stack.frames.entries()) validateStackFrame(frame, READINESS_CONTRACT.stackFrames[index]);
+
+  fixed(artifact.collectionLimits, READINESS_CONTRACT.fixed.explanationLimits, 'copied explanation collection limits');
+  fixed(artifact.droppedEntryCounts, READINESS_CONTRACT.fixed.explanationDropped, 'copied explanation dropped counts');
+  const limits = list(artifact.limitResults, 'copied explanation limit results');
+  if (limits.length !== READINESS_CONTRACT.explanationLimitRows.length) throw new Error('copied explanation limit result rows changed');
+  for (const [index, result] of limits.entries()) {
+    shape(result, READINESS_CONTRACT.keys.limitResult, 'copied explanation limit result');
+    const [name, maximumKey] = READINESS_CONTRACT.explanationLimitRows[index];
+    fixed(result, { name, maximum: READINESS_CONTRACT.fixed.explanationLimits[maximumKey], rejectedCount: 0, reason: null, firstAffected: null }, 'copied explanation limit result');
+  }
+  fixed(artifact.callsiteCoverage, { status: 'complete', incompleteReasons: [] }, 'copied explanation callsite coverage');
+  fixed(artifact.firstGap, { windowIndex: firstWindowIndex, commandOrdinal: 0, reason: 'sampling-gap' }, 'copied explanation first gap');
   return true;
 }
 
 export function validateCopiedComparison(artifact, baselineSession, candidateSession, pairing, drawCounts) {
-  const keys = ['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'improvementEstablished'];
-  if (!exact(artifact, keys) || artifact.schemaVersion !== 1 || artifact.canvasScanVersion !== '0.5.0' || !text(artifact.comparisonId) || !text(artifact.createdAt) || artifact.pairingMethod !== 'user-selected' || artifact.status !== 'comparable' || artifact.improvementEstablished !== false || artifact.incomparableReasons.length !== 0) throw new Error('copied comparison root changed');
+  const expectedId = `canvas-scan-comparison-${baselineSession?.sessionId}-${pairing.baselineFindingIndex}-${candidateSession?.sessionId}-${pairing.candidateFindingIndex}`;
+  const expectedCreatedAt = Date.parse(baselineSession?.endedAt) >= Date.parse(candidateSession?.endedAt) ? baselineSession?.endedAt : candidateSession?.endedAt;
+  if (!exact(artifact, READINESS_CONTRACT.keys.copiedComparison) || Object.entries(READINESS_CONTRACT.fixed.copiedComparison).some(([key, value]) => artifact[key] !== value) || artifact.comparisonId !== expectedId || artifact.createdAt !== expectedCreatedAt || !Array.isArray(artifact.incomparableReasons) || artifact.incomparableReasons.length !== 0) throw new Error('copied comparison root changed');
   validateBrowserDrawCounts(drawCounts);
   const left = validateDemoSession(baselineSession, pairing.baselineFindingIndex, 'baseline', drawCounts.baseline);
   const right = validateDemoSession(candidateSession, pairing.candidateFindingIndex, 'candidate', drawCounts.candidate);
-  const refKeys = ['sessionId', 'findingIndex', 'findingType', 'canvasId'];
+  const refKeys = READINESS_CONTRACT.keys.comparisonReference;
   if (!exact(artifact.baseline, refKeys) || artifact.baseline.sessionId !== baselineSession.sessionId || artifact.baseline.findingIndex !== pairing.baselineFindingIndex || artifact.baseline.findingType !== left.finding.type || artifact.baseline.canvasId !== left.finding.canvasId) throw new Error('copied comparison baseline changed');
   if (!exact(artifact.candidate, refKeys) || artifact.candidate.sessionId !== candidateSession.sessionId || artifact.candidate.findingIndex !== pairing.candidateFindingIndex || artifact.candidate.findingType !== right.finding.type || artifact.candidate.canvasId !== right.finding.canvasId) throw new Error('copied comparison candidate changed');
   validateComparisonMeasures(artifact.measures, left, right, drawCounts);
@@ -258,24 +431,24 @@ export function validateCopiedComparison(artifact, baselineSession, candidateSes
 }
 
 export function checkReadinessEvidence(value, expectedCandidate) {
-  const rootKeys = ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'browserDrawCounts', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'];
-  if (!exact(value, rootKeys) || value.schemaVersion !== 1 || value.issue !== 'SIDPROJ-105' || value.status !== 'PASS') throw new Error('readiness evidence root changed');
-  if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !text(value.browserVersion)) throw new Error('readiness candidate identity changed');
+  if (!exact(value, READINESS_CONTRACT.keys.readiness) || Object.entries(READINESS_CONTRACT.fixed.readiness).some(([key, expected]) => value[key] !== expected)) throw new Error('readiness evidence root changed');
+  if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !/^\d+\.\d+\.\d+\.\d+$/.test(value.browserVersion)) throw new Error('readiness candidate identity changed');
   if (value.earlyLoad !== true || value.cleanBefore !== true || value.cleanAfter !== true || JSON.stringify(value.publicMethods) !== JSON.stringify(RITUAL_METHODS) || JSON.stringify(value.actionIds) !== JSON.stringify(ACTION_IDS)) throw new Error('readiness ritual identity changed');
   validateBrowserDrawCounts(value.browserDrawCounts);
 
-  const findingKeys = ['sessionId', 'findingIndex', 'findingType'];
+  const findingKeys = READINESS_CONTRACT.keys.readinessFinding;
   if (!exact(value.baseline, findingKeys) || !exact(value.candidate, findingKeys) || !text(value.baseline.sessionId) || !text(value.candidate.sessionId) || value.baseline.sessionId === value.candidate.sessionId || !Number.isInteger(value.baseline.findingIndex) || !Number.isInteger(value.candidate.findingIndex) || value.baseline.findingType !== 'repeated-draw-work' || value.candidate.findingType !== value.baseline.findingType) throw new Error('readiness selected findings changed');
 
-  const explanationKeys = ['sourceSessionId', 'sourceFindingIndex', 'followUpSessionId', 'stopReason'];
+  const explanationKeys = READINESS_CONTRACT.keys.readinessExplanation;
   if (!exact(value.explanation, explanationKeys) || value.explanation.sourceSessionId !== value.baseline.sessionId || value.explanation.sourceFindingIndex !== value.baseline.findingIndex || !text(value.explanation.followUpSessionId) || value.explanation.stopReason !== 'manual') throw new Error('readiness explanation changed');
 
-  const comparisonKeys = ['pairingMethod', 'status', 'improvementEstablished', 'baselineSessionId', 'baselineFindingIndex', 'candidateSessionId', 'candidateFindingIndex'];
+  const comparisonKeys = READINESS_CONTRACT.keys.readinessComparison;
   if (!exact(value.comparison, comparisonKeys) || value.comparison.pairingMethod !== 'user-selected' || value.comparison.status !== 'comparable' || value.comparison.improvementEstablished !== false || value.comparison.baselineSessionId !== value.baseline.sessionId || value.comparison.baselineFindingIndex !== value.baseline.findingIndex || value.comparison.candidateSessionId !== value.candidate.sessionId || value.comparison.candidateFindingIndex !== value.candidate.findingIndex) throw new Error('readiness explicit comparison changed');
-  if (!exact(value.artifacts, ['baselineSession', 'candidateSession', 'copiedExplanation', 'copiedComparison']) || value.artifacts.baselineSession.sessionId !== value.baseline.sessionId || value.artifacts.candidateSession.sessionId !== value.candidate.sessionId) throw new Error('readiness raw artifacts changed');
+  if (!exact(value.artifacts, READINESS_CONTRACT.keys.artifacts) || value.artifacts.baselineSession.sessionId !== value.baseline.sessionId || value.artifacts.candidateSession.sessionId !== value.candidate.sessionId) throw new Error('readiness raw artifacts changed');
   validateCopiedExplanation(value.artifacts.copiedExplanation, value.baseline);
+  if (value.artifacts.copiedExplanation.followUp.sessionId !== value.explanation.followUpSessionId) throw new Error('readiness explanation artifact changed');
   validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: value.baseline.findingIndex, candidateFindingIndex: value.candidate.findingIndex }, value.browserDrawCounts);
-  if (!exact(value.diagnostics, diagnosticKeys) || diagnosticKeys.some(key => !Array.isArray(value.diagnostics[key]) || value.diagnostics[key].length > 0) || !Array.isArray(value.failures) || value.failures.length > 0) throw new Error('readiness diagnostics changed');
+  if (!exact(value.diagnostics, READINESS_CONTRACT.keys.diagnostics) || diagnosticKeys.some(key => !Array.isArray(value.diagnostics[key]) || value.diagnostics[key].length > 0) || !Array.isArray(value.failures) || value.failures.length > 0) throw new Error('readiness diagnostics changed');
   return true;
 }
 
