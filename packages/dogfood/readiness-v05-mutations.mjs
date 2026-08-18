@@ -76,6 +76,24 @@ export const readinessMutations = [
   ['a readiness artifact has a private browser version', value => { value.browserVersion = 'private-user-value'; }],
   ['a raw session has the wrong duration', value => { value.artifacts.baselineSession.durationMs = 500; }],
   ['a copied explanation has the wrong duration', value => { value.artifacts.copiedExplanation.durationMs = 500; }],
+  ['a copied explanation ID epoch is 2 ms before startedAt', value => {
+    const artifact = value.artifacts.copiedExplanation;
+    artifact.explanationId = artifact.explanationId.replace(/-\d+-([1-9]\d*)$/, `-${Date.parse(artifact.startedAt) - 2}-$1`);
+  }],
+  ['a copied explanation ID epoch is 1 ms after startedAt', value => {
+    const artifact = value.artifacts.copiedExplanation;
+    artifact.explanationId = artifact.explanationId.replace(/-\d+-([1-9]\d*)$/, `-${Date.parse(artifact.startedAt) + 1}-$1`);
+  }],
+  ['a copied explanation follow-up epoch is 1 ms before startedAt', value => {
+    const artifact = value.artifacts.copiedExplanation;
+    artifact.followUp.sessionId = artifact.followUp.sessionId.replace(/-\d+-([1-9]\d*)$/, `-${Date.parse(artifact.startedAt) - 1}-$1`);
+    value.explanation.followUpSessionId = artifact.followUp.sessionId;
+  }],
+  ['a copied explanation follow-up epoch is 1 ms after startedAt', value => {
+    const artifact = value.artifacts.copiedExplanation;
+    artifact.followUp.sessionId = artifact.followUp.sessionId.replace(/-\d+-([1-9]\d*)$/, `-${Date.parse(artifact.startedAt) + 1}-$1`);
+    value.explanation.followUpSessionId = artifact.followUp.sessionId;
+  }],
   ['raw window times are out of order', value => {
     Object.assign(value.artifacts.baselineSession.windows[2], { startedAtTimestampMs: 1.25, timestampMs: 1.5, endedAtTimestampMs: 1.5 });
     value.artifacts.baselineSession.findings[0].repeatedWindows[0].timestampMs = 1.5;

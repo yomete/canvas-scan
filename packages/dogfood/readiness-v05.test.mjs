@@ -282,6 +282,26 @@ test('checks copied explanation truth without a runtime oracle', () => {
   }
 });
 
+test('accepts only the finite explanation epoch boundaries', () => {
+  const selection = { sessionId: baselineSessionId, findingIndex: 0, findingType: 'repeated-draw-work' };
+  for (const offset of [-1, 0]) {
+    const artifact = copiedExplanation();
+    artifact.explanationId = `canvas-scan-explanation-${Date.parse(artifact.startedAt) + offset}-1`;
+    assert.equal(validateCopiedExplanation(artifact, selection), true);
+  }
+});
+
+test('accepts the observed one millisecond clock conversion', () => {
+  const artifact = copiedExplanation();
+  artifact.explanationId = 'canvas-scan-explanation-1787004809895-1';
+  artifact.startedAt = '2026-08-17T22:13:29.896Z';
+  artifact.endedAt = '2026-08-17T22:13:30.028Z';
+  artifact.durationMs = 132.7;
+  artifact.followUp.sessionId = 'canvas-scan-1787004809896-2';
+  const selection = { sessionId: baselineSessionId, findingIndex: 0, findingType: 'repeated-draw-work' };
+  assert.equal(validateCopiedExplanation(artifact, selection), true);
+});
+
 test('rejects the finite SIDPROJ-114 readiness mutation corpus', () => {
   for (const [name, mutate] of readinessMutations) {
     const value = evidence();

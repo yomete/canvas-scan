@@ -91,6 +91,9 @@ const READINESS_CONTRACT = {
     baseline: { drawsPerFrame: 4, lifecycleRows: 1, commandStatuses: { same: 6, changed: 1, unknown: 1 } },
     candidate: { drawsPerFrame: 2, lifecycleRows: 0, commandStatuses: { same: 7, changed: 1, unknown: 0 } },
   },
+  identities: {
+    explanationEpochOffsetsMs: [-1, 0],
+  },
   rows: { canvases: 1, windows: 8, resetEvents: 0, episodes: 1, findings: 1, explanationWindows: 8, explanationComparisons: 7, explanationStacks: 1 },
   commandRows: [
     { operationKind: 'call', name: 'clearRect', kinds: ['number', 'number', 'number', 'number'], tokens: [1, 1, 2, 3] },
@@ -365,7 +368,8 @@ export function validateCopiedExplanation(artifact, selection) {
   const followUpIdentity = artifact.followUp?.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
   const startedAtMs = Date.parse(artifact.startedAt);
   const endedAtMs = Date.parse(artifact.endedAt);
-  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || Number(explanationIdentity[1]) !== startedAtMs || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new Error('copied explanation identity changed');
+  const explanationEpochOffset = Number(explanationIdentity?.[1]) - startedAtMs;
+  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || !READINESS_CONTRACT.identities.explanationEpochOffsetsMs.includes(explanationEpochOffset) || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new Error('copied explanation identity changed');
   if (!exact(artifact.source, READINESS_CONTRACT.keys.explanationSource) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || artifact.source.canvasId !== 'ritual-canvas#1') throw new Error('copied explanation selection changed');
   if (!exact(artifact.followUp, READINESS_CONTRACT.keys.explanationFollowUp) || !/^canvas-scan-\d+-\d+$/.test(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new Error('copied explanation follow-up changed');
 
