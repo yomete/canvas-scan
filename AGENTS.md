@@ -11,6 +11,14 @@ These rules apply to AFK Linear implementation and release-evidence work in this
 - Keep expected truth outside product output. Never use product-visible text, runtime globals, or copied actual results as truth.
 - Reject extra fields, files, rows, and free text when the contract does not declare them.
 
+## Apply Two-Tier Rigor
+
+- Tier 1 is the product boundary: core semantics, public APIs, published artifacts, benchmark verdicts, and any evidence a release decision cites. Tier 1 work uses the full finite evidence contract, mutation corpora, and independent judges.
+- Tier 2 is internal harness plumbing: report formats, runner scripts, probes, checkers, and other evidence about evidence. Tier 2 work uses ordinary focused tests and ordinary error messages.
+- Do not build mutation corpora, schema versioning rituals, or judge rounds for Tier 2 files.
+- A judge finding against a Tier 2 file is advisory unless it shows Tier 1 evidence can be wrong. Record it and continue. It does not block closure and does not open a redesign cycle on its own.
+- When a file serves both tiers, classify it by the strongest claim it supports and say so in the plan.
+
 ## Preflight the Closure Path
 
 Before implementation, check:
@@ -58,8 +66,17 @@ judge rounds: 0/2
 - An evidence run is a browser, benchmark, or external acceptance run that takes material time.
 - The second evidence run is for the single correction batch or one confirmed environment retry.
 - Do not start a third evidence run automatically. First reassess the approach and report why the budget failed.
+- A debug run never counts against this ledger. See the debug-run rules below.
 - Allow one automatic retry for a confirmed browser, port, network, or fixture timing failure.
 - Treat a repeated environment failure as a harness defect. Do not repeat the complete suite unchanged.
+
+## Separate Debug Runs from Evidence Runs
+
+- An evidence run certifies a frozen candidate and counts against the run ledger.
+- A debug run diagnoses a failure and never counts against the ledger. Run it headed, verbose, and instrumented as needed.
+- A debug run produces no evidence claims. Do not cite its output in readiness, release, or closure evidence. Do not write it into a final evidence directory.
+- When a functional stage fails reproducibly, run a debug run and find the cause before any redesign, correction batch, or new evidence cycle. Diagnosis comes before classification.
+- Benchmark and timing gates are the exception: a debug rerun never substitutes for a measured result, and the selection-bias retry rules still apply to them unchanged.
 
 ## Use Time Circuit Breakers
 
