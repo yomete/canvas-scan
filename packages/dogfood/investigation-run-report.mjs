@@ -72,7 +72,7 @@ export function reduceRunState(state, event) {
   const id = event.type === 'verification-result' ? 'verify-run' : event.id;
   const row = state.runStages.find(value => value.id === id);
   if (!row || terminal(row)) throw new Error('run stage transition changed');
-  if (event.type === 'stage-complete' && RUN_REPORT_CONTRACT.stageDependencies[id].some(dependency => state.runStages.find(row => row.id === dependency).status !== 'complete')) throw new Error('run stage order changed');
+  if (event.type !== 'verification-result' && RUN_REPORT_CONTRACT.stageDependencies[id].some(dependency => state.runStages.find(row => row.id === dependency).status !== 'complete')) throw new Error('run stage order changed');
   const status = event.type === 'stage-complete' ? 'complete' : event.type === 'stage-unavailable' ? 'unavailable' : event.type === 'stage-failed' ? 'failed' : event.status;
   const reason = status === 'complete' ? null : event.reason;
   if (!stageStatuses.filter(value => value !== 'incomplete').includes(status) || (status !== 'complete' && !stageReasons[id][status].includes(reason))) throw new Error('run stage reason changed');
@@ -87,7 +87,10 @@ export function checkRunStages(runStages, context = {}) {
   for (const [index, row] of runStages.entries()) {
     if (!exact(row, ['id', 'status', 'reason']) || row.id !== RUN_STAGE_IDS[index] || !stageStatuses.includes(row.status)) throw new Error('run stage changed');
     if (row.status === 'complete' ? row.reason !== null : row.status === 'incomplete' ? !['not-started', 'blocked-by-prior-stage'].includes(row.reason) : !stageReasons[row.id][row.status].includes(row.reason)) throw new Error('run stage reason changed');
-    if (index && runStages.slice(0, index).some(previous => previous.status !== 'complete') && row.status === 'complete') throw new Error('blocked run stage completed');
+    const blocked = index && runStages.slice(0, index).some(previous => previous.status !== 'complete');
+    if (blocked && row.id !== 'verify-run' && (row.status !== 'incomplete' || row.reason !== 'blocked-by-prior-stage')) throw new Error('blocked run stage changed');
+    if (blocked && row.id === 'verify-run' && row.status === 'complete') throw new Error('blocked run stage completed');
+    if (!blocked && row.status === 'incomplete' && row.reason === 'blocked-by-prior-stage') throw new Error('unblocked run stage changed');
   }
   if (context.requireComplete && runStages.some(row => row.status !== 'complete')) throw new Error('run is incomplete');
   return true;

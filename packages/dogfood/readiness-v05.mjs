@@ -670,7 +670,7 @@ async function runBrowser(consumer, diagnostics, ownershipToken, runState) {
   }
 }
 
-export async function checkDirectory(directory, expectedCandidate) {
+export async function checkDirectory(directory, expectedCandidate, checkEvidence = checkReadinessEvidence) {
   const expected = expectedCandidate ?? await currentCandidate();
   const reportPath = path.join(directory, 'run-report.json');
   const reportStat = await lstat(reportPath);
@@ -703,12 +703,12 @@ export async function checkDirectory(directory, expectedCandidate) {
   let manifestBytes = null;
   if (declared.has('evidence-sha256.txt')) {
     manifestBytes = await readFile(manifestPath);
-    const lines = manifestBytes.toString('utf8').trim().split('\n').filter(Boolean);
     const manifestFiles = [...Object.keys(files), 'run-report.json'].sort();
-    if (JSON.stringify(lines) !== JSON.stringify(manifestFiles.map(file => `${hash(file === 'run-report.json' ? reportBytes : files[file])}  ${file}`))) throw new Error('readiness evidence hash changed');
+    const expectedManifest = Buffer.from(`${manifestFiles.map(file => `${hash(file === 'run-report.json' ? reportBytes : files[file])}  ${file}`).join('\n')}\n`);
+    if (!manifestBytes.equals(expectedManifest)) throw new Error('readiness evidence hash changed');
   }
   const evidence = files['evidence.json'] ? JSON.parse(files['evidence.json']) : null;
-  if (evidence?.status === 'PASS') checkReadinessEvidence(evidence, expected);
+  if (evidence) checkEvidence(evidence, expected);
   return checkInvestigationRunReport(report, { candidate: expected, rawEvidence: evidence, files, manifestBytes });
 }
 
@@ -801,11 +801,12 @@ async function main() {
     diagnostics,
     failures,
   };
-  const files = investigationArtifactBytes(evidence);
+  const reportEvidence = evidence.status === 'PASS' ? evidence : null;
+  const files = investigationArtifactBytes(reportEvidence);
   let finalization;
   try {
     finalization = await finalizeInvestigationRun({
-      directory, state: runState, candidate, rawEvidence: evidence, files, verificationReason,
+      directory, state: runState, candidate, rawEvidence: reportEvidence, files, verificationReason,
       checkSnapshot(value, context) {
         checkInvestigationSnapshot(value, context);
         if (value.status === 'complete') checkReadinessEvidence(evidence, candidate);
@@ -814,10 +815,8 @@ async function main() {
   } catch {
     const output = terminalRunOutput(directory, null, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return;
   }
-  if (finalization.report.status === 'complete') {
-    try { await checkDirectory(directory, candidate); }
-    catch { const output = terminalRunOutput(directory, finalization.report, false, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return; }
-  }
+  try { await checkDirectory(directory, candidate); }
+  catch { const output = terminalRunOutput(directory, finalization.report, false, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return; }
   const output = terminalRunOutput(directory, finalization.report);
   process.stdout.write(output.stdout); process.stderr.write(output.stderr); process.exitCode = output.exitCode;
 }

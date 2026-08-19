@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { checkDirectory } from './readiness-v05.mjs';
-import { RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, preflightInvestigationRunReport, reduceRunState, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
+import { RUN_DISK_CHECK_ERROR, RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, preflightInvestigationRunReport, reduceRunState, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
 
 const candidate = { gitSha: 'a'.repeat(40), branch: 'agent/sidproj-106-run-report', packageVersion: '0.5.0' };
 const copy = value => structuredClone(value);
+const digest = value => createHash('sha256').update(value).digest('hex');
 const session = finding => ({ browserFeatures: { monotonicTime: true, eventTiming: true, longAnimationFrames: true }, collectionLimits: copy(RUN_REPORT_CONTRACT.fixed.sessionLimits), droppedEntryCounts: copy(RUN_REPORT_CONTRACT.fixed.sessionDropped), findings: finding ? [{ type: 'repeated-draw-work', evidenceLevel: 'candidate' }] : [], windows: [], browserEntries: [] });
 const raw = ({ findings = true, unknown = false } = {}) => ({ browserVersion: '151.0.0.0', artifacts: { baselineSession: session(findings), candidateSession: session(findings), copiedExplanation: { collectionLimits: copy(RUN_REPORT_CONTRACT.fixed.explanationLimits), droppedEntryCounts: copy(RUN_REPORT_CONTRACT.fixed.explanationDropped), windows: unknown ? [{ commands: [{ unknownReason: 'unsupported-value' }] }] : [], stacks: [] }, copiedComparison: { incomparableReasons: [] } } });
 const support = evidence => [{ id: 'canvas-2d', status: 'supported', reason: null }, { id: 'monotonic-time', status: 'supported', reason: null }, ...[['event-timing', 'eventTiming'], ['long-animation-frames', 'longAnimationFrames']].map(([id, key]) => { const supported = evidence.artifacts.baselineSession.browserFeatures[key] && evidence.artifacts.candidateSession.browserFeatures[key]; return { id, status: supported ? 'supported' : 'unavailable', reason: supported ? null : 'browser-feature-unavailable' }; })];
@@ -18,6 +20,7 @@ const failed = (id, reason, type = 'stage-failed') => { const state = createRunS
 async function temporaryRun(callback) { const root = await mkdtemp(path.join(os.tmpdir(), 'sidproj-106-report-test-')); const directory = path.join(root, 'evidence'); try { return await callback(directory); } finally { await rm(root, { recursive: true, force: true }); } }
 async function canonicalDirectory(directory, evidence = raw()) { return finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: evidence }); }
 async function writeFixtureFile(directory, file, bytes) { const target = path.join(directory, file); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, bytes); }
+const checkSyntheticDirectory = directory => checkDirectory(directory, candidate, () => true);
 
 test('01 complete findings produce a complete findings report', () => {
   const value = report(); assert.equal(value.status, 'complete'); assert.equal(value.outcome, 'findings'); assert.equal(checkInvestigationRunReport(value, { candidate, rawEvidence: raw() }), true);
@@ -44,7 +47,8 @@ test('06 browser, capture, explanation, comparison, and export failures are inco
 });
 
 test('07 a failed stage blocks every later stage', () => {
-  const state = failed('record-baseline', 'capture-failed'); assert.deepEqual(state.runStages.slice(2).map(row => row.reason), Array(8).fill('blocked-by-prior-stage')); assert.throws(() => reduceRunState(state, { type: 'stage-complete', id: 'explain-baseline' }));
+  const state = failed('record-baseline', 'capture-failed'); assert.deepEqual(state.runStages.slice(2).map(row => row.reason), Array(8).fill('blocked-by-prior-stage')); assert.throws(() => reduceRunState(state, { type: 'stage-complete', id: 'explain-baseline' })); assert.throws(() => reduceRunState(state, { type: 'stage-failed', id: 'explain-baseline', reason: 'explanation-failed' }));
+  const changed = report(failed('early-load', 'setup-failed'), { artifacts: {} }); changed.runStages[1] = { id: 'record-baseline', status: 'failed', reason: 'capture-failed' }; assert.throws(() => checkInvestigationRunReport(changed));
 });
 
 test('08 the reducer rejects out-of-order completion', () => {
@@ -56,7 +60,7 @@ test('09 the reducer rejects a second terminal transition', () => {
 });
 
 test('10 setup failure writes an explicit incomplete report', async () => temporaryRun(async directory => {
-  const evidence = { browserVersion: '', artifacts: {} }; const result = await finalizeInvestigationRun({ directory, state: failed('early-load', 'setup-failed'), candidate, rawEvidence: evidence, verificationReason: 'ritual-incomplete' }); assert.equal(result.report.status, 'incomplete'); assert.deepEqual(result.report.runStages[0], { id: 'early-load', status: 'failed', reason: 'setup-failed' }); assert.equal(await checkDirectory(directory, candidate), true);
+  const evidence = { browserVersion: '', artifacts: {} }; const result = await finalizeInvestigationRun({ directory, state: failed('early-load', 'setup-failed'), candidate, rawEvidence: evidence, verificationReason: 'ritual-incomplete' }); assert.equal(result.report.status, 'incomplete'); assert.deepEqual(result.report.runStages[0], { id: 'early-load', status: 'failed', reason: 'setup-failed' }); assert.equal(await checkSyntheticDirectory(directory), true);
 }));
 
 test('11 report-write failure has no success output and one exact error', async () => {
@@ -97,19 +101,26 @@ test('19 successful finalization writes the report last and applies one complete
 });
 
 test('20 source and disk checkers accept the canonical complete fixture', async () => temporaryRun(async directory => {
-  const evidence = raw(); const result = await canonicalDirectory(directory, evidence); const files = investigationArtifactBytes(evidence); const manifestBytes = investigationManifestBytes(files, Buffer.from(`${JSON.stringify(result.report, null, 2)}\n`)); assert.equal(checkInvestigationSnapshot(result.report, { candidate, rawEvidence: evidence, files, manifestBytes }), true); assert.equal(await checkDirectory(directory, candidate), true);
+  const evidence = raw(); const result = await canonicalDirectory(directory, evidence); const files = investigationArtifactBytes(evidence); const manifestBytes = investigationManifestBytes(files, Buffer.from(`${JSON.stringify(result.report, null, 2)}\n`)); assert.equal(checkInvestigationSnapshot(result.report, { candidate, rawEvidence: evidence, files, manifestBytes }), true); assert.equal(await checkSyntheticDirectory(directory), true);
 }));
 
 test('21 disk checker rejects report, artifact, and manifest corruption without rewriting', async () => {
-  for (const file of ['run-report.json', 'artifacts/baseline-session.json', 'evidence-sha256.txt']) await temporaryRun(async directory => { await canonicalDirectory(directory); const target = path.join(directory, file); const beforeReport = await readFile(path.join(directory, 'run-report.json')); await writeFile(target, Buffer.concat([await readFile(target), Buffer.from('corrupt')])); const corrupted = await readFile(target); await assert.rejects(() => checkDirectory(directory, candidate)); assert.deepEqual(await readFile(target), corrupted); if (file !== 'run-report.json') assert.deepEqual(await readFile(path.join(directory, 'run-report.json')), beforeReport); });
+  for (const file of ['run-report.json', 'artifacts/baseline-session.json', 'evidence-sha256.txt']) await temporaryRun(async directory => { await canonicalDirectory(directory); const target = path.join(directory, file); const beforeReport = await readFile(path.join(directory, 'run-report.json')); await writeFile(target, Buffer.concat([await readFile(target), Buffer.from('corrupt')])); const corrupted = await readFile(target); await assert.rejects(() => checkSyntheticDirectory(directory)); assert.deepEqual(await readFile(target), corrupted); if (file !== 'run-report.json') assert.deepEqual(await readFile(path.join(directory, 'run-report.json')), beforeReport); });
+  for (const change of [bytes => bytes.subarray(0, -1), bytes => Buffer.concat([bytes, Buffer.from('\n')])]) await temporaryRun(async directory => { await canonicalDirectory(directory); const target = path.join(directory, 'evidence-sha256.txt'); await writeFile(target, change(await readFile(target))); await assert.rejects(() => checkSyntheticDirectory(directory)); });
+  await temporaryRun(async directory => {
+    await canonicalDirectory(directory); const evidencePath = path.join(directory, 'evidence.json'); const evidence = JSON.parse(await readFile(evidencePath)); evidence.status = 'FAIL'; evidence.privateText = 'private-user-value'; const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`); await writeFile(evidencePath, evidenceBytes);
+    const reportPath = path.join(directory, 'run-report.json'); const value = JSON.parse(await readFile(reportPath)); value.artifacts[0].sha256 = digest(evidenceBytes); const reportBytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`); await writeFile(reportPath, reportBytes);
+    const files = {}; for (const row of value.artifacts) files[row.path] = await readFile(path.join(directory, row.path)); await writeFile(path.join(directory, 'evidence-sha256.txt'), investigationManifestBytes(files, reportBytes));
+    await assert.rejects(() => checkDirectory(directory, candidate));
+  });
 });
 
 test('22 disk checker accepts declared incomplete sets and rejects undeclared absence, extras, and symlinks', async () => {
-  await temporaryRun(async directory => { const evidence = { browserVersion: '', artifacts: {} }; await finalizeInvestigationRun({ directory, state: failed('early-load', 'setup-failed'), candidate, rawEvidence: evidence, verificationReason: 'ritual-incomplete' }); assert.equal(await checkDirectory(directory, candidate), true); });
-  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), checkSnapshot: () => { throw new Error('snapshot'); } }); assert.equal(await checkDirectory(directory, candidate), true); });
-  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), writeArtifact: async (file, bytes) => { if (file === 'artifacts/baseline-session.json') throw new Error('artifact'); await writeFixtureFile(directory, file, bytes); } }); assert.equal(await checkDirectory(directory, candidate), true); });
-  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), writeArtifact: (file, bytes) => writeFixtureFile(directory, file, bytes), writeManifest: async () => { throw new Error('manifest'); } }); assert.equal(await checkDirectory(directory, candidate), true); });
-  await temporaryRun(async directory => { await canonicalDirectory(directory); await unlink(path.join(directory, 'artifacts/comparison.json')); await assert.rejects(() => checkDirectory(directory, candidate)); });
-  await temporaryRun(async directory => { await canonicalDirectory(directory); await writeFile(path.join(directory, 'extra.json'), '{}\n'); await assert.rejects(() => checkDirectory(directory, candidate)); });
-  await temporaryRun(async directory => { await canonicalDirectory(directory); await symlink(path.join(directory, 'evidence.json'), path.join(directory, 'extra-link')); await assert.rejects(() => checkDirectory(directory, candidate)); });
+  await temporaryRun(async directory => { const evidence = { browserVersion: '', artifacts: {} }; await finalizeInvestigationRun({ directory, state: failed('early-load', 'setup-failed'), candidate, rawEvidence: evidence, verificationReason: 'ritual-incomplete' }); assert.equal(await checkSyntheticDirectory(directory), true); await writeFile(path.join(directory, 'run-report.json.tmp'), 'private-user-value'); await assert.rejects(() => checkSyntheticDirectory(directory)); const output = terminalRunOutput(directory, null, false, true); assert.deepEqual(output, { exitCode: 1, stdout: '', stderr: `${RUN_DISK_CHECK_ERROR}\n` }); });
+  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), checkSnapshot: () => { throw new Error('snapshot'); } }); assert.equal(await checkSyntheticDirectory(directory), true); });
+  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), writeArtifact: async (file, bytes) => { if (file === 'artifacts/baseline-session.json') throw new Error('artifact'); await writeFixtureFile(directory, file, bytes); } }); assert.equal(await checkSyntheticDirectory(directory), true); });
+  await temporaryRun(async directory => { await finalizeInvestigationRun({ directory, state: ready(), candidate, rawEvidence: raw(), writeArtifact: (file, bytes) => writeFixtureFile(directory, file, bytes), writeManifest: async () => { throw new Error('manifest'); } }); assert.equal(await checkSyntheticDirectory(directory), true); });
+  await temporaryRun(async directory => { await canonicalDirectory(directory); await unlink(path.join(directory, 'artifacts/comparison.json')); await assert.rejects(() => checkSyntheticDirectory(directory)); });
+  await temporaryRun(async directory => { await canonicalDirectory(directory); await writeFile(path.join(directory, 'extra.json'), '{}\n'); await assert.rejects(() => checkSyntheticDirectory(directory)); });
+  await temporaryRun(async directory => { await canonicalDirectory(directory); await symlink(path.join(directory, 'evidence.json'), path.join(directory, 'extra-link')); await assert.rejects(() => checkSyntheticDirectory(directory)); });
 });
