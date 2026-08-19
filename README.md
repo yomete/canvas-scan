@@ -15,7 +15,7 @@ React performance tools stop at the `<canvas>` element: they can tell you a comp
 - How strong is each piece of evidence — `measured`, `associated`, or `candidate`?
 - What should you check next?
 
-**It never guesses.** Self-time means synchronous Canvas2D API time — never GPU time, render time, or "wasted work". Window comparisons come back `same | changed | unknown`, and `unknown` is an honest answer, not a failure. Every finding states what its evidence cannot prove and names the next useful check.
+**It never guesses.** Self-time means synchronous Canvas2D API time, and the tool never claims GPU time, render time, pixel identity, or wasted work. Window comparisons come back `same | changed | unknown`, and `unknown` is an honest answer, not a failure. Every finding states what its evidence cannot prove and names the next useful check.
 
 ## Quick start
 
