@@ -5,16 +5,21 @@ import path from 'node:path';
 export const RUN_STAGE_IDS = ['early-load', 'record-baseline', 'explain-baseline', 'copy-explanation', 'keep-baseline', 'apply-change', 'record-candidate', 'pair-findings', 'copy-comparison', 'verify-run'];
 export const RUN_REPORT_WRITE_ERROR = 'SIDPROJ_106_RUN_REPORT_ERROR: report-write-failed';
 export const RUN_DISK_CHECK_ERROR = 'SIDPROJ_106_RUN_REPORT_ERROR: disk-check-failed';
+export const EXPORT_STAGE_IDS = Object.freeze(['copy-explanation', 'copy-comparison']);
+export const EXPORT_FAILURE_REASONS = Object.freeze(['copy-click-failed', 'copy-confirmation-timeout', 'clipboard-read-failed', 'clipboard-json-invalid', 'artifact-contract-violation', 'export-harness-crashed']);
+export const STAGE_FALLBACK_REASONS = Object.freeze({ 'early-load': 'browser-start-failed', 'record-baseline': 'capture-failed', 'explain-baseline': 'explanation-failed', 'copy-explanation': 'export-harness-crashed', 'keep-baseline': 'baseline-selection-failed', 'apply-change': 'candidate-change-failed', 'record-candidate': 'capture-failed', 'pair-findings': 'comparison-failed', 'copy-comparison': 'export-harness-crashed' });
+export class ContractViolation extends Error {}
+export class StageFailure extends Error { constructor(stageId, reason) { super(`SIDPROJ_106_STAGE_FAILURE: ${stageId} ${reason}`); this.stageId = stageId; this.reason = reason; } }
 const stageReasons = Object.freeze({
   'early-load': { unavailable: ['browser-unavailable'], failed: ['setup-failed', 'browser-start-failed'] },
   'record-baseline': { unavailable: ['capture-unavailable'], failed: ['capture-failed'] },
   'explain-baseline': { unavailable: ['explanation-unavailable'], failed: ['explanation-failed'] },
-  'copy-explanation': { unavailable: ['export-unavailable'], failed: ['export-failed'] },
+  'copy-explanation': { unavailable: ['export-unavailable'], failed: [...EXPORT_FAILURE_REASONS] },
   'keep-baseline': { unavailable: [], failed: ['baseline-selection-failed'] },
   'apply-change': { unavailable: [], failed: ['candidate-change-failed'] },
   'record-candidate': { unavailable: ['capture-unavailable'], failed: ['capture-failed'] },
   'pair-findings': { unavailable: ['finding-unavailable', 'comparison-unavailable'], failed: ['comparison-failed'] },
-  'copy-comparison': { unavailable: ['export-unavailable'], failed: ['export-failed'] },
+  'copy-comparison': { unavailable: ['export-unavailable'], failed: [...EXPORT_FAILURE_REASONS] },
   'verify-run': { unavailable: [], failed: ['artifact-missing', 'artifact-hash-mismatch', 'artifact-write-failed', 'manifest-write-failed', 'candidate-snapshot-invalid', 'ritual-incomplete', 'dirty-worktree', 'cleanup-failed'] },
 });
 const artifactRows = Object.freeze([['readiness-evidence', 'evidence.json', null], ['baseline-session', 'artifacts/baseline-session.json', 'baselineSession'], ['explanation', 'artifacts/explanation.json', 'copiedExplanation'], ['candidate-session', 'artifacts/candidate-session.json', 'candidateSession'], ['comparison', 'artifacts/comparison.json', 'copiedComparison']]);
@@ -45,7 +50,7 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const terminal = row => row.status !== 'incomplete';
 const nonNegative = value => Number.isInteger(value) && value >= 0;
 
-export const RUN_REPORT_CONTRACT = Object.freeze({ schemaVersion: 1, issue: 'SIDPROJ-106', rootKeys, stageStatuses, stageReasons, stageDependencies: Object.freeze(Object.fromEntries(RUN_STAGE_IDS.map((id, index) => [id, RUN_STAGE_IDS.slice(0, index)]))), artifactRows: Object.freeze(artifactRows.map(([id, path], index) => ({ id, path, stage: artifactStages[index] }))), supportIds: Object.freeze(supportIds), supportStatuses, supportReasons, unknownReasons, findingTypes, findingEvidenceLevel: 'candidate', collectionKeys: ['baselineSession', 'explanation', 'candidateSession'], fixed: Object.freeze({ branch: 'agent/sidproj-106-run-report', packageVersion: '0.5.0', sessionLimits, sessionDropped, explanationLimits, explanationDropped }), emptyDropCounts: Object.freeze({ baselineSession: {}, explanation: {}, candidateSession: {} }) });
+export const RUN_REPORT_CONTRACT = Object.freeze({ schemaVersion: 2, issue: 'SIDPROJ-106', rootKeys, stageStatuses, stageReasons, stageDependencies: Object.freeze(Object.fromEntries(RUN_STAGE_IDS.map((id, index) => [id, RUN_STAGE_IDS.slice(0, index)]))), artifactRows: Object.freeze(artifactRows.map(([id, path], index) => ({ id, path, stage: artifactStages[index] }))), supportIds: Object.freeze(supportIds), supportStatuses, supportReasons, unknownReasons, findingTypes, findingEvidenceLevel: 'candidate', collectionKeys: ['baselineSession', 'explanation', 'candidateSession'], fixed: Object.freeze({ branch: 'agent/sidproj-106-run-report', packageVersion: '0.5.0', sessionLimits, sessionDropped, explanationLimits, explanationDropped }), emptyDropCounts: Object.freeze({ baselineSession: {}, explanation: {}, candidateSession: {} }) });
 
 export function createRunState() { return { runStages: RUN_STAGE_IDS.map(id => ({ id, status: 'incomplete', reason: 'not-started' })), browserSupport: null, artifacts: new Set(), findings: [], unknownReasons: [] }; }
 
@@ -96,6 +101,26 @@ export function checkRunStages(runStages, context = {}) {
   return true;
 }
 
+export async function runExportStage(stageId, steps) {
+  if (!EXPORT_STAGE_IDS.includes(stageId) || !exact(steps, ['click', 'confirm', 'read', 'parse', 'validate']) || Object.values(steps).some(step => typeof step !== 'function')) throw new Error('export stage steps changed');
+  const wrap = async (reason, action) => { try { return await action(); } catch { throw new StageFailure(stageId, reason); } };
+  await wrap('copy-click-failed', steps.click);
+  await wrap('copy-confirmation-timeout', steps.confirm);
+  const copiedText = await wrap('clipboard-read-failed', steps.read);
+  const artifact = await wrap('clipboard-json-invalid', () => steps.parse(copiedText));
+  try { await steps.validate(artifact); }
+  catch (cause) { throw new StageFailure(stageId, cause instanceof ContractViolation ? 'artifact-contract-violation' : 'export-harness-crashed'); }
+  return artifact;
+}
+
+export function classifyStageFailure(runStages, error) {
+  if (!Array.isArray(runStages) || runStages.length !== RUN_STAGE_IDS.length) throw new Error('run state changed');
+  const pending = runStages.slice(0, -1).find(row => row.status === 'incomplete' && row.reason === 'not-started');
+  if (!pending || runStages.slice(0, RUN_STAGE_IDS.indexOf(pending.id)).some(row => row.status !== 'complete')) return null;
+  const typed = error instanceof StageFailure && error.stageId === pending.id && stageReasons[pending.id].failed.includes(error.reason);
+  return { id: pending.id, reason: typed ? error.reason : STAGE_FALLBACK_REASONS[pending.id] };
+}
+
 function derivedSupport(raw, stages) {
   if (stages[0]?.status !== 'complete') return supportIds.map(id => ({ id, status: 'unavailable', reason: 'browser-not-run' }));
   const baseline = raw?.artifacts?.baselineSession?.browserFeatures;
@@ -128,7 +153,7 @@ export function finalizeRunReport(state, input) {
   if (runStages[0].status === 'complete' && state.browserSupport === null) throw new Error('browser support was not recorded');
   const browserSupport = state.browserSupport ?? derivedSupport(raw, runStages);
   const findings = derivedFindings(raw); const unknownReasons = derivedUnknowns(raw, browserSupport); const status = runStages.every(row => row.status === 'complete') ? 'complete' : 'incomplete';
-  return { schemaVersion: 1, issue: 'SIDPROJ-106', status, outcome: status === 'incomplete' ? 'incomplete' : findings.length ? 'findings' : unknownReasons.length ? 'unknown' : 'clean', gitSha: input.candidate?.gitSha ?? null, branch: input.candidate?.branch ?? null, packageVersion: input.candidate?.packageVersion ?? null, browserVersion: /^\d+\.\d+\.\d+\.\d+$/.test(raw?.browserVersion ?? '') ? raw.browserVersion : null, runStages, browserSupport, ...reportCollections(raw, files), unknownReasons, findings, artifacts, missingFiles };
+  return { schemaVersion: RUN_REPORT_CONTRACT.schemaVersion, issue: 'SIDPROJ-106', status, outcome: status === 'incomplete' ? 'incomplete' : findings.length ? 'findings' : unknownReasons.length ? 'unknown' : 'clean', gitSha: input.candidate?.gitSha ?? null, branch: input.candidate?.branch ?? null, packageVersion: input.candidate?.packageVersion ?? null, browserVersion: /^\d+\.\d+\.\d+\.\d+$/.test(raw?.browserVersion ?? '') ? raw.browserVersion : null, runStages, browserSupport, ...reportCollections(raw, files), unknownReasons, findings, artifacts, missingFiles };
 }
 function validateRows(rows, expected, label, emptyRequired = false) { if (emptyRequired ? !exact(rows, []) : !exact(rows, Object.keys(expected)) || Object.values(rows).some(value => !nonNegative(value)) || !same(rows, expected)) throw new Error(`${label} changed`); }
 function checkArtifactBytes(report, context) { const files = context.files; if (!files) return; for (const row of report.artifacts) { const bytes = files[row.path]; if ((bytes !== undefined && bytes !== null) !== (row.sha256 !== null) || (bytes && digest(bytes) !== row.sha256)) throw new Error('report artifact hash changed'); } const raw = context.rawEvidence; if (raw && files['evidence.json'] && !Buffer.from(files['evidence.json']).equals(Buffer.from(stable(raw)))) throw new Error('evidence bytes changed'); for (const [, file, rawKey] of artifactRows) if (rawKey && files[file] && !Buffer.from(files[file]).equals(Buffer.from(stable(raw?.artifacts?.[rawKey])))) throw new Error('extracted artifact changed'); }

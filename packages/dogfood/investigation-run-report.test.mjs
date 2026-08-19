@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { checkDirectory } from './readiness-v05.mjs';
-import { RUN_DISK_CHECK_ERROR, RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, preflightInvestigationRunReport, reduceRunState, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
+import { ContractViolation, EXPORT_FAILURE_REASONS, EXPORT_STAGE_IDS, RUN_DISK_CHECK_ERROR, RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, StageFailure, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, classifyStageFailure, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, preflightInvestigationRunReport, reduceRunState, runExportStage, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
 
 const candidate = { gitSha: 'a'.repeat(40), branch: 'agent/sidproj-106-run-report', packageVersion: '0.5.0' };
 const copy = value => structuredClone(value);
@@ -43,7 +43,7 @@ test('05 every first-nine stage accepts only its declared failed reasons', () =>
 });
 
 test('06 browser, capture, explanation, comparison, and export failures are incomplete', () => {
-  for (const [id, reason] of [['early-load', 'browser-start-failed'], ['record-baseline', 'capture-failed'], ['explain-baseline', 'explanation-failed'], ['copy-explanation', 'export-failed'], ['record-candidate', 'capture-failed'], ['pair-findings', 'comparison-failed'], ['copy-comparison', 'export-failed']]) assert.equal(report(failed(id, reason), raw({ findings: false })).status, 'incomplete');
+  for (const [id, reason] of [['early-load', 'browser-start-failed'], ['record-baseline', 'capture-failed'], ['explain-baseline', 'explanation-failed'], ['copy-explanation', 'clipboard-read-failed'], ['record-candidate', 'capture-failed'], ['pair-findings', 'comparison-failed'], ['copy-comparison', 'artifact-contract-violation']]) assert.equal(report(failed(id, reason), raw({ findings: false })).status, 'incomplete');
 });
 
 test('07 a failed stage blocks every later stage', () => {
@@ -123,4 +123,53 @@ test('22 disk checker accepts declared incomplete sets and rejects undeclared ab
   await temporaryRun(async directory => { await canonicalDirectory(directory); await unlink(path.join(directory, 'artifacts/comparison.json')); await assert.rejects(() => checkSyntheticDirectory(directory)); });
   await temporaryRun(async directory => { await canonicalDirectory(directory); await writeFile(path.join(directory, 'extra.json'), '{}\n'); await assert.rejects(() => checkSyntheticDirectory(directory)); });
   await temporaryRun(async directory => { await canonicalDirectory(directory); await symlink(path.join(directory, 'evidence.json'), path.join(directory, 'extra-link')); await assert.rejects(() => checkSyntheticDirectory(directory)); });
+});
+
+const exportSteps = () => ({ click: async () => {}, confirm: async () => {}, read: async () => '{"value":1}', parse: value => JSON.parse(value), validate: () => true });
+const pendingComparison = () => { const state = createRunState(); reduceRunState(state, { type: 'browser-support', rows: support(raw()) }); for (const id of RUN_STAGE_IDS.slice(0, 8)) reduceRunState(state, { type: 'stage-complete', id }); return state; };
+
+test('23 each export failure class produces exactly its finite privacy-safe reason', async () => {
+  for (const stageId of EXPORT_STAGE_IDS) assert.deepEqual(await runExportStage(stageId, exportSteps()), { value: 1 });
+  const cases = [
+    ['click', () => { throw new Error('EACCES /private/user/path'); }, 'copy-click-failed'],
+    ['confirm', () => { throw new Error('waitForFunction timeout /private/user/path'); }, 'copy-confirmation-timeout'],
+    ['read', () => { throw new Error('clipboard denied private-user-value'); }, 'clipboard-read-failed'],
+    ['parse', () => { throw new SyntaxError('Unexpected token in private-user-value'); }, 'clipboard-json-invalid'],
+    ['validate', () => { throw new ContractViolation('copied comparison root changed'); }, 'artifact-contract-violation'],
+    ['validate', () => { throw new TypeError('Cannot read private-user-value'); }, 'export-harness-crashed'],
+  ];
+  for (const stageId of EXPORT_STAGE_IDS) for (const [step, action, reason] of cases) {
+    const failing = exportSteps(); failing[step] = action;
+    await assert.rejects(() => runExportStage(stageId, failing), error => error instanceof StageFailure && error.stageId === stageId && error.reason === reason && error.message === `SIDPROJ_106_STAGE_FAILURE: ${stageId} ${reason}`);
+  }
+});
+
+test('24 export stages accept only the declared stage IDs and exact step set', async () => {
+  await assert.rejects(() => runExportStage('record-baseline', exportSteps()), error => error.message === 'export stage steps changed');
+  const missing = exportSteps(); delete missing.confirm;
+  await assert.rejects(() => runExportStage('copy-comparison', missing), error => error.message === 'export stage steps changed');
+  const extra = exportSteps(); extra.extra = () => {};
+  await assert.rejects(() => runExportStage('copy-comparison', extra), error => error.message === 'export stage steps changed');
+  const nonFunction = exportSteps(); nonFunction.parse = 'private-user-value';
+  await assert.rejects(() => runExportStage('copy-comparison', nonFunction), error => error.message === 'export stage steps changed');
+  assert.throws(() => reduceRunState(pendingComparison(), { type: 'stage-failed', id: 'copy-comparison', reason: 'export-failed' }));
+  for (const reason of EXPORT_FAILURE_REASONS) { const state = pendingComparison(); reduceRunState(state, { type: 'stage-failed', id: 'copy-comparison', reason }); assert.deepEqual(state.runStages[8], { id: 'copy-comparison', status: 'failed', reason }); }
+});
+
+test('25 classification honors a typed reason only for the pending export stage', () => {
+  const state = pendingComparison();
+  assert.deepEqual(classifyStageFailure(state.runStages, new StageFailure('copy-comparison', 'clipboard-json-invalid')), { id: 'copy-comparison', reason: 'clipboard-json-invalid' });
+  assert.deepEqual(classifyStageFailure(state.runStages, new StageFailure('copy-explanation', 'clipboard-json-invalid')), { id: 'copy-comparison', reason: 'export-harness-crashed' });
+  assert.deepEqual(classifyStageFailure(state.runStages, new StageFailure('copy-comparison', 'export-failed')), { id: 'copy-comparison', reason: 'export-harness-crashed' });
+  assert.deepEqual(classifyStageFailure(state.runStages, new StageFailure('copy-comparison', 'EACCES /private/user/path')), { id: 'copy-comparison', reason: 'export-harness-crashed' });
+  assert.deepEqual(classifyStageFailure(state.runStages, new Error('EACCES /private/user/path')), { id: 'copy-comparison', reason: 'export-harness-crashed' });
+});
+
+test('26 classification keeps declared fallbacks for other stages and null for terminal states', () => {
+  const fresh = createRunState();
+  assert.deepEqual(classifyStageFailure(fresh.runStages, new Error('boom')), { id: 'early-load', reason: 'browser-start-failed' });
+  assert.deepEqual(classifyStageFailure(fresh.runStages, new StageFailure('copy-comparison', 'clipboard-json-invalid')), { id: 'early-load', reason: 'browser-start-failed' });
+  assert.equal(classifyStageFailure(failed('record-baseline', 'capture-failed').runStages, new Error('boom')), null);
+  assert.equal(classifyStageFailure(failed('early-load', 'browser-unavailable', 'stage-unavailable').runStages, new Error('boom')), null);
+  assert.throws(() => classifyStageFailure(RUN_STAGE_IDS.slice(0, 3), new Error('boom')));
 });

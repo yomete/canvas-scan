@@ -4,7 +4,7 @@ import { cp, lstat, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/pro
 import os from 'node:os';
 import path from 'node:path';
 import { checkDirectory } from './readiness-v05.mjs';
-import { RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, reduceRunState, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
+import { RUN_REPORT_CONTRACT, RUN_REPORT_WRITE_ERROR, RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkTerminalRunOutput, createRunState, finalizeInvestigationRun, finalizeRunReport, investigationArtifactBytes, investigationManifestBytes, reduceRunState, runExportStage, terminalRunOutput, writeInvestigationRunReport } from './investigation-run-report.mjs';
 
 const syntheticCandidate = { gitSha: 'a'.repeat(40), branch: 'agent/sidproj-106-run-report', packageVersion: '0.5.0' };
 const copy = value => structuredClone(value);
@@ -42,7 +42,24 @@ async function manifestFailureFixture() {
   return { candidate: syntheticCandidate, rawEvidence: evidence, files, manifestBytes: null, report: result.report };
 }
 
+function incompleteComparisonReport() {
+  const state = createRunState();
+  reduceRunState(state, { type: 'browser-support', rows: support(raw()) });
+  for (const id of RUN_STAGE_IDS.slice(0, 8)) reduceRunState(state, { type: 'stage-complete', id });
+  reduceRunState(state, { type: 'stage-failed', id: 'copy-comparison', reason: 'export-harness-crashed' });
+  reduceRunState(state, { type: 'verification-result', status: 'failed', reason: 'ritual-incomplete' });
+  return finalizeRunReport(state, { candidate: syntheticCandidate, rawEvidence: null, files: {}, manifestBytes: null });
+}
+const exportAttackSteps = { click: async () => {}, confirm: async () => {}, read: async () => '{}', parse: value => JSON.parse(value), validate: () => true };
+
 export const investigationReportMutations = [
+  ['a copy-comparison failure uses the retired catch-all reason', async () => { const report = incompleteComparisonReport(); report.runStages[8].reason = 'export-failed'; checkInvestigationRunReport(report); }],
+  ['a copy-comparison failure smuggles private text as its reason', async () => { const report = incompleteComparisonReport(); report.runStages[8].reason = 'EACCES /private/user/path'; checkInvestigationRunReport(report); }],
+  ['a copy-comparison failure uses another stage reason', async () => { const report = incompleteComparisonReport(); report.runStages[8].reason = 'capture-failed'; checkInvestigationRunReport(report); }],
+  ['a report claims the retired schema version', reportMutation(value => { value.schemaVersion = 1; })],
+  ['an export stage accepts an extra undeclared step', async () => runExportStage('copy-comparison', { ...exportAttackSteps, extra: () => {} })],
+  ['an export stage accepts a missing confirmation step', async () => { const { confirm, ...steps } = exportAttackSteps; return runExportStage('copy-comparison', steps); }],
+  ['an export stage runs for an undeclared stage', async () => runExportStage('record-baseline', { ...exportAttackSteps })],
   ['candidate-snapshot rejection produces a complete verify-run stage', async () => { const result = await finalizeInvestigationRun({ directory: '/virtual', state: ready(), candidate: syntheticCandidate, rawEvidence: raw(), checkSnapshot: () => { throw new Error('snapshot'); }, writeReport: async report => report }); result.report.runStages.at(-1) = { id: 'verify-run', status: 'complete', reason: null }; checkInvestigationRunReport(result.report); }],
   ['candidate snapshot accepts a valid-shaped false manifest', async fixture => { fixture.manifestBytes = Buffer.from(`${'0'.repeat(64)}  evidence.json\n`); checkInvestigationSnapshot(fixture.report, fixture); }],
   ['a dirty worktree retains a complete verify-run stage', reportMutation(value => { value.runStages.at(-1).reason = 'dirty-worktree'; })],

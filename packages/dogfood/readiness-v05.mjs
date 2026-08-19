@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { RITUAL_METHODS } from '../../scripts/pack-manifest.mjs';
-import { RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkRunStages, createRunState, finalizeInvestigationRun, investigationArtifactBytes, preflightInvestigationRunReport, reduceRunState, terminalRunOutput } from './investigation-run-report.mjs';
+import { ContractViolation, checkInvestigationRunReport, checkInvestigationSnapshot, checkRunStages, classifyStageFailure, createRunState, finalizeInvestigationRun, investigationArtifactBytes, preflightInvestigationRunReport, reduceRunState, runExportStage, terminalRunOutput } from './investigation-run-report.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const defaultDirectory = '/private/tmp/sidproj-106-run-report';
@@ -141,17 +141,17 @@ const READINESS_CONTRACT = {
 };
 
 function shape(value, keys, label) {
-  if (!exact(value, keys)) throw new Error(`${label} shape changed`);
+  if (!exact(value, keys)) throw new ContractViolation(`${label} shape changed`);
 }
 
 function list(value, label) {
-  if (!Array.isArray(value)) throw new Error(`${label} shape changed`);
+  if (!Array.isArray(value)) throw new ContractViolation(`${label} shape changed`);
   return value;
 }
 
 function fixed(value, expected, label) {
   shape(value, Object.keys(expected), label);
-  for (const [key, expectedValue] of Object.entries(expected)) if (JSON.stringify(value[key]) !== JSON.stringify(expectedValue)) throw new Error(`${label} value changed`);
+  for (const [key, expectedValue] of Object.entries(expected)) if (JSON.stringify(value[key]) !== JSON.stringify(expectedValue)) throw new ContractViolation(`${label} value changed`);
 }
 
 function finite(value) {
@@ -171,14 +171,14 @@ function validateSourceLocation(value, label, kind) {
   shape(value, READINESS_CONTRACT.keys.sourceLocation, label);
   const generated = kind === 'generated' && READINESS_CONTRACT.paths.generated.test(value.file);
   const mapped = kind === 'mapped' && !value.file.includes('..') && READINESS_CONTRACT.paths.mapped.test(value.file);
-  if ((!generated && !mapped) || value.file.includes('?') || value.file.includes('#') || !Number.isInteger(value.line) || value.line < 1 || !Number.isInteger(value.column) || value.column < 0) throw new Error(`${label} value changed`);
+  if ((!generated && !mapped) || value.file.includes('?') || value.file.includes('#') || !Number.isInteger(value.line) || value.line < 1 || !Number.isInteger(value.column) || value.column < 0) throw new ContractViolation(`${label} value changed`);
 }
 
 function validateMethodEvidence(value, counts, label) {
   shape(value, READINESS_CONTRACT.keys.methodEvidence, label);
   for (const [name, count] of Object.entries(counts)) {
     shape(value[name], READINESS_CONTRACT.keys.method, `${label}.${name}`);
-    if (value[name].count !== count || (name === 'fillStyle' ? value[name].canvasApiSelfTimeMs !== null : !finite(value[name].canvasApiSelfTimeMs))) throw new Error(`${label}.${name} value changed`);
+    if (value[name].count !== count || (name === 'fillStyle' ? value[name].canvasApiSelfTimeMs !== null : !finite(value[name].canvasApiSelfTimeMs))) throw new ContractViolation(`${label}.${name} value changed`);
   }
 }
 
@@ -187,50 +187,50 @@ function validateBrowserEntries(entries) {
   const requiredRows = READINESS_CONTRACT.browserRows.filter(row => !row.optional);
   const optionalRow = READINESS_CONTRACT.browserRows.find(row => row.optional);
   const optionalRows = rows.filter(row => row?.kind === optionalRow.kind);
-  if (optionalRows.length > 1 || rows.length !== requiredRows.length + optionalRows.length) throw new Error('raw browser entry rows changed');
+  if (optionalRows.length > 1 || rows.length !== requiredRows.length + optionalRows.length) throw new ContractViolation('raw browser entry rows changed');
   const interactionIds = new Map();
   let requiredIndex = 0;
   for (const [index, entry] of rows.entries()) {
     const expected = entry?.kind === optionalRow.kind ? optionalRow : requiredRows[requiredIndex++];
-    if (entry?.entryId !== `browser-evidence-${index + 1}` || !finite(entry.startedAtTimestampMs) || !finite(entry.endedAtTimestampMs) || entry.endedAtTimestampMs < entry.startedAtTimestampMs) throw new Error('raw browser entry identity changed');
-    if (!expected || entry.kind !== expected.kind) throw new Error('raw browser entry kind changed');
+    if (entry?.entryId !== `browser-evidence-${index + 1}` || !finite(entry.startedAtTimestampMs) || !finite(entry.endedAtTimestampMs) || entry.endedAtTimestampMs < entry.startedAtTimestampMs) throw new ContractViolation('raw browser entry identity changed');
+    if (!expected || entry.kind !== expected.kind) throw new ContractViolation('raw browser entry kind changed');
     if (expected.kind === 'document-event') {
       shape(entry, READINESS_CONTRACT.keys.documentEvent, 'raw document event');
-      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName) throw new Error('raw document event value changed');
+      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName) throw new ContractViolation('raw document event value changed');
     } else if (expected.kind === 'event-timing') {
       shape(entry, READINESS_CONTRACT.keys.eventTiming, 'raw event timing');
-      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName || !sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !Number.isInteger(entry.interactionId) || entry.interactionId < 1) throw new Error('raw event timing value changed');
+      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName || !sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !Number.isInteger(entry.interactionId) || entry.interactionId < 1) throw new ContractViolation('raw event timing value changed');
       const pairId = interactionIds.get(expected.pair);
       if (pairId === undefined) interactionIds.set(expected.pair, entry.interactionId);
-      else if (pairId !== entry.interactionId) throw new Error('raw event timing pair changed');
+      else if (pairId !== entry.interactionId) throw new ContractViolation('raw event timing pair changed');
     } else if (expected.kind === 'long-animation-frame') {
       shape(entry, READINESS_CONTRACT.keys.longAnimationFrame, 'raw long animation frame');
-      if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new Error('raw long animation frame value changed');
+      if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new ContractViolation('raw long animation frame value changed');
     }
   }
-  if (requiredIndex !== requiredRows.length) throw new Error('raw browser entry rows changed');
-  if (interactionIds.get('page') === interactionIds.get('replay')) throw new Error('raw event timing identities changed');
+  if (requiredIndex !== requiredRows.length) throw new ContractViolation('raw browser entry rows changed');
+  if (interactionIds.get('page') === interactionIds.get('replay')) throw new ContractViolation('raw event timing identities changed');
 }
 
 function validateCommand(command, expected, expectedOrdinal, namespace, label) {
   shape(command, READINESS_CONTRACT.keys.command, label);
   const argumentsList = list(command.arguments, `${label} arguments`);
-  if (command.ordinal !== expectedOrdinal || command.operationKind !== expected.operationKind || command.name !== expected.name || command.argumentCount !== expected.kinds.length || argumentsList.length !== expected.kinds.length || command.unknownReason !== null) throw new Error(`${label} value changed`);
+  if (command.ordinal !== expectedOrdinal || command.operationKind !== expected.operationKind || command.name !== expected.name || command.argumentCount !== expected.kinds.length || argumentsList.length !== expected.kinds.length || command.unknownReason !== null) throw new ContractViolation(`${label} value changed`);
   for (const [index, argument] of argumentsList.entries()) {
     shape(argument, READINESS_CONTRACT.keys.argument, `${label} argument`);
-    if (argument.position !== index || argument.kind !== expected.kinds[index] || argument.token !== `${namespace}-${expected.tokens[index]}`) throw new Error(`${label} argument value changed`);
+    if (argument.position !== index || argument.kind !== expected.kinds[index] || argument.token !== `${namespace}-${expected.tokens[index]}`) throw new ContractViolation(`${label} argument value changed`);
   }
 }
 
 function validateStackFrame(frame, expected) {
   shape(frame, READINESS_CONTRACT.keys.stackFrame, 'copied explanation stack frame');
-  if (frame.functionName !== expected.functionName) throw new Error('copied explanation stack function changed');
+  if (frame.functionName !== expected.functionName) throw new ContractViolation('copied explanation stack function changed');
   validateSourceLocation(frame.generated, 'copied explanation generated location', 'generated');
   validateSourceLocation(frame.mapped, 'copied explanation mapped location', 'mapped');
   const generated = expected.generated ? frame.generated !== null : frame.generated === null;
   const mapped = expected.generated && frame.generated !== null && frame.mappingStatus === 'mapped' && frame.mapped !== null && frame.unresolvedReason === null;
   const unresolved = generated && frame.mapped === null && frame.mappingStatus === 'unresolved' && frame.unresolvedReason === expected.unresolvedReason;
-  if (!mapped && !unresolved) throw new Error('copied explanation stack mapping changed');
+  if (!mapped && !unresolved) throw new ContractViolation('copied explanation stack mapping changed');
 }
 
 export function readinessStatus(failures, diagnostics, conditions = []) {
@@ -245,15 +245,15 @@ function measure(id, unit, baseline, candidate) {
 function selectedRepeated(session, findingIndex) {
   const finding = session?.findings?.[findingIndex];
   const canvases = session?.canvases?.filter(canvas => canvas.canvasId === finding?.canvasId) ?? [];
-  if (finding?.type !== 'repeated-draw-work' || canvases.length !== 1) throw new Error('readiness selected repeated finding changed');
+  if (finding?.type !== 'repeated-draw-work' || canvases.length !== 1) throw new ContractViolation('readiness selected repeated finding changed');
   return { finding, canvas: canvases[0] };
 }
 
 function validateBrowserDrawCounts(drawCounts) {
-  if (!exact(drawCounts, READINESS_CONTRACT.keys.browserDrawCounts)) throw new Error('browser draw counts changed');
+  if (!exact(drawCounts, READINESS_CONTRACT.keys.browserDrawCounts)) throw new ContractViolation('browser draw counts changed');
   for (const mode of ['baseline', 'candidate']) {
     const drawsPerFrame = READINESS_CONTRACT.modes[mode].drawsPerFrame;
-    if (!exact(drawCounts[mode], READINESS_CONTRACT.keys.browserDrawMode) || drawCounts[mode].clearRect !== 8 || drawCounts[mode].fillRect !== 8 * drawsPerFrame) throw new Error(`${mode} browser draw counts changed`);
+    if (!exact(drawCounts[mode], READINESS_CONTRACT.keys.browserDrawMode) || drawCounts[mode].clearRect !== 8 || drawCounts[mode].fillRect !== 8 * drawsPerFrame) throw new ContractViolation(`${mode} browser draw counts changed`);
   }
   return true;
 }
@@ -264,40 +264,40 @@ function validateDemoSession(session, findingIndex, mode, drawCounts) {
   const windowMethodCounts = { clearRect: 1, fillRect: expected.drawsPerFrame, fillStyle: 1 };
   const rasterOperationCount = drawCounts.clearRect + drawCounts.fillRect;
   shape(session, READINESS_CONTRACT.keys.session, 'raw session root');
-  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.session)) if (session[key] !== value) throw new Error('raw session root value changed');
+  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.session)) if (session[key] !== value) throw new ContractViolation('raw session root value changed');
   const sessionIdentity = session.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
   const startedAtMs = Date.parse(session.startedAt);
   const endedAtMs = Date.parse(session.endedAt);
-  if (!sessionIdentity || !isoDate(session.startedAt) || !isoDate(session.endedAt) || Number(sessionIdentity[1]) !== startedAtMs || Number(sessionIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(session.durationMs) || Math.abs(endedAtMs - startedAtMs - session.durationMs) > 1) throw new Error('raw session identity changed');
+  if (!sessionIdentity || !isoDate(session.startedAt) || !isoDate(session.endedAt) || Number(sessionIdentity[1]) !== startedAtMs || Number(sessionIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(session.durationMs) || Math.abs(endedAtMs - startedAtMs - session.durationMs) > 1) throw new ContractViolation('raw session identity changed');
   fixed(session.browserFeatures, READINESS_CONTRACT.fixed.browserFeatures, 'raw session browser features');
   fixed(session.collectionLimits, READINESS_CONTRACT.fixed.sessionLimits, 'raw session collection limits');
   fixed(session.droppedEntryCounts, READINESS_CONTRACT.fixed.sessionDropped, 'raw session dropped counts');
-  if (list(session.canvases, 'raw session canvases').length !== READINESS_CONTRACT.rows.canvases || list(session.windows, 'raw session windows').length !== READINESS_CONTRACT.rows.windows || list(session.resetEvents, 'raw session reset events').length !== READINESS_CONTRACT.rows.resetEvents || list(session.lifecycleEvents, 'raw session lifecycle events').length !== expected.lifecycleRows || list(session.episodes, 'raw session episodes').length !== READINESS_CONTRACT.rows.episodes || list(session.findings, 'raw session findings').length !== READINESS_CONTRACT.rows.findings) throw new Error(`${mode} raw session rows changed`);
+  if (list(session.canvases, 'raw session canvases').length !== READINESS_CONTRACT.rows.canvases || list(session.windows, 'raw session windows').length !== READINESS_CONTRACT.rows.windows || list(session.resetEvents, 'raw session reset events').length !== READINESS_CONTRACT.rows.resetEvents || list(session.lifecycleEvents, 'raw session lifecycle events').length !== expected.lifecycleRows || list(session.episodes, 'raw session episodes').length !== READINESS_CONTRACT.rows.episodes || list(session.findings, 'raw session findings').length !== READINESS_CONTRACT.rows.findings) throw new ContractViolation(`${mode} raw session rows changed`);
 
   const canvas = session.canvases[0];
   shape(canvas, READINESS_CONTRACT.keys.canvas, 'raw session canvas');
-  if (canvas.canvasId !== 'ritual-canvas#1' || canvas.nearestReactOwner !== 'yA' || canvas.attributionKind !== 'jsx-owner' || canvas.sourceLocation !== null || canvas.activeWindowCount !== 8 || canvas.rasterOperationCount !== rasterOperationCount || canvas.evidenceLevel !== 'measured') throw new Error(`${mode} demo canvas truth changed`);
+  if (canvas.canvasId !== 'ritual-canvas#1' || canvas.nearestReactOwner !== 'yA' || canvas.attributionKind !== 'jsx-owner' || canvas.sourceLocation !== null || canvas.activeWindowCount !== 8 || canvas.rasterOperationCount !== rasterOperationCount || canvas.evidenceLevel !== 'measured') throw new ContractViolation(`${mode} demo canvas truth changed`);
   validateMethodEvidence(canvas.methodEvidence, methodCounts, 'raw session canvas methods');
   fixed(canvas.commandStatuses, expected.commandStatuses, 'raw session command statuses');
 
   const firstWindowIndex = session.windows[0]?.windowIndex;
-  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new Error(`${mode} window identity changed`);
+  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new ContractViolation(`${mode} window identity changed`);
   for (const [index, window] of session.windows.entries()) {
     shape(window, READINESS_CONTRACT.keys.window, 'raw session window');
     const baselineFirst = mode === 'baseline' && index === 0;
     const changed = mode === 'candidate' ? index === 0 : index === 1;
     const signatureStatus = baselineFirst ? 'unknown' : changed ? 'changed' : 'same';
     const comparisonGap = baselineFirst ? null : mode === 'candidate' && index === 0 ? window.comparisonGap : 1;
-    if (window.canvasId !== canvas.canvasId || window.nearestReactOwner !== canvas.nearestReactOwner || window.attributionKind !== canvas.attributionKind || window.sourceLocation !== null || window.rasterOperationCount !== expected.drawsPerFrame + 1 || window.signatureStatus !== signatureStatus || window.unknownReason !== (baselineFirst ? 'first-window' : null) || window.sampled !== false || window.comparisonGap !== comparisonGap || (mode === 'candidate' && index === 0 && (!Number.isInteger(window.comparisonGap) || window.comparisonGap < 2)) || window.windowIndex !== firstWindowIndex + index || !finite(window.timestampMs) || !finite(window.startedAtTimestampMs) || window.endedAtTimestampMs !== window.timestampMs || window.endedAtTimestampMs < window.startedAtTimestampMs) throw new Error(`${mode} window truth changed`);
+    if (window.canvasId !== canvas.canvasId || window.nearestReactOwner !== canvas.nearestReactOwner || window.attributionKind !== canvas.attributionKind || window.sourceLocation !== null || window.rasterOperationCount !== expected.drawsPerFrame + 1 || window.signatureStatus !== signatureStatus || window.unknownReason !== (baselineFirst ? 'first-window' : null) || window.sampled !== false || window.comparisonGap !== comparisonGap || (mode === 'candidate' && index === 0 && (!Number.isInteger(window.comparisonGap) || window.comparisonGap < 2)) || window.windowIndex !== firstWindowIndex + index || !finite(window.timestampMs) || !finite(window.startedAtTimestampMs) || window.endedAtTimestampMs !== window.timestampMs || window.endedAtTimestampMs < window.startedAtTimestampMs) throw new ContractViolation(`${mode} window truth changed`);
     validateMethodEvidence(window.methodEvidence, windowMethodCounts, 'raw session window methods');
-    if (!sameNumber(window.canvasApiSelfTimeMs, window.methodEvidence.clearRect.canvasApiSelfTimeMs + window.methodEvidence.fillRect.canvasApiSelfTimeMs)) throw new Error(`${mode} window timing changed`);
+    if (!sameNumber(window.canvasApiSelfTimeMs, window.methodEvidence.clearRect.canvasApiSelfTimeMs + window.methodEvidence.fillRect.canvasApiSelfTimeMs)) throw new ContractViolation(`${mode} window timing changed`);
     fixed(window.geometry, READINESS_CONTRACT.fixed.geometry, 'raw session window geometry');
-    if (index > 0 && (window.startedAtTimestampMs !== session.windows[index - 1].endedAtTimestampMs || window.timestampMs <= session.windows[index - 1].timestampMs)) throw new Error(`${mode} window order changed`);
+    if (index > 0 && (window.startedAtTimestampMs !== session.windows[index - 1].endedAtTimestampMs || window.timestampMs <= session.windows[index - 1].timestampMs)) throw new ContractViolation(`${mode} window order changed`);
   }
-  if (session.windows[7].endedAtTimestampMs - session.windows[0].startedAtTimestampMs > session.durationMs + 0.001) throw new Error(`${mode} window duration changed`);
+  if (session.windows[7].endedAtTimestampMs - session.windows[0].startedAtTimestampMs > session.durationMs + 0.001) throw new ContractViolation(`${mode} window duration changed`);
 
-  if (!sameNumber(canvas.canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || !sameNumber(canvas.maxWindowSelfTimeMs, Math.max(...session.windows.map(window => window.canvasApiSelfTimeMs)))) throw new Error(`${mode} canvas timing changed`);
-  for (const name of ['clearRect', 'fillRect']) if (!sameNumber(canvas.methodEvidence[name].canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.methodEvidence[name].canvasApiSelfTimeMs, 0))) throw new Error(`${mode} method timing changed`);
+  if (!sameNumber(canvas.canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || !sameNumber(canvas.maxWindowSelfTimeMs, Math.max(...session.windows.map(window => window.canvasApiSelfTimeMs)))) throw new ContractViolation(`${mode} canvas timing changed`);
+  for (const name of ['clearRect', 'fillRect']) if (!sameNumber(canvas.methodEvidence[name].canvasApiSelfTimeMs, session.windows.reduce((total, window) => total + window.methodEvidence[name].canvasApiSelfTimeMs, 0))) throw new ContractViolation(`${mode} method timing changed`);
 
   if (mode === 'baseline') {
     const lifecycle = session.lifecycleEvents[0];
@@ -307,16 +307,16 @@ function validateDemoSession(session, findingIndex, mode, drawCounts) {
 
   const episode = session.episodes[0];
   shape(episode, READINESS_CONTRACT.keys.episode, 'raw session episode');
-  if (episode.episodeId !== `${session.sessionId}:episode:1` || episode.firstWindowIndex !== firstWindowIndex || episode.lastWindowIndex !== firstWindowIndex + 7 || episode.startedAtTimestampMs !== session.windows[0].startedAtTimestampMs || episode.endedAtTimestampMs !== session.windows[7].endedAtTimestampMs || episode.activeWindowCount !== 8 || episode.rasterOperationCount !== canvas.rasterOperationCount || !sameNumber(episode.canvasApiSelfTimeMs, canvas.canvasApiSelfTimeMs) || episode.resetEventCount !== 0 || list(episode.canvases, 'raw session episode canvases').length !== 1) throw new Error(`${mode} episode truth changed`);
+  if (episode.episodeId !== `${session.sessionId}:episode:1` || episode.firstWindowIndex !== firstWindowIndex || episode.lastWindowIndex !== firstWindowIndex + 7 || episode.startedAtTimestampMs !== session.windows[0].startedAtTimestampMs || episode.endedAtTimestampMs !== session.windows[7].endedAtTimestampMs || episode.activeWindowCount !== 8 || episode.rasterOperationCount !== canvas.rasterOperationCount || !sameNumber(episode.canvasApiSelfTimeMs, canvas.canvasApiSelfTimeMs) || episode.resetEventCount !== 0 || list(episode.canvases, 'raw session episode canvases').length !== 1) throw new ContractViolation(`${mode} episode truth changed`);
   validateMethodEvidence(episode.methodEvidence, methodCounts, 'raw session episode methods');
   const episodeCanvas = episode.canvases[0];
   shape(episodeCanvas, READINESS_CONTRACT.keys.episodeCanvas, 'raw session episode canvas');
   fixed(episodeCanvas, { canvasId: canvas.canvasId, activeWindowCount: 8, rasterOperationCount: canvas.rasterOperationCount, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, maxWindowSelfTimeMs: canvas.maxWindowSelfTimeMs, methodEvidence: canvas.methodEvidence, resetEventCount: 0 }, 'raw session episode canvas');
-  for (const name of ['clearRect', 'fillRect', 'fillStyle']) if (JSON.stringify(episode.methodEvidence[name]) !== JSON.stringify(canvas.methodEvidence[name])) throw new Error(`${mode} episode method truth changed`);
+  for (const name of ['clearRect', 'fillRect', 'fillStyle']) if (JSON.stringify(episode.methodEvidence[name]) !== JSON.stringify(canvas.methodEvidence[name])) throw new ContractViolation(`${mode} episode method truth changed`);
 
   validateBrowserEntries(session.browserEntries);
   const expectedAssociations = session.browserEntries.flatMap(entry => entry.startedAtTimestampMs > episode.endedAtTimestampMs || episode.startedAtTimestampMs > entry.endedAtTimestampMs ? [] : [{ entryId: entry.entryId, entryKind: entry.kind, episodeId: episode.episodeId, startedAtTimestampMs: Math.max(entry.startedAtTimestampMs, episode.startedAtTimestampMs), endedAtTimestampMs: Math.min(entry.endedAtTimestampMs, episode.endedAtTimestampMs), evidenceLevel: 'associated' }]);
-  if (list(session.episodeAssociations, 'raw session associations').length !== expectedAssociations.length) throw new Error(`${mode} association rows changed`);
+  if (list(session.episodeAssociations, 'raw session associations').length !== expectedAssociations.length) throw new ContractViolation(`${mode} association rows changed`);
   for (const [index, association] of session.episodeAssociations.entries()) {
     shape(association, READINESS_CONTRACT.keys.association, 'raw session association');
     fixed(association, expectedAssociations[index], 'raw session association');
@@ -326,7 +326,7 @@ function validateDemoSession(session, findingIndex, mode, drawCounts) {
   const finding = selected.finding;
   shape(finding, READINESS_CONTRACT.keys.finding, 'raw repeated finding');
   const repeated = session.windows.filter(window => window.signatureStatus === 'same');
-  if (findingIndex !== 0 || finding.type !== 'repeated-draw-work' || finding.evidenceLevel !== 'candidate' || finding.canvasId !== canvas.canvasId || finding.episodeId !== episode.episodeId || finding.repeatedWindowCount !== repeated.length || list(finding.repeatedWindows, 'raw repeated windows').length !== repeated.length || finding.rasterOperationCount !== repeated.reduce((total, window) => total + window.rasterOperationCount, 0) || !sameNumber(finding.canvasApiSelfTimeMs, repeated.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || finding.nextCheck !== READINESS_CONTRACT.fixed.nextCheck) throw new Error(`${mode} repeated finding truth changed`);
+  if (findingIndex !== 0 || finding.type !== 'repeated-draw-work' || finding.evidenceLevel !== 'candidate' || finding.canvasId !== canvas.canvasId || finding.episodeId !== episode.episodeId || finding.repeatedWindowCount !== repeated.length || list(finding.repeatedWindows, 'raw repeated windows').length !== repeated.length || finding.rasterOperationCount !== repeated.reduce((total, window) => total + window.rasterOperationCount, 0) || !sameNumber(finding.canvasApiSelfTimeMs, repeated.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)) || finding.nextCheck !== READINESS_CONTRACT.fixed.nextCheck) throw new ContractViolation(`${mode} repeated finding truth changed`);
   fixed(finding.claimBoundary, READINESS_CONTRACT.fixed.claimBoundary, 'raw repeated finding claim boundary');
   fixed(finding.unknownCoverage, { unknownWindowCount: session.windows.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: 8 }, 'raw repeated finding coverage');
   for (const [index, repeatedWindow] of finding.repeatedWindows.entries()) {
@@ -337,7 +337,7 @@ function validateDemoSession(session, findingIndex, mode, drawCounts) {
 }
 
 function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
-  if (!Array.isArray(measures) || JSON.stringify(measures.map(item => item.id)) !== JSON.stringify(comparisonMeasureIds)) throw new Error('copied comparison measure IDs changed');
+  if (!Array.isArray(measures) || JSON.stringify(measures.map(item => item.id)) !== JSON.stringify(comparisonMeasureIds)) throw new ContractViolation('copied comparison measure IDs changed');
   const structural = new Map([
     ['active-window-count', [8, 8]], ['raster-operation-count', [drawCounts.baseline.clearRect + drawCounts.baseline.fillRect, drawCounts.candidate.clearRect + drawCounts.candidate.fillRect]],
     ['method:clearRect:operation-count', [drawCounts.baseline.clearRect, drawCounts.candidate.clearRect]], ['method:fillRect:operation-count', [drawCounts.baseline.fillRect, drawCounts.candidate.fillRect]], ['method:fillStyle:operation-count', [8, 8]],
@@ -351,46 +351,46 @@ function validateComparisonMeasures(measures, baseline, candidate, drawCounts) {
     ['method:fillStyle:self-time-ms', [baseline.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs, candidate.canvas.methodEvidence.fillStyle.canvasApiSelfTimeMs]],
   ]);
   for (const item of measures) {
-    if (!exact(item, READINESS_CONTRACT.keys.measure)) throw new Error('copied comparison measure shape changed');
+    if (!exact(item, READINESS_CONTRACT.keys.measure)) throw new ContractViolation('copied comparison measure shape changed');
     const expected = structural.get(item.id);
     if (expected) {
-      if (JSON.stringify(item) !== JSON.stringify(measure(item.id, 'count', expected[0], expected[1]))) throw new Error(`copied comparison ${item.id} truth changed`);
+      if (JSON.stringify(item) !== JSON.stringify(measure(item.id, 'count', expected[0], expected[1]))) throw new ContractViolation(`copied comparison ${item.id} truth changed`);
       continue;
     }
     const expectedTiming = timing.get(item.id);
-    if (!expectedTiming || JSON.stringify(item) !== JSON.stringify(measure(item.id, 'ms', expectedTiming[0], expectedTiming[1]))) throw new Error(`copied comparison ${item.id} timing changed`);
+    if (!expectedTiming || JSON.stringify(item) !== JSON.stringify(measure(item.id, 'ms', expectedTiming[0], expectedTiming[1]))) throw new ContractViolation(`copied comparison ${item.id} timing changed`);
   }
 }
 
 export function validateCopiedExplanation(artifact, selection) {
   shape(artifact, READINESS_CONTRACT.keys.explanation, 'copied explanation root');
-  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.explanation)) if (artifact[key] !== value) throw new Error('copied explanation root value changed');
+  for (const [key, value] of Object.entries(READINESS_CONTRACT.fixed.explanation)) if (artifact[key] !== value) throw new ContractViolation('copied explanation root value changed');
   const explanationIdentity = artifact.explanationId?.match(/^canvas-scan-explanation-(\d+)-(\d+)$/);
   const followUpIdentity = artifact.followUp?.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
   const startedAtMs = Date.parse(artifact.startedAt);
   const endedAtMs = Date.parse(artifact.endedAt);
   const explanationEpochOffset = Number(explanationIdentity?.[1]) - startedAtMs;
-  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || !READINESS_CONTRACT.identities.explanationEpochOffsetsMs.includes(explanationEpochOffset) || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new Error('copied explanation identity changed');
-  if (!exact(artifact.source, READINESS_CONTRACT.keys.explanationSource) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || artifact.source.canvasId !== 'ritual-canvas#1') throw new Error('copied explanation selection changed');
-  if (!exact(artifact.followUp, READINESS_CONTRACT.keys.explanationFollowUp) || !/^canvas-scan-\d+-\d+$/.test(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new Error('copied explanation follow-up changed');
+  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || !READINESS_CONTRACT.identities.explanationEpochOffsetsMs.includes(explanationEpochOffset) || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new ContractViolation('copied explanation identity changed');
+  if (!exact(artifact.source, READINESS_CONTRACT.keys.explanationSource) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || artifact.source.canvasId !== 'ritual-canvas#1') throw new ContractViolation('copied explanation selection changed');
+  if (!exact(artifact.followUp, READINESS_CONTRACT.keys.explanationFollowUp) || !/^canvas-scan-\d+-\d+$/.test(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new ContractViolation('copied explanation follow-up changed');
 
   const windows = list(artifact.windows, 'copied explanation windows');
-  if (windows.length !== READINESS_CONTRACT.rows.explanationWindows) throw new Error('copied explanation window rows changed');
+  if (windows.length !== READINESS_CONTRACT.rows.explanationWindows) throw new ContractViolation('copied explanation window rows changed');
   const namespace = windows[0]?.commands?.[0]?.arguments?.[0]?.token?.match(/^([0-9a-f]{32})-1$/)?.[1];
-  if (!namespace) throw new Error('copied explanation token namespace changed');
+  if (!namespace) throw new ContractViolation('copied explanation token namespace changed');
   const firstWindowIndex = windows[0]?.windowIndex;
-  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new Error('copied explanation window identity changed');
+  if (!Number.isInteger(firstWindowIndex) || firstWindowIndex < 1) throw new ContractViolation('copied explanation window identity changed');
   for (const [windowOffset, window] of windows.entries()) {
     shape(window, READINESS_CONTRACT.keys.explanationWindow, 'copied explanation window');
-    if (window.windowIndex !== firstWindowIndex + windowOffset || !finite(window.timestampMs) || window.complete !== (windowOffset > 0) || window.unknownReason !== (windowOffset === 0 ? 'sampling-gap' : null)) throw new Error('copied explanation window truth changed');
-    if (windowOffset > 0 && window.timestampMs <= windows[windowOffset - 1].timestampMs) throw new Error('copied explanation window order changed');
+    if (window.windowIndex !== firstWindowIndex + windowOffset || !finite(window.timestampMs) || window.complete !== (windowOffset > 0) || window.unknownReason !== (windowOffset === 0 ? 'sampling-gap' : null)) throw new ContractViolation('copied explanation window truth changed');
+    if (windowOffset > 0 && window.timestampMs <= windows[windowOffset - 1].timestampMs) throw new ContractViolation('copied explanation window order changed');
     const commands = list(window.commands, 'copied explanation commands');
-    if (commands.length !== READINESS_CONTRACT.commandRows.length) throw new Error('copied explanation command rows changed');
+    if (commands.length !== READINESS_CONTRACT.commandRows.length) throw new ContractViolation('copied explanation command rows changed');
     for (const [commandIndex, command] of commands.entries()) validateCommand(command, READINESS_CONTRACT.commandRows[commandIndex], commandIndex, namespace, 'copied explanation command');
   }
 
   const comparisons = list(artifact.comparisons, 'copied explanation comparisons');
-  if (comparisons.length !== READINESS_CONTRACT.rows.explanationComparisons) throw new Error('copied explanation comparison rows changed');
+  if (comparisons.length !== READINESS_CONTRACT.rows.explanationComparisons) throw new ContractViolation('copied explanation comparison rows changed');
   for (const [index, comparison] of comparisons.entries()) {
     shape(comparison, READINESS_CONTRACT.keys.explanationComparison, 'copied explanation comparison');
     const reference = windows[index];
@@ -399,21 +399,21 @@ export function validateCopiedExplanation(artifact, selection) {
     const expected = index === 0
       ? { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: 'unknown', difference: null, unknownReason: 'sampling-gap' }
       : { referenceWindowIndex: reference.windowIndex, targetWindowIndex: target.windowIndex, status: comparisonIsSame ? 'same' : 'changed', difference: null, unknownReason: null };
-    if (!comparisonIsSame || JSON.stringify(comparison) !== JSON.stringify(expected)) throw new Error('copied explanation comparison truth changed');
+    if (!comparisonIsSame || JSON.stringify(comparison) !== JSON.stringify(expected)) throw new ContractViolation('copied explanation comparison truth changed');
   }
-  if (artifact.firstDifference !== null) throw new Error('copied explanation first difference changed');
+  if (artifact.firstDifference !== null) throw new ContractViolation('copied explanation first difference changed');
 
   const stacks = list(artifact.stacks, 'copied explanation stacks');
-  if (stacks.length !== READINESS_CONTRACT.rows.explanationStacks) throw new Error('copied explanation stack rows changed');
+  if (stacks.length !== READINESS_CONTRACT.rows.explanationStacks) throw new ContractViolation('copied explanation stack rows changed');
   const stack = stacks[0];
   shape(stack, READINESS_CONTRACT.keys.stack, 'copied explanation stack');
-  if (stack.windowIndex !== firstWindowIndex || stack.commandOrdinal !== 0 || stack.reason !== 'first-raster' || stack.droppedFrameCount !== 0 || !Array.isArray(stack.frames) || stack.frames.length !== READINESS_CONTRACT.stackFrames.length) throw new Error('copied explanation stack truth changed');
+  if (stack.windowIndex !== firstWindowIndex || stack.commandOrdinal !== 0 || stack.reason !== 'first-raster' || stack.droppedFrameCount !== 0 || !Array.isArray(stack.frames) || stack.frames.length !== READINESS_CONTRACT.stackFrames.length) throw new ContractViolation('copied explanation stack truth changed');
   for (const [index, frame] of stack.frames.entries()) validateStackFrame(frame, READINESS_CONTRACT.stackFrames[index]);
 
   fixed(artifact.collectionLimits, READINESS_CONTRACT.fixed.explanationLimits, 'copied explanation collection limits');
   fixed(artifact.droppedEntryCounts, READINESS_CONTRACT.fixed.explanationDropped, 'copied explanation dropped counts');
   const limits = list(artifact.limitResults, 'copied explanation limit results');
-  if (limits.length !== READINESS_CONTRACT.explanationLimitRows.length) throw new Error('copied explanation limit result rows changed');
+  if (limits.length !== READINESS_CONTRACT.explanationLimitRows.length) throw new ContractViolation('copied explanation limit result rows changed');
   for (const [index, result] of limits.entries()) {
     shape(result, READINESS_CONTRACT.keys.limitResult, 'copied explanation limit result');
     const [name, maximumKey] = READINESS_CONTRACT.explanationLimitRows[index];
@@ -427,38 +427,38 @@ export function validateCopiedExplanation(artifact, selection) {
 export function validateCopiedComparison(artifact, baselineSession, candidateSession, pairing, drawCounts) {
   const expectedId = `canvas-scan-comparison-${baselineSession?.sessionId}-${pairing.baselineFindingIndex}-${candidateSession?.sessionId}-${pairing.candidateFindingIndex}`;
   const expectedCreatedAt = Date.parse(baselineSession?.endedAt) >= Date.parse(candidateSession?.endedAt) ? baselineSession?.endedAt : candidateSession?.endedAt;
-  if (!exact(artifact, READINESS_CONTRACT.keys.copiedComparison) || Object.entries(READINESS_CONTRACT.fixed.copiedComparison).some(([key, value]) => artifact[key] !== value) || artifact.comparisonId !== expectedId || artifact.createdAt !== expectedCreatedAt || !Array.isArray(artifact.incomparableReasons) || artifact.incomparableReasons.length !== 0) throw new Error('copied comparison root changed');
+  if (!exact(artifact, READINESS_CONTRACT.keys.copiedComparison) || Object.entries(READINESS_CONTRACT.fixed.copiedComparison).some(([key, value]) => artifact[key] !== value) || artifact.comparisonId !== expectedId || artifact.createdAt !== expectedCreatedAt || !Array.isArray(artifact.incomparableReasons) || artifact.incomparableReasons.length !== 0) throw new ContractViolation('copied comparison root changed');
   validateBrowserDrawCounts(drawCounts);
   const left = validateDemoSession(baselineSession, pairing.baselineFindingIndex, 'baseline', drawCounts.baseline);
   const right = validateDemoSession(candidateSession, pairing.candidateFindingIndex, 'candidate', drawCounts.candidate);
   const refKeys = READINESS_CONTRACT.keys.comparisonReference;
-  if (!exact(artifact.baseline, refKeys) || artifact.baseline.sessionId !== baselineSession.sessionId || artifact.baseline.findingIndex !== pairing.baselineFindingIndex || artifact.baseline.findingType !== left.finding.type || artifact.baseline.canvasId !== left.finding.canvasId) throw new Error('copied comparison baseline changed');
-  if (!exact(artifact.candidate, refKeys) || artifact.candidate.sessionId !== candidateSession.sessionId || artifact.candidate.findingIndex !== pairing.candidateFindingIndex || artifact.candidate.findingType !== right.finding.type || artifact.candidate.canvasId !== right.finding.canvasId) throw new Error('copied comparison candidate changed');
+  if (!exact(artifact.baseline, refKeys) || artifact.baseline.sessionId !== baselineSession.sessionId || artifact.baseline.findingIndex !== pairing.baselineFindingIndex || artifact.baseline.findingType !== left.finding.type || artifact.baseline.canvasId !== left.finding.canvasId) throw new ContractViolation('copied comparison baseline changed');
+  if (!exact(artifact.candidate, refKeys) || artifact.candidate.sessionId !== candidateSession.sessionId || artifact.candidate.findingIndex !== pairing.candidateFindingIndex || artifact.candidate.findingType !== right.finding.type || artifact.candidate.canvasId !== right.finding.canvasId) throw new ContractViolation('copied comparison candidate changed');
   validateComparisonMeasures(artifact.measures, left, right, drawCounts);
   return true;
 }
 
 export function checkReadinessEvidence(value, expectedCandidate) {
-  if (!exact(value, READINESS_CONTRACT.keys.readiness) || Object.entries(READINESS_CONTRACT.fixed.readiness).some(([key, expected]) => value[key] !== expected)) throw new Error('readiness evidence root changed');
-  if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !/^\d+\.\d+\.\d+\.\d+$/.test(value.browserVersion)) throw new Error('readiness candidate identity changed');
-  if (value.earlyLoad !== true || value.cleanBefore !== true || value.cleanAfter !== true || JSON.stringify(value.publicMethods) !== JSON.stringify(RITUAL_METHODS) || JSON.stringify(value.actionIds) !== JSON.stringify(ACTION_IDS)) throw new Error('readiness ritual identity changed');
+  if (!exact(value, READINESS_CONTRACT.keys.readiness) || Object.entries(READINESS_CONTRACT.fixed.readiness).some(([key, expected]) => value[key] !== expected)) throw new ContractViolation('readiness evidence root changed');
+  if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !/^\d+\.\d+\.\d+\.\d+$/.test(value.browserVersion)) throw new ContractViolation('readiness candidate identity changed');
+  if (value.earlyLoad !== true || value.cleanBefore !== true || value.cleanAfter !== true || JSON.stringify(value.publicMethods) !== JSON.stringify(RITUAL_METHODS) || JSON.stringify(value.actionIds) !== JSON.stringify(ACTION_IDS)) throw new ContractViolation('readiness ritual identity changed');
   checkRunStages(value.runStages, { requireComplete: true });
-  if (JSON.stringify(value.runStages.slice(0, ACTION_IDS.length).map(row => row.id)) !== JSON.stringify(value.actionIds) || value.runStages.at(-1)?.id !== 'verify-run') throw new Error('readiness run stages changed');
+  if (JSON.stringify(value.runStages.slice(0, ACTION_IDS.length).map(row => row.id)) !== JSON.stringify(value.actionIds) || value.runStages.at(-1)?.id !== 'verify-run') throw new ContractViolation('readiness run stages changed');
   validateBrowserDrawCounts(value.browserDrawCounts);
 
   const findingKeys = READINESS_CONTRACT.keys.readinessFinding;
-  if (!exact(value.baseline, findingKeys) || !exact(value.candidate, findingKeys) || !text(value.baseline.sessionId) || !text(value.candidate.sessionId) || value.baseline.sessionId === value.candidate.sessionId || !Number.isInteger(value.baseline.findingIndex) || !Number.isInteger(value.candidate.findingIndex) || value.baseline.findingType !== 'repeated-draw-work' || value.candidate.findingType !== value.baseline.findingType) throw new Error('readiness selected findings changed');
+  if (!exact(value.baseline, findingKeys) || !exact(value.candidate, findingKeys) || !text(value.baseline.sessionId) || !text(value.candidate.sessionId) || value.baseline.sessionId === value.candidate.sessionId || !Number.isInteger(value.baseline.findingIndex) || !Number.isInteger(value.candidate.findingIndex) || value.baseline.findingType !== 'repeated-draw-work' || value.candidate.findingType !== value.baseline.findingType) throw new ContractViolation('readiness selected findings changed');
 
   const explanationKeys = READINESS_CONTRACT.keys.readinessExplanation;
-  if (!exact(value.explanation, explanationKeys) || value.explanation.sourceSessionId !== value.baseline.sessionId || value.explanation.sourceFindingIndex !== value.baseline.findingIndex || !text(value.explanation.followUpSessionId) || value.explanation.stopReason !== 'manual') throw new Error('readiness explanation changed');
+  if (!exact(value.explanation, explanationKeys) || value.explanation.sourceSessionId !== value.baseline.sessionId || value.explanation.sourceFindingIndex !== value.baseline.findingIndex || !text(value.explanation.followUpSessionId) || value.explanation.stopReason !== 'manual') throw new ContractViolation('readiness explanation changed');
 
   const comparisonKeys = READINESS_CONTRACT.keys.readinessComparison;
-  if (!exact(value.comparison, comparisonKeys) || value.comparison.pairingMethod !== 'user-selected' || value.comparison.status !== 'comparable' || value.comparison.improvementEstablished !== false || value.comparison.baselineSessionId !== value.baseline.sessionId || value.comparison.baselineFindingIndex !== value.baseline.findingIndex || value.comparison.candidateSessionId !== value.candidate.sessionId || value.comparison.candidateFindingIndex !== value.candidate.findingIndex) throw new Error('readiness explicit comparison changed');
-  if (!exact(value.artifacts, READINESS_CONTRACT.keys.artifacts) || value.artifacts.baselineSession.sessionId !== value.baseline.sessionId || value.artifacts.candidateSession.sessionId !== value.candidate.sessionId) throw new Error('readiness raw artifacts changed');
+  if (!exact(value.comparison, comparisonKeys) || value.comparison.pairingMethod !== 'user-selected' || value.comparison.status !== 'comparable' || value.comparison.improvementEstablished !== false || value.comparison.baselineSessionId !== value.baseline.sessionId || value.comparison.baselineFindingIndex !== value.baseline.findingIndex || value.comparison.candidateSessionId !== value.candidate.sessionId || value.comparison.candidateFindingIndex !== value.candidate.findingIndex) throw new ContractViolation('readiness explicit comparison changed');
+  if (!exact(value.artifacts, READINESS_CONTRACT.keys.artifacts) || value.artifacts.baselineSession.sessionId !== value.baseline.sessionId || value.artifacts.candidateSession.sessionId !== value.candidate.sessionId) throw new ContractViolation('readiness raw artifacts changed');
   validateCopiedExplanation(value.artifacts.copiedExplanation, value.baseline);
-  if (value.artifacts.copiedExplanation.followUp.sessionId !== value.explanation.followUpSessionId) throw new Error('readiness explanation artifact changed');
+  if (value.artifacts.copiedExplanation.followUp.sessionId !== value.explanation.followUpSessionId) throw new ContractViolation('readiness explanation artifact changed');
   validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: value.baseline.findingIndex, candidateFindingIndex: value.candidate.findingIndex }, value.browserDrawCounts);
-  if (!exact(value.diagnostics, READINESS_CONTRACT.keys.diagnostics) || diagnosticKeys.some(key => !Array.isArray(value.diagnostics[key]) || value.diagnostics[key].length > 0) || !Array.isArray(value.failures) || value.failures.length > 0) throw new Error('readiness diagnostics changed');
+  if (!exact(value.diagnostics, READINESS_CONTRACT.keys.diagnostics) || diagnosticKeys.some(key => !Array.isArray(value.diagnostics[key]) || value.diagnostics[key].length > 0) || !Array.isArray(value.failures) || value.failures.length > 0) throw new ContractViolation('readiness diagnostics changed');
   return true;
 }
 
@@ -619,12 +619,15 @@ async function runBrowser(consumer, diagnostics, ownershipToken, runState) {
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-panel')?.textContent?.includes('EXPLANATION COMPLETE'));
     await settle(page);
     actionIds.push('explain-baseline'); reduceRunState(runState, { type: 'stage-complete', id: 'explain-baseline' });
-    await page.locator('.explanation-copy').click();
-    await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-copy-status')?.textContent === 'Explanation JSON copied');
-    const copiedExplanation = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+    const copiedExplanation = await runExportStage('copy-explanation', {
+      click: () => page.locator('.explanation-copy').click(),
+      confirm: () => page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-copy-status')?.textContent === 'Explanation JSON copied'),
+      read: () => page.evaluate(() => navigator.clipboard.readText()),
+      parse: value => JSON.parse(value),
+      validate: value => validateCopiedExplanation(value, { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type }),
+    });
     result.explanation = { sourceSessionId: copiedExplanation.source.sessionId, sourceFindingIndex: copiedExplanation.source.findingIndex, followUpSessionId: copiedExplanation.followUp.sessionId, stopReason: copiedExplanation.stopReason };
     result.artifacts.copiedExplanation = copiedExplanation;
-    validateCopiedExplanation(copiedExplanation, { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type });
     actionIds.push('copy-explanation'); reduceRunState(runState, { type: 'stage-complete', id: 'copy-explanation' });
     await page.locator(`.baseline-action[data-finding-index="${baselineFindingIndex}"]`).click();
     actionIds.push('keep-baseline'); reduceRunState(runState, { type: 'stage-complete', id: 'keep-baseline' });
@@ -646,19 +649,21 @@ async function runBrowser(consumer, diagnostics, ownershipToken, runState) {
     await comparisonAction.waitFor({ state: 'visible' });
     await comparisonAction.click();
     actionIds.push('pair-findings'); reduceRunState(runState, { type: 'stage-complete', id: 'pair-findings' });
-    await page.locator('.comparison-copy').click();
-    await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.comparison-copy-status')?.textContent === 'Comparison JSON copied');
-    const copiedComparison = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+    const copiedComparison = await runExportStage('copy-comparison', {
+      click: () => page.locator('.comparison-copy').click(),
+      confirm: () => page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.comparison-copy-status')?.textContent === 'Comparison JSON copied'),
+      read: () => page.evaluate(() => navigator.clipboard.readText()),
+      parse: value => JSON.parse(value),
+      validate: value => validateCopiedComparison(value, baselineSession, candidateSession, { baselineFindingIndex, candidateFindingIndex }, result.browserDrawCounts),
+    });
     result.comparison = { pairingMethod: copiedComparison.pairingMethod, status: copiedComparison.status, improvementEstablished: copiedComparison.improvementEstablished, baselineSessionId: copiedComparison.baseline.sessionId, baselineFindingIndex: copiedComparison.baseline.findingIndex, candidateSessionId: copiedComparison.candidate.sessionId, candidateFindingIndex: copiedComparison.candidate.findingIndex };
     result.artifacts.copiedComparison = copiedComparison;
-    validateCopiedComparison(copiedComparison, baselineSession, candidateSession, { baselineFindingIndex, candidateFindingIndex }, result.browserDrawCounts);
     actionIds.push('copy-comparison'); reduceRunState(runState, { type: 'stage-complete', id: 'copy-comparison' });
     await context.close();
     return result;
   } catch (error) {
-    const failedReasons = { 'early-load': 'browser-start-failed', 'record-baseline': 'capture-failed', 'explain-baseline': 'explanation-failed', 'copy-explanation': 'export-failed', 'keep-baseline': 'baseline-selection-failed', 'apply-change': 'candidate-change-failed', 'record-candidate': 'capture-failed', 'pair-findings': 'comparison-failed', 'copy-comparison': 'export-failed' };
-    const pending = runState.runStages.slice(0, -1).find(row => row.status === 'incomplete' && row.reason === 'not-started');
-    if (pending && runState.runStages.slice(0, RUN_STAGE_IDS.indexOf(pending.id)).every(row => row.status === 'complete')) reduceRunState(runState, { type: 'stage-failed', id: pending.id, reason: failedReasons[pending.id] });
+    const classified = classifyStageFailure(runState.runStages, error);
+    if (classified) reduceRunState(runState, { type: 'stage-failed', id: classified.id, reason: classified.reason });
     if (error && typeof error === 'object') error.browserResult = result;
     throw error;
   } finally {
