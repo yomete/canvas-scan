@@ -317,6 +317,83 @@ test('accepts the observed one millisecond clock conversion', () => {
   assert.equal(validateCopiedExplanation(artifact, selection), true);
 });
 
+test('accepts monotonic durations within the declared wall-clock tolerance', () => {
+  const value = evidence();
+  value.artifacts.baselineSession.durationMs = 1000 + 25;
+  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), true);
+  const explanation = copiedExplanation();
+  explanation.durationMs = 1000 + 25;
+  assert.equal(validateCopiedExplanation(explanation, { sessionId: baselineSessionId, findingIndex: 0, findingType: 'repeated-draw-work' }), true);
+});
+
+test('rejects monotonic durations beyond the declared wall-clock tolerance', () => {
+  const value = evidence();
+  value.artifacts.baselineSession.durationMs = 1000 + 25.001;
+  assert.throws(() => validateCopiedComparison(value.artifacts.copiedComparison, value.artifacts.baselineSession, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), /raw session identity changed/);
+  const explanation = copiedExplanation();
+  explanation.durationMs = 1000 + 25.001;
+  assert.throws(() => validateCopiedExplanation(explanation, { sessionId: baselineSessionId, findingIndex: 0, findingType: 'repeated-draw-work' }), /copied explanation identity changed/);
+});
+
+test('accepts a session whose page interaction pair was delivered outside the recording', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  const removed = target.browserEntries.splice(0, 2).map(entry => entry.entryId);
+  const renumbered = new Map(target.browserEntries.map((entry, index) => [entry.entryId, `browser-evidence-${index + 1}`]));
+  for (const entry of target.browserEntries) entry.entryId = renumbered.get(entry.entryId);
+  target.episodeAssociations = target.episodeAssociations.filter(association => !removed.includes(association.entryId));
+  for (const association of target.episodeAssociations) association.entryId = renumbered.get(association.entryId);
+  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), true);
+});
+
+test('accepts a lone boundary half delivered across the recording edge', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  const removed = target.browserEntries.splice(0, 1).map(entry => entry.entryId);
+  const renumbered = new Map(target.browserEntries.map((entry, index) => [entry.entryId, `browser-evidence-${index + 1}`]));
+  for (const entry of target.browserEntries) entry.entryId = renumbered.get(entry.entryId);
+  target.episodeAssociations = target.episodeAssociations.filter(association => !removed.includes(association.entryId));
+  for (const association of target.episodeAssociations) association.entryId = renumbered.get(association.entryId);
+  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), true);
+});
+
+const stopPairEntry = (index, eventType, startedAtTimestampMs) => ({ entryId: `browser-evidence-${index}`, kind: 'event-timing', eventType, startedAtTimestampMs, endedAtTimestampMs: startedAtTimestampMs + 0.5, targetTagName: 'div', durationMs: 0.5, interactionId: 33 });
+
+test('accepts a session whose stop interaction pair was delivered inside the recording', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  target.browserEntries.push(stopPairEntry(target.browserEntries.length + 1, 'pointerdown', 9), stopPairEntry(target.browserEntries.length + 2, 'pointerup', 9.5));
+  assert.equal(validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), true);
+});
+
+test('rejects a stop interaction pair that reuses another interaction id', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  const replayId = target.browserEntries.find(entry => entry.kind === 'event-timing' && entry.targetTagName === 'button').interactionId;
+  const down = { ...stopPairEntry(target.browserEntries.length + 1, 'pointerdown', 9), interactionId: replayId };
+  const up = { ...stopPairEntry(target.browserEntries.length + 2, 'pointerup', 9.5), interactionId: replayId };
+  target.browserEntries.push(down, up);
+  assert.throws(() => validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), /raw event timing pair changed/);
+});
+
+test('rejects a third distinct div interaction', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  target.browserEntries.push(stopPairEntry(target.browserEntries.length + 1, 'pointerdown', 9), { ...stopPairEntry(target.browserEntries.length + 2, 'pointerdown', 9.5), interactionId: 44 });
+  assert.throws(() => validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), /raw browser entry rows changed/);
+});
+
+test('rejects a reversed or foreign-target interaction group', () => {
+  const value = evidence();
+  const target = value.artifacts.baselineSession;
+  target.browserEntries.push(stopPairEntry(target.browserEntries.length + 1, 'pointerup', 9), stopPairEntry(target.browserEntries.length + 2, 'pointerdown', 9.5));
+  assert.throws(() => validateCopiedComparison(value.artifacts.copiedComparison, target, value.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, value.browserDrawCounts), /raw event timing pair changed/);
+  const foreign = evidence();
+  const foreignTarget = foreign.artifacts.baselineSession;
+  foreignTarget.browserEntries.push({ ...stopPairEntry(foreignTarget.browserEntries.length + 1, 'pointerdown', 9), targetTagName: 'span' });
+  assert.throws(() => validateCopiedComparison(foreign.artifacts.copiedComparison, foreignTarget, foreign.artifacts.candidateSession, { baselineFindingIndex: 0, candidateFindingIndex: 0 }, foreign.browserDrawCounts), /raw event timing value changed/);
+});
+
 test('rejects the finite SIDPROJ-114 readiness mutation corpus', () => {
   for (const [name, mutate] of readinessMutations) {
     const value = evidence();

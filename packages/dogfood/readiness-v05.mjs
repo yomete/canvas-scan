@@ -94,6 +94,9 @@ const READINESS_CONTRACT = {
   },
   identities: {
     explanationEpochOffsetsMs: [-1, 0],
+    // durationMs is monotonic-clock, the ISO stamps are wall-clock: the bound covers 1 ms stamp
+    // quantization at each end plus NTP slew up to 0.5 ms/s over the 30 s session cap.
+    wallClockDurationToleranceMs: 25,
   },
   rows: { canvases: 1, windows: 8, resetEvents: 0, episodes: 1, findings: 1, explanationWindows: 8, explanationComparisons: 7, explanationStacks: 1 },
   commandRows: [
@@ -184,32 +187,47 @@ function validateMethodEvidence(value, counts, label) {
 
 function validateBrowserEntries(entries) {
   const rows = list(entries, 'raw session browser entries');
-  const requiredRows = READINESS_CONTRACT.browserRows.filter(row => !row.optional);
-  const optionalRow = READINESS_CONTRACT.browserRows.find(row => row.optional);
-  const optionalRows = rows.filter(row => row?.kind === optionalRow.kind);
-  if (optionalRows.length > 1 || rows.length !== requiredRows.length + optionalRows.length) throw new ContractViolation('raw browser entry rows changed');
-  const interactionIds = new Map();
-  let requiredIndex = 0;
+  // Document events are captured synchronously, so their six-row order is exact truth.
+  // Event-timing entries arrive with unordered per-entry delivery latency around the recording
+  // window: any entry can be delivered outside it, and the record and stop clicks that bracket
+  // the recording can add up to two div interactions. Timing entries are therefore checked as
+  // per-interaction groups — consistent target, pointerdown before pointerup, at most one
+  // button interaction and two div interactions — never by position or guaranteed presence.
+  const documentRows = READINESS_CONTRACT.browserRows.filter(row => row.kind === 'document-event');
+  const replayPair = READINESS_CONTRACT.browserRows.filter(row => row.pair === 'replay');
+  const boundaryPair = READINESS_CONTRACT.browserRows.filter(row => row.pair === 'page');
   for (const [index, entry] of rows.entries()) {
-    const expected = entry?.kind === optionalRow.kind ? optionalRow : requiredRows[requiredIndex++];
     if (entry?.entryId !== `browser-evidence-${index + 1}` || !finite(entry.startedAtTimestampMs) || !finite(entry.endedAtTimestampMs) || entry.endedAtTimestampMs < entry.startedAtTimestampMs) throw new ContractViolation('raw browser entry identity changed');
-    if (!expected || entry.kind !== expected.kind) throw new ContractViolation('raw browser entry kind changed');
-    if (expected.kind === 'document-event') {
-      shape(entry, READINESS_CONTRACT.keys.documentEvent, 'raw document event');
-      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName) throw new ContractViolation('raw document event value changed');
-    } else if (expected.kind === 'event-timing') {
-      shape(entry, READINESS_CONTRACT.keys.eventTiming, 'raw event timing');
-      if (entry.eventType !== expected.eventType || entry.targetTagName !== expected.targetTagName || !sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !Number.isInteger(entry.interactionId) || entry.interactionId < 1) throw new ContractViolation('raw event timing value changed');
-      const pairId = interactionIds.get(expected.pair);
-      if (pairId === undefined) interactionIds.set(expected.pair, entry.interactionId);
-      else if (pairId !== entry.interactionId) throw new ContractViolation('raw event timing pair changed');
-    } else if (expected.kind === 'long-animation-frame') {
-      shape(entry, READINESS_CONTRACT.keys.longAnimationFrame, 'raw long animation frame');
-      if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new ContractViolation('raw long animation frame value changed');
-    }
+    if (!['document-event', 'event-timing', 'long-animation-frame'].includes(entry.kind)) throw new ContractViolation('raw browser entry kind changed');
   }
-  if (requiredIndex !== requiredRows.length) throw new ContractViolation('raw browser entry rows changed');
-  if (interactionIds.get('page') === interactionIds.get('replay')) throw new ContractViolation('raw event timing identities changed');
+  const documents = rows.filter(row => row.kind === 'document-event');
+  const timings = rows.filter(row => row.kind === 'event-timing');
+  const frames = rows.filter(row => row.kind === 'long-animation-frame');
+  if (frames.length > 1 || documents.length !== documentRows.length) throw new ContractViolation('raw browser entry rows changed');
+  for (const [index, entry] of documents.entries()) {
+    shape(entry, READINESS_CONTRACT.keys.documentEvent, 'raw document event');
+    if (entry.eventType !== documentRows[index].eventType || entry.targetTagName !== documentRows[index].targetTagName) throw new ContractViolation('raw document event value changed');
+  }
+  const interactions = new Map();
+  for (const entry of timings) {
+    shape(entry, READINESS_CONTRACT.keys.eventTiming, 'raw event timing');
+    if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !Number.isInteger(entry.interactionId) || entry.interactionId < 1) throw new ContractViolation('raw event timing value changed');
+    interactions.set(entry.interactionId, [...(interactions.get(entry.interactionId) ?? []), entry]);
+  }
+  const allowedSequences = [['pointerdown'], ['pointerup'], ['pointerdown', 'pointerup']].map(sequence => JSON.stringify(sequence));
+  let replayInteractions = 0;
+  let boundaryInteractions = 0;
+  for (const group of interactions.values()) {
+    if (group.some(entry => entry.targetTagName !== group[0].targetTagName) || !allowedSequences.includes(JSON.stringify(group.map(entry => entry.eventType)))) throw new ContractViolation('raw event timing pair changed');
+    if (group[0].targetTagName === replayPair[0].targetTagName) replayInteractions++;
+    else if (group[0].targetTagName === boundaryPair[0].targetTagName) boundaryInteractions++;
+    else throw new ContractViolation('raw event timing value changed');
+  }
+  if (replayInteractions > 1 || boundaryInteractions > 2) throw new ContractViolation('raw browser entry rows changed');
+  for (const entry of frames) {
+    shape(entry, READINESS_CONTRACT.keys.longAnimationFrame, 'raw long animation frame');
+    if (!sameNumber(entry.durationMs, entry.endedAtTimestampMs - entry.startedAtTimestampMs) || !finite(entry.blockingDurationMs) || list(entry.scripts, 'raw long animation frame scripts').length || entry.droppedScriptAttributionCount !== 0) throw new ContractViolation('raw long animation frame value changed');
+  }
 }
 
 function validateCommand(command, expected, expectedOrdinal, namespace, label) {
@@ -268,7 +286,7 @@ function validateDemoSession(session, findingIndex, mode, drawCounts) {
   const sessionIdentity = session.sessionId?.match(/^canvas-scan-(\d+)-(\d+)$/);
   const startedAtMs = Date.parse(session.startedAt);
   const endedAtMs = Date.parse(session.endedAt);
-  if (!sessionIdentity || !isoDate(session.startedAt) || !isoDate(session.endedAt) || Number(sessionIdentity[1]) !== startedAtMs || Number(sessionIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(session.durationMs) || Math.abs(endedAtMs - startedAtMs - session.durationMs) > 1) throw new ContractViolation('raw session identity changed');
+  if (!sessionIdentity || !isoDate(session.startedAt) || !isoDate(session.endedAt) || Number(sessionIdentity[1]) !== startedAtMs || Number(sessionIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(session.durationMs) || Math.abs(endedAtMs - startedAtMs - session.durationMs) > READINESS_CONTRACT.identities.wallClockDurationToleranceMs) throw new ContractViolation('raw session identity changed');
   fixed(session.browserFeatures, READINESS_CONTRACT.fixed.browserFeatures, 'raw session browser features');
   fixed(session.collectionLimits, READINESS_CONTRACT.fixed.sessionLimits, 'raw session collection limits');
   fixed(session.droppedEntryCounts, READINESS_CONTRACT.fixed.sessionDropped, 'raw session dropped counts');
@@ -370,7 +388,7 @@ export function validateCopiedExplanation(artifact, selection) {
   const startedAtMs = Date.parse(artifact.startedAt);
   const endedAtMs = Date.parse(artifact.endedAt);
   const explanationEpochOffset = Number(explanationIdentity?.[1]) - startedAtMs;
-  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || !READINESS_CONTRACT.identities.explanationEpochOffsetsMs.includes(explanationEpochOffset) || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > 1) throw new ContractViolation('copied explanation identity changed');
+  if (!explanationIdentity || !followUpIdentity || !isoDate(artifact.startedAt) || !isoDate(artifact.endedAt) || !READINESS_CONTRACT.identities.explanationEpochOffsetsMs.includes(explanationEpochOffset) || Number(followUpIdentity[1]) !== startedAtMs || Number(explanationIdentity[2]) < 1 || Number(followUpIdentity[2]) < 1 || endedAtMs < startedAtMs || !finite(artifact.durationMs) || Math.abs(endedAtMs - startedAtMs - artifact.durationMs) > READINESS_CONTRACT.identities.wallClockDurationToleranceMs) throw new ContractViolation('copied explanation identity changed');
   if (!exact(artifact.source, READINESS_CONTRACT.keys.explanationSource) || artifact.source.sessionId !== selection.sessionId || artifact.source.findingIndex !== selection.findingIndex || artifact.source.findingType !== selection.findingType || artifact.source.canvasId !== 'ritual-canvas#1') throw new ContractViolation('copied explanation selection changed');
   if (!exact(artifact.followUp, READINESS_CONTRACT.keys.explanationFollowUp) || !/^canvas-scan-\d+-\d+$/.test(artifact.followUp.sessionId) || artifact.followUp.sessionId === artifact.source.sessionId || artifact.followUp.canvasId !== artifact.source.canvasId) throw new ContractViolation('copied explanation follow-up changed');
 

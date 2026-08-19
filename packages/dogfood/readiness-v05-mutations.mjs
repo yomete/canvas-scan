@@ -45,7 +45,7 @@ export const readinessMutations = [
     session.episodeAssociations = session.browserEntries.flatMap(entry => entry.startedAtTimestampMs > episode.endedAtTimestampMs || episode.startedAtTimestampMs > entry.endedAtTimestampMs ? [] : [{ entryId: entry.entryId, entryKind: entry.kind, episodeId: episode.episodeId, startedAtTimestampMs: Math.max(entry.startedAtTimestampMs, episode.startedAtTimestampMs), endedAtTimestampMs: Math.min(entry.endedAtTimestampMs, episode.endedAtTimestampMs), evidenceLevel: 'associated' }]);
   }],
   ['a browser row changes to another valid target tag name', value => { value.artifacts.baselineSession.browserEntries[0].targetTagName = 'button'; }],
-  ['an interaction ID change breaks a pointer pair', value => { value.artifacts.baselineSession.browserEntries[1].interactionId++; }],
+  ['an interaction ID change splits the replay pointer pair', value => { value.artifacts.baselineSession.browserEntries[6].interactionId++; }],
   ['a copied explanation has an extra valid-shaped window row', value => {
     const window = structuredClone(value.artifacts.copiedExplanation.windows.at(-1));
     window.windowIndex++;
