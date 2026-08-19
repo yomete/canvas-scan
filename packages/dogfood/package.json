@@ -45,6 +45,8 @@
     "readiness:v0.5:check": "node readiness-v05.mjs --check-evidence",
     "readiness:v0.5:mutations": "node readiness-v05-mutations.mjs",
     "readiness:v0.5:test": "node --test readiness-v05.test.mjs",
+    "investigation-report:test": "node --test investigation-run-report.test.mjs",
+    "investigation-report:mutations": "node investigation-run-report-mutations.mjs",
     "release:v0.4:test": "node --test bench-chrome-interleaved.test.mjs release-v04.test.mjs",
     "release:v0.4:check": "node release-v04.mjs --check-evidence",
     "bench:v0.5:chrome": "node bench-v05-chrome.mjs",

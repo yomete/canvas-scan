@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { RITUAL_METHODS } from '../../scripts/pack-manifest.mjs';
+import { RUN_STAGE_IDS, checkInvestigationRunReport, checkInvestigationSnapshot, checkRunStages, createRunState, finalizeInvestigationRun, investigationArtifactBytes, preflightInvestigationRunReport, reduceRunState, terminalRunOutput } from './investigation-run-report.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const defaultDirectory = '/private/tmp/sidproj-105-readiness-v05';
+const defaultDirectory = '/private/tmp/sidproj-106-run-report';
 const port = 5211;
 const origin = `http://127.0.0.1:${port}`;
 export const ACTION_IDS = ['early-load', 'record-baseline', 'explain-baseline', 'copy-explanation', 'keep-baseline', 'apply-change', 'record-candidate', 'pair-findings', 'copy-comparison'];
@@ -60,7 +61,7 @@ const READINESS_CONTRACT = {
     copiedComparison: ['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'improvementEstablished'],
     comparisonReference: ['sessionId', 'findingIndex', 'findingType', 'canvasId'],
     measure: ['id', 'unit', 'baseline', 'candidate', 'delta', 'direction', 'interpretation'],
-    readiness: ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'browserDrawCounts', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'],
+    readiness: ['schemaVersion', 'issue', 'status', 'gitSha', 'branch', 'packageVersion', 'tarballSha256', 'packedIifeSha256', 'installedIifeSha256', 'browserVersion', 'earlyLoad', 'cleanBefore', 'cleanAfter', 'publicMethods', 'actionIds', 'runStages', 'browserDrawCounts', 'baseline', 'explanation', 'candidate', 'comparison', 'artifacts', 'diagnostics', 'failures'],
     readinessFinding: ['sessionId', 'findingIndex', 'findingType'],
     readinessExplanation: ['sourceSessionId', 'sourceFindingIndex', 'followUpSessionId', 'stopReason'],
     readinessComparison: ['pairingMethod', 'status', 'improvementEstablished', 'baselineSessionId', 'baselineFindingIndex', 'candidateSessionId', 'candidateFindingIndex'],
@@ -441,6 +442,8 @@ export function checkReadinessEvidence(value, expectedCandidate) {
   if (!exact(value, READINESS_CONTRACT.keys.readiness) || Object.entries(READINESS_CONTRACT.fixed.readiness).some(([key, expected]) => value[key] !== expected)) throw new Error('readiness evidence root changed');
   if (!expectedCandidate || value.gitSha !== expectedCandidate.gitSha || value.branch !== expectedCandidate.branch || value.packageVersion !== expectedCandidate.packageVersion || !/^[0-9a-f]{64}$/.test(value.tarballSha256) || !/^[0-9a-f]{64}$/.test(value.packedIifeSha256) || value.installedIifeSha256 !== value.packedIifeSha256 || !/^\d+\.\d+\.\d+\.\d+$/.test(value.browserVersion)) throw new Error('readiness candidate identity changed');
   if (value.earlyLoad !== true || value.cleanBefore !== true || value.cleanAfter !== true || JSON.stringify(value.publicMethods) !== JSON.stringify(RITUAL_METHODS) || JSON.stringify(value.actionIds) !== JSON.stringify(ACTION_IDS)) throw new Error('readiness ritual identity changed');
+  checkRunStages(value.runStages, { requireComplete: true });
+  if (JSON.stringify(value.runStages.slice(0, ACTION_IDS.length).map(row => row.id)) !== JSON.stringify(value.actionIds) || value.runStages.at(-1)?.id !== 'verify-run') throw new Error('readiness run stages changed');
   validateBrowserDrawCounts(value.browserDrawCounts);
 
   const findingKeys = READINESS_CONTRACT.keys.readinessFinding;
@@ -471,9 +474,11 @@ function runBytes(command, args, cwd) {
   return result.stdout;
 }
 
+function readinessWorktreeStatus() {
+  return run('git', ['status', '--short', '--untracked-files=all'], root);
+}
+
 async function currentCandidate() {
-  const status = run('git', ['status', '--short', '--untracked-files=all'], root);
-  if (status) throw new Error(`readiness requires a clean worktree\n${status}`);
   return {
     gitSha: run('git', ['rev-parse', 'HEAD'], root).trim(),
     branch: run('git', ['branch', '--show-current'], root).trim(),
@@ -570,13 +575,15 @@ async function readDrawCounter(page, counts) {
   return { clearRect: counts.clearRect, fillRect: counts.fillRect };
 }
 
-async function runBrowser(consumer, diagnostics, ownershipToken) {
+async function runBrowser(consumer, diagnostics, ownershipToken, runState) {
   let server;
   let browser;
   const actionIds = [];
   const counts = { clearRect: 0, fillRect: 0 };
   const result = { browserVersion: '', earlyLoad: false, publicMethods: [], actionIds, browserDrawCounts: { baseline: null, candidate: null }, baseline: null, explanation: null, candidate: null, comparison: null, artifacts: { baselineSession: null, candidateSession: null, copiedExplanation: null, copiedComparison: null } };
   try {
+    try { await access('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'); }
+    catch { reduceRunState(runState, { type: 'stage-unavailable', id: 'early-load', reason: 'browser-unavailable' }); throw new Error('local Chrome is unavailable'); }
     if (listenerPids().length) throw new Error(`readiness port ${port} already has a listener`);
     server = spawn('npx', ['vite', 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: consumer, detached: true, stdio: 'ignore' });
     await waitForOwnedServer(server, ownershipToken);
@@ -592,60 +599,66 @@ async function runBrowser(consumer, diagnostics, ownershipToken) {
     await settle(page);
 
     result.earlyLoad = await page.evaluate(() => Boolean(window.__CANVAS_SCAN__));
-    actionIds.push('early-load');
     result.publicMethods = await page.evaluate(methods => methods.filter(method => typeof window.__CANVAS_SCAN__?.[method] === 'function'), RITUAL_METHODS);
+    if (!result.earlyLoad || JSON.stringify(result.publicMethods) !== JSON.stringify(RITUAL_METHODS)) throw new Error('readiness public methods changed');
+    const browserSupport = await page.evaluate(() => ({ eventTiming: PerformanceObserver.supportedEntryTypes.includes('event'), longAnimationFrames: PerformanceObserver.supportedEntryTypes.includes('long-animation-frame') }));
     await installDrawCounter(page, counts);
+    reduceRunState(runState, { type: 'browser-support', rows: [{ id: 'canvas-2d', status: 'supported', reason: null }, { id: 'monotonic-time', status: 'supported', reason: null }, { id: 'event-timing', status: browserSupport.eventTiming ? 'supported' : 'unavailable', reason: browserSupport.eventTiming ? null : 'browser-feature-unavailable' }, { id: 'long-animation-frames', status: browserSupport.longAnimationFrames ? 'supported' : 'unavailable', reason: browserSupport.longAnimationFrames ? null : 'browser-feature-unavailable' }] });
+    actionIds.push('early-load'); reduceRunState(runState, { type: 'stage-complete', id: 'early-load' });
     const baselineSession = await record(page);
     result.browserDrawCounts.baseline = await readDrawCounter(page, counts);
-    actionIds.push('record-baseline');
     const baselineFindingIndex = baselineSession.findings.findIndex(finding => finding.type === 'repeated-draw-work');
     if (baselineFindingIndex < 0) throw new Error('clean demo baseline has no repeated-draw-work finding');
     result.baseline = { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type };
     result.artifacts.baselineSession = baselineSession;
+    actionIds.push('record-baseline'); reduceRunState(runState, { type: 'stage-complete', id: 'record-baseline' });
     await expandFinding(page, baselineFindingIndex);
     await page.locator(`.explanation-action[data-finding-index="${baselineFindingIndex}"]`).click();
     await replay(page);
     await page.locator('[aria-label="Stop recording"]').click();
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-panel')?.textContent?.includes('EXPLANATION COMPLETE'));
     await settle(page);
-    actionIds.push('explain-baseline');
+    actionIds.push('explain-baseline'); reduceRunState(runState, { type: 'stage-complete', id: 'explain-baseline' });
     await page.locator('.explanation-copy').click();
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.explanation-copy-status')?.textContent === 'Explanation JSON copied');
     const copiedExplanation = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
     result.explanation = { sourceSessionId: copiedExplanation.source.sessionId, sourceFindingIndex: copiedExplanation.source.findingIndex, followUpSessionId: copiedExplanation.followUp.sessionId, stopReason: copiedExplanation.stopReason };
     result.artifacts.copiedExplanation = copiedExplanation;
     validateCopiedExplanation(copiedExplanation, { sessionId: baselineSession.sessionId, findingIndex: baselineFindingIndex, findingType: baselineSession.findings[baselineFindingIndex].type });
-    actionIds.push('copy-explanation');
+    actionIds.push('copy-explanation'); reduceRunState(runState, { type: 'stage-complete', id: 'copy-explanation' });
     await page.locator(`.baseline-action[data-finding-index="${baselineFindingIndex}"]`).click();
-    actionIds.push('keep-baseline');
+    actionIds.push('keep-baseline'); reduceRunState(runState, { type: 'stage-complete', id: 'keep-baseline' });
     await page.locator('[data-demo-action="apply-candidate-change"]').click();
     await page.waitForFunction(() => document.querySelector('[data-demo-action="apply-candidate-change"]')?.textContent?.includes('Candidate change applied'));
-    actionIds.push('apply-change');
+    actionIds.push('apply-change'); reduceRunState(runState, { type: 'stage-complete', id: 'apply-change' });
     await readDrawCounter(page, counts);
     counts.clearRect = 0;
     counts.fillRect = 0;
     const candidateSession = await record(page);
     result.browserDrawCounts.candidate = await readDrawCounter(page, counts);
-    actionIds.push('record-candidate');
     const candidateFindingIndex = candidateSession.findings.findIndex(finding => finding.type === baselineSession.findings[baselineFindingIndex].type);
     if (candidateFindingIndex < 0) throw new Error('clean demo candidate has no same-type finding');
     result.candidate = { sessionId: candidateSession.sessionId, findingIndex: candidateFindingIndex, findingType: candidateSession.findings[candidateFindingIndex].type };
     result.artifacts.candidateSession = candidateSession;
+    actionIds.push('record-candidate'); reduceRunState(runState, { type: 'stage-complete', id: 'record-candidate' });
     await expandFinding(page, candidateFindingIndex);
     const comparisonAction = page.locator(`.comparison-action[data-finding-index="${candidateFindingIndex}"]`);
     await comparisonAction.waitFor({ state: 'visible' });
     await comparisonAction.click();
-    actionIds.push('pair-findings');
+    actionIds.push('pair-findings'); reduceRunState(runState, { type: 'stage-complete', id: 'pair-findings' });
     await page.locator('.comparison-copy').click();
     await page.waitForFunction(() => document.querySelector('[data-canvas-scan]')?.shadowRoot?.querySelector('.comparison-copy-status')?.textContent === 'Comparison JSON copied');
     const copiedComparison = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
-    actionIds.push('copy-comparison');
     result.comparison = { pairingMethod: copiedComparison.pairingMethod, status: copiedComparison.status, improvementEstablished: copiedComparison.improvementEstablished, baselineSessionId: copiedComparison.baseline.sessionId, baselineFindingIndex: copiedComparison.baseline.findingIndex, candidateSessionId: copiedComparison.candidate.sessionId, candidateFindingIndex: copiedComparison.candidate.findingIndex };
     result.artifacts.copiedComparison = copiedComparison;
     validateCopiedComparison(copiedComparison, baselineSession, candidateSession, { baselineFindingIndex, candidateFindingIndex }, result.browserDrawCounts);
+    actionIds.push('copy-comparison'); reduceRunState(runState, { type: 'stage-complete', id: 'copy-comparison' });
     await context.close();
     return result;
   } catch (error) {
+    const failedReasons = { 'early-load': 'browser-start-failed', 'record-baseline': 'capture-failed', 'explain-baseline': 'explanation-failed', 'copy-explanation': 'export-failed', 'keep-baseline': 'baseline-selection-failed', 'apply-change': 'candidate-change-failed', 'record-candidate': 'capture-failed', 'pair-findings': 'comparison-failed', 'copy-comparison': 'export-failed' };
+    const pending = runState.runStages.slice(0, -1).find(row => row.status === 'incomplete' && row.reason === 'not-started');
+    if (pending && runState.runStages.slice(0, RUN_STAGE_IDS.indexOf(pending.id)).every(row => row.status === 'complete')) reduceRunState(runState, { type: 'stage-failed', id: pending.id, reason: failedReasons[pending.id] });
     if (error && typeof error === 'object') error.browserResult = result;
     throw error;
   } finally {
@@ -657,14 +670,46 @@ async function runBrowser(consumer, diagnostics, ownershipToken) {
   }
 }
 
-async function checkDirectory(directory, expectedCandidate) {
+export async function checkDirectory(directory, expectedCandidate) {
   const expected = expectedCandidate ?? await currentCandidate();
-  const names = (await readdir(directory)).sort();
-  if (JSON.stringify(names) !== JSON.stringify(['evidence-sha256.txt', 'evidence.json'])) throw new Error('readiness evidence files changed');
-  const bytes = await readFile(path.join(directory, 'evidence.json'));
-  const manifest = (await readFile(path.join(directory, 'evidence-sha256.txt'), 'utf8')).trim();
-  if (manifest !== `${hash(bytes)}  evidence.json`) throw new Error('readiness evidence hash changed');
-  return checkReadinessEvidence(JSON.parse(bytes), expected);
+  const reportPath = path.join(directory, 'run-report.json');
+  const reportStat = await lstat(reportPath);
+  if (!reportStat.isFile() || reportStat.isSymbolicLink()) throw new Error('readiness report file changed');
+  const reportBytes = await readFile(reportPath);
+  const report = JSON.parse(reportBytes);
+  if (!reportBytes.equals(Buffer.from(stable(report)))) throw new Error('readiness report encoding changed');
+  const declared = new Set(['run-report.json']);
+  for (const artifact of report.artifacts ?? []) if (artifact.sha256 !== null) declared.add(artifact.path);
+  if (!(report.missingFiles ?? []).includes('evidence-sha256.txt')) declared.add('evidence-sha256.txt');
+  const actual = [];
+  async function visit(relative = '') {
+    for (const name of await readdir(path.join(directory, relative))) {
+      const child = relative ? `${relative}/${name}` : name;
+      const stat = await lstat(path.join(directory, child));
+      if (stat.isSymbolicLink()) throw new Error('readiness evidence symlink changed');
+      if (stat.isDirectory()) { if (child !== 'artifacts') throw new Error('readiness evidence directory changed'); await visit(child); }
+      else if (stat.isFile()) actual.push(child); else throw new Error('readiness evidence entry changed');
+    }
+  }
+  await visit();
+  if (JSON.stringify(actual.sort()) !== JSON.stringify([...declared].sort())) throw new Error('readiness evidence files changed');
+  const files = {};
+  for (const file of actual.filter(file => file !== 'run-report.json' && file !== 'evidence-sha256.txt')) {
+    files[file] = await readFile(path.join(directory, file));
+    const value = JSON.parse(files[file]);
+    if (!files[file].equals(Buffer.from(stable(value)))) throw new Error('readiness artifact encoding changed');
+  }
+  const manifestPath = path.join(directory, 'evidence-sha256.txt');
+  let manifestBytes = null;
+  if (declared.has('evidence-sha256.txt')) {
+    manifestBytes = await readFile(manifestPath);
+    const lines = manifestBytes.toString('utf8').trim().split('\n').filter(Boolean);
+    const manifestFiles = [...Object.keys(files), 'run-report.json'].sort();
+    if (JSON.stringify(lines) !== JSON.stringify(manifestFiles.map(file => `${hash(file === 'run-report.json' ? reportBytes : files[file])}  ${file}`))) throw new Error('readiness evidence hash changed');
+  }
+  const evidence = files['evidence.json'] ? JSON.parse(files['evidence.json']) : null;
+  if (evidence?.status === 'PASS') checkReadinessEvidence(evidence, expected);
+  return checkInvestigationRunReport(report, { candidate: expected, rawEvidence: evidence, files, manifestBytes });
 }
 
 async function main() {
@@ -677,17 +722,24 @@ async function main() {
 
   const directoryIndex = process.argv.indexOf('--output');
   const directory = directoryIndex >= 0 ? process.argv[directoryIndex + 1] : defaultDirectory;
-  const candidate = await currentCandidate();
-  const { gitSha, branch, packageVersion } = candidate;
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'canvas-scan-readiness-v05-'));
+  try { await preflightInvestigationRunReport({ directory }); }
+  catch { const output = terminalRunOutput(directory, null, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return; }
+  const runState = createRunState();
   const diagnostics = Object.fromEntries(diagnosticKeys.map(key => [key, []]));
   const failures = [];
+  let candidate = { gitSha: null, branch: null, packageVersion: null };
+  let cleanBefore = false;
+  let temporaryRoot;
   let browserResult;
   let tarballSha256 = '';
   let packedIifeSha256 = '';
   let installedIifeSha256 = '';
-  const ownershipToken = hash(temporaryRoot);
   try {
+    candidate = await currentCandidate();
+    cleanBefore = readinessWorktreeStatus() === '';
+    if (!cleanBefore) throw new Error('readiness requires a clean worktree');
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'canvas-scan-readiness-v05-'));
+    const ownershipToken = hash(temporaryRoot);
     const packDirectory = path.join(temporaryRoot, 'pack');
     const consumer = path.join(temporaryRoot, 'consumer');
     await mkdir(packDirectory);
@@ -707,15 +759,22 @@ async function main() {
     installedIifeSha256 = hash(await readFile(path.join(consumer, 'node_modules/canvas-scan/dist/canvas-scan.iife.js')));
     run('npx', ['vite', 'build'], consumer);
     await writeFile(path.join(consumer, 'dist/readiness-owner.txt'), ownershipToken);
-    browserResult = await runBrowser(consumer, diagnostics, ownershipToken);
+    browserResult = await runBrowser(consumer, diagnostics, ownershipToken, runState);
   } catch (error) {
     if (error && typeof error === 'object' && error.browserResult) browserResult = error.browserResult;
     failures.push(error instanceof Error ? error.stack ?? error.message : String(error));
   } finally {
-    await collectCleanupErrors(diagnostics, [['temporary-directory-remove', async () => rm(temporaryRoot, { recursive: true, force: true })]]);
+    await collectCleanupErrors(diagnostics, [['temporary-directory-remove', async () => { if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true }); }]]);
   }
 
-  const cleanAfter = run('git', ['status', '--short', '--untracked-files=all'], root) === '';
+  let cleanAfter = false;
+  try { cleanAfter = readinessWorktreeStatus() === ''; }
+  catch { failures.push('git-status-failed'); }
+  if (runState.runStages[0].status === 'incomplete') reduceRunState(runState, { type: 'stage-failed', id: 'early-load', reason: 'setup-failed' });
+  const verificationReason = !cleanBefore || !cleanAfter ? 'dirty-worktree' : diagnostics.cleanupErrors.length ? 'cleanup-failed' : runState.runStages.slice(0, 9).every(row => row.status === 'complete') ? null : 'ritual-incomplete';
+  const projectedState = structuredClone(runState);
+  reduceRunState(projectedState, { type: 'verification-result', status: verificationReason ? 'failed' : 'complete', reason: verificationReason });
+  const { gitSha, branch, packageVersion } = candidate;
   const evidence = {
     schemaVersion: 1,
     issue: 'SIDPROJ-105',
@@ -728,10 +787,11 @@ async function main() {
     installedIifeSha256,
     browserVersion: browserResult?.browserVersion ?? '',
     earlyLoad: browserResult?.earlyLoad ?? false,
-    cleanBefore: true,
+    cleanBefore,
     cleanAfter,
     publicMethods: browserResult?.publicMethods ?? [],
     actionIds: browserResult?.actionIds ?? [],
+    runStages: structuredClone(projectedState.runStages),
     browserDrawCounts: browserResult?.browserDrawCounts ?? null,
     baseline: browserResult?.baseline ?? null,
     explanation: browserResult?.explanation ?? null,
@@ -741,14 +801,25 @@ async function main() {
     diagnostics,
     failures,
   };
-  await mkdir(directory, { recursive: true });
-  const bytes = Buffer.from(stable(evidence));
-  await writeFile(path.join(directory, 'evidence.json'), bytes);
-  await writeFile(path.join(directory, 'evidence-sha256.txt'), `${hash(bytes)}  evidence.json\n`);
-  if (evidence.status === 'PASS') await checkDirectory(directory, candidate);
-  console.log(`SIDPROJ_105_READINESS_EVIDENCE: ${directory}`);
-  console.log(`SIDPROJ_105_READINESS: ${evidence.status}`);
-  if (evidence.status === 'FAIL') process.exitCode = 1;
+  const files = investigationArtifactBytes(evidence);
+  let finalization;
+  try {
+    finalization = await finalizeInvestigationRun({
+      directory, state: runState, candidate, rawEvidence: evidence, files, verificationReason,
+      checkSnapshot(value, context) {
+        checkInvestigationSnapshot(value, context);
+        if (value.status === 'complete') checkReadinessEvidence(evidence, candidate);
+      },
+    });
+  } catch {
+    const output = terminalRunOutput(directory, null, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return;
+  }
+  if (finalization.report.status === 'complete') {
+    try { await checkDirectory(directory, candidate); }
+    catch { const output = terminalRunOutput(directory, finalization.report, false, true); process.stderr.write(output.stderr); process.exitCode = output.exitCode; return; }
+  }
+  const output = terminalRunOutput(directory, finalization.report);
+  process.stdout.write(output.stdout); process.stderr.write(output.stderr); process.exitCode = output.exitCode;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

@@ -67,6 +67,11 @@ and load it before other scripts. A pnpm workspace uses the same first import.
 8. Review the measured pair. Select **Copy comparison JSON** to copy the plain
    JSON artifact.
 
+The repository readiness command writes `run-report.json` with explicit stage
+states, browser support, limits, drop counts, unknown reasons, artifact paths,
+and hashes. A partial run is incomplete and cannot be a clean result. A
+report-write failure exits nonzero and cannot promise a report file.
+
 Explanation detail covers only the selected canvas. It excludes raw argument
 values, page text, pixels, and raw application and argument URLs. It also
 excludes application objects and source content. Sanitized selected-callsite

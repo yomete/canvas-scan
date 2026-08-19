@@ -3,6 +3,7 @@ import test from 'node:test';
 import { RITUAL_METHODS } from '../../scripts/pack-manifest.mjs';
 import { ACTION_IDS, checkReadinessEvidence, collectCleanupErrors, readinessStatus, serverOwnsReadinessPort, validateCopiedComparison, validateCopiedExplanation, waitForOwnedServer } from './readiness-v05.mjs';
 import { readinessMutations } from './readiness-v05-mutations.mjs';
+import { RUN_STAGE_IDS } from './investigation-run-report.mjs';
 
 const candidate = () => ({ gitSha: 'a'.repeat(40), branch: 'agent/sidproj-105-v05-ritual', packageVersion: '0.5.0' });
 const browserDrawCounts = () => ({ baseline: { clearRect: 8, fillRect: 32 }, candidate: { clearRect: 8, fillRect: 16 } });
@@ -208,6 +209,7 @@ function evidence() {
     cleanAfter: true,
     publicMethods: [...RITUAL_METHODS],
     actionIds: [...ACTION_IDS],
+    runStages: RUN_STAGE_IDS.map(id => ({ id, status: 'complete', reason: null })),
     browserDrawCounts: browserDrawCounts(),
     baseline: { sessionId: baselineSessionId, findingIndex: 0, findingType: 'repeated-draw-work' },
     explanation: { sourceSessionId: baselineSessionId, sourceFindingIndex: 0, followUpSessionId, stopReason: 'manual' },
@@ -234,6 +236,19 @@ test('rejects missing, extra, and reordered actions', () => {
   const missing = evidence(); missing.actionIds.pop(); assert.throws(() => checkReadinessEvidence(missing, candidate()), /ritual identity/);
   const extra = evidence(); extra.actionIds.push('extra'); assert.throws(() => checkReadinessEvidence(extra, candidate()), /ritual identity/);
   const reordered = evidence(); [reordered.actionIds[0], reordered.actionIds[1]] = [reordered.actionIds[1], reordered.actionIds[0]]; assert.throws(() => checkReadinessEvidence(reordered, candidate()), /ritual identity/);
+});
+
+test('requires explicit complete stages that agree with the ritual outputs', () => {
+  for (const mutate of [
+    value => { value.runStages.pop(); },
+    value => { value.runStages.push(structuredClone(value.runStages[0])); },
+    value => { value.runStages[1].id = value.runStages[0].id; },
+    value => { value.runStages[0].status = 'failed'; value.runStages[0].reason = 'setup-failed'; },
+    value => { value.runStages[0].status = 'complete'; value.runStages[0].reason = 'setup-failed'; },
+    value => { value.runStages[0].status = 'other'; },
+    value => { value.runStages = value.actionIds; },
+    value => { value.actionIds.pop(); },
+  ]) { const value = evidence(); mutate(value); assert.throws(() => checkReadinessEvidence(value, candidate())); }
 });
 
 test('rejects every missing public ritual method', () => {

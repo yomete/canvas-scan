@@ -14,6 +14,13 @@ const measure = (id, unit, baseline, candidate) => {
 const nextEntryId = session => `browser-evidence-${session.browserEntries.length + 1}`;
 
 export const readinessMutations = [
+  ['run stages has a missing row', value => { value.runStages.pop(); }],
+  ['run stages has an extra valid-shaped row', value => { value.runStages.push(structuredClone(value.runStages[0])); }],
+  ['run stages has a duplicate row', value => { value.runStages[1].id = value.runStages[0].id; }],
+  ['run stages is reordered', value => { [value.runStages[0], value.runStages[1]] = [value.runStages[1], value.runStages[0]]; }],
+  ['run stages has an unsupported status', value => { value.runStages[0].status = 'unsupported'; }],
+  ['a complete stage has a finite failure reason', value => { value.runStages[0].reason = 'setup-failed'; }],
+  ['a complete action list cannot replace run stages', value => { value.runStages = value.actionIds; }],
   ['a command argument token changes to another valid token', value => { value.artifacts.copiedExplanation.windows[1].commands[0].arguments[0].token = `${'b'.repeat(32)}-1`; }],
   ['a command argument token uses an invalid private value', value => { value.artifacts.copiedExplanation.windows[1].commands[0].arguments[0].token = 'private-user-value'; }],
   ['a command argument kind changes from number to string', value => { value.artifacts.copiedExplanation.windows[1].commands[0].arguments[0].kind = 'string'; }],
