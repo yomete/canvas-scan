@@ -3,7 +3,7 @@ import { emitLifecycleEvent, emitReport, emitResetEvent } from '../src/frame-loo
 import { configureRecording, getLastSession, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { DrawBatchReport } from '../src/types';
 
-const report = (canvasId: string, selfTime: number, overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 1, canvasApiSelfTimeMs: selfTime, signatureStatus: 'same', unknownReason: null, sampled: false, comparisonGap: 1, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: selfTime } }, ...overrides });
+const report = (canvasId: string, selfTime: number, overrides: Partial<DrawBatchReport> = {}): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 1, canvasApiSelfTimeMs: selfTime, signatureStatus: 'same', unknownReason: null, sampled: false, comparisonGap: 1, followsCanvasReset: false, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: selfTime } }, ...overrides });
 const publish = (canvasId: string, selfTime: number, windowIndex: number, overrides: Partial<DrawBatchReport> = {}, canvas: unknown = {}) => emitReport(report(canvasId, selfTime, overrides), canvas, { windowIndex, timestampMs: windowIndex * 10 });
 afterEach(() => { resetRecordingForTests(); vi.unstubAllGlobals(); });
 
@@ -92,7 +92,7 @@ describe('investigation findings', () => {
     startRecording();
     publish('resize', 2, 1, { rasterOperationCount: 4, signatureStatus: 'unknown', unknownReason: 'canvas-reset' });
     publish('resize', 3, 2, { rasterOperationCount: 5, signatureStatus: 'unknown', unknownReason: 'canvas-reset' });
-    const reset = (windowIndex: number, source: 'width-setter' | 'height-setter', activeRasterOverlap = true) => emitResetEvent({ canvasId: 'resize', windowIndex, timestampMs: windowIndex * 10, source, width: 240, height: 120, rasterOperationCount: activeRasterOverlap ? windowIndex === 1 ? 4 : 5 : 0, activeRasterOverlap, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const reset = (windowIndex: number, source: 'width-setter' | 'height-setter', activeRasterOverlap = true) => emitResetEvent({ canvasId: 'resize', windowIndex, timestampMs: windowIndex * 10, source, dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: activeRasterOverlap ? windowIndex === 1 ? 4 : 5 : 0, activeRasterOverlap, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     reset(1, 'width-setter'); reset(2, 'height-setter'); reset(3, 'width-setter', false); reset(4, 'height-setter', false);
     const finding = stopRecording()!.findings.find(item => item.type === 'resize-churn');
     expect(finding).toMatchObject({ canvasId: 'resize', observedResetCount: 4, activeResetCount: 2, rasterOperationCount: 9, canvasApiSelfTimeMs: 5, commandStatuses: { same: 0, changed: 0, unknown: 2 }, unknownReasons: { 'canvas-reset': 2 } });
@@ -106,8 +106,8 @@ describe('investigation findings', () => {
   ])('keeps one-shot paired setup evidence without resize churn: %s', (_name, canvasId, first, second, width, height) => {
     startRecording();
     publish(canvasId, 2, 1, { rasterOperationCount: 1 });
-    emitResetEvent({ canvasId, windowIndex: 1, timestampMs: 10, source: first as 'width-setter', width, height, rasterOperationCount: 1, activeRasterOverlap: true, commandStatus: 'same', unknownReason: null });
-    emitResetEvent({ canvasId, windowIndex: 1, timestampMs: 11, source: second as 'height-setter', width, height, rasterOperationCount: 1, activeRasterOverlap: true, commandStatus: 'same', unknownReason: null });
+    emitResetEvent({ canvasId, windowIndex: 1, timestampMs: 10, source: first as 'width-setter', dimensionChange: 'changed', width, height, rasterOperationCount: 1, activeRasterOverlap: true, commandStatus: 'same', unknownReason: null });
+    emitResetEvent({ canvasId, windowIndex: 1, timestampMs: 11, source: second as 'height-setter', dimensionChange: 'changed', width, height, rasterOperationCount: 1, activeRasterOverlap: true, commandStatus: 'same', unknownReason: null });
     emitLifecycleEvent({ canvasId, type: 'first-observed', windowIndex: 1, timestampMs: 10, evidenceLevel: 'measured', connected: true, activeRegistrySize: 1 });
     emitLifecycleEvent({ canvasId, type: 'active', windowIndex: 1, timestampMs: 10, evidenceLevel: 'measured', connected: true, activeRegistrySize: 1 });
     emitLifecycleEvent({ canvasId, type: 'retired', windowIndex: 2, timestampMs: 20, evidenceLevel: 'measured', connected: true, activeRegistrySize: 0 });
@@ -121,15 +121,15 @@ describe('investigation findings', () => {
   it('requires two active reset windows and reports exact mixed evidence', () => {
     startRecording();
     publish('mixed', 2, 1, { rasterOperationCount: 4, signatureStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'mixed', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'mixed', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'changed', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     expect(stopRecording()!.findings.some(item => item.type === 'resize-churn')).toBe(false);
 
     startRecording();
     publish('mixed', 2, 1, { rasterOperationCount: 4, signatureStatus: 'unknown', unknownReason: 'canvas-reset' });
     publish('mixed', 3, 2, { rasterOperationCount: 5, signatureStatus: 'changed', unknownReason: null });
-    emitResetEvent({ canvasId: 'mixed', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'mixed', windowIndex: 2, timestampMs: 20, source: 'context-reset', width: 240, height: 120, rasterOperationCount: 5, activeRasterOverlap: true, commandStatus: 'changed', unknownReason: null });
-    emitResetEvent({ canvasId: 'mixed', windowIndex: 3, timestampMs: 30, source: 'height-attribute', width: 240, height: 120, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-attribute-reset' });
+    emitResetEvent({ canvasId: 'mixed', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'changed', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'mixed', windowIndex: 2, timestampMs: 20, source: 'context-reset', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 5, activeRasterOverlap: true, commandStatus: 'changed', unknownReason: null });
+    emitResetEvent({ canvasId: 'mixed', windowIndex: 3, timestampMs: 30, source: 'height-attribute', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-attribute-reset' });
     const session = stopRecording()!;
     const finding = session.findings.find(item => item.type === 'resize-churn');
     expect(finding).toMatchObject({
@@ -149,8 +149,8 @@ describe('investigation findings', () => {
 
   it('keeps reset-only evidence without a resize churn finding', () => {
     startRecording();
-    emitResetEvent({ canvasId: 'idle', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 40, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'idle', windowIndex: 2, timestampMs: 20, source: 'height-setter', width: 40, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'idle', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'changed', width: 40, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'idle', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'changed', width: 40, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const session = stopRecording()!;
     expect(session.resetEvents).toHaveLength(2);
     expect(session.findings.some(item => item.type === 'resize-churn')).toBe(false);
@@ -158,8 +158,8 @@ describe('investigation findings', () => {
 
   it('uses sampled-out reset metadata once per qualifying window', () => {
     startRecording();
-    emitResetEvent({ canvasId: 'sampled', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 40, height: 20, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'sampled', windowIndex: 1, timestampMs: 10, source: 'height-setter', width: 40, height: 20, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'sampled', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 40, height: 20, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'sampled', windowIndex: 1, timestampMs: 10, source: 'height-setter', dimensionChange: 'unchanged', width: 40, height: 20, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const session = stopRecording()!;
     expect(session.findings.some(item => item.type === 'resize-churn')).toBe(false);
     expect(session.resetEvents).toHaveLength(2);
@@ -281,6 +281,7 @@ describe('investigation findings', () => {
       episodeId: expect.any(String), repeatedWindowCount: 1, rasterOperationCount: 2,
       canvasApiSelfTimeMs: 1.25,
       repeatedWindows: [{ windowIndex: 1, timestampMs: 10, rasterOperationCount: 2, canvasApiSelfTimeMs: 1.25, comparisonGap: 3 }],
+      strictModeStyleDuplicates: 0,
       unknownCoverage: { unknownWindowCount: 1, activeWindowCount: 3 },
       claimBoundary: {
         observation: 'The canvas sent repeated commands in the recorded windows and spent the measured Canvas2D API self-time shown here.',
@@ -324,5 +325,44 @@ describe('investigation findings', () => {
     publish('sampled', 3, 4, { rasterOperationCount: 4, sampled: true, comparisonGap: 4 });
     const finding = stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work');
     expect(finding?.repeatedWindows).toEqual([{ windowIndex: 4, timestampMs: 40, rasterOperationCount: 4, canvasApiSelfTimeMs: 3, comparisonGap: 4 }]);
+  });
+
+  it('carries the reset-following flag of the maximum window into the heavy finding', () => {
+    startRecording();
+    publish('flagged', 5, 1);
+    publish('flagged', 9, 2, { followsCanvasReset: true });
+    const session = stopRecording()!;
+    expect(session.windows.map(window => window.followsCanvasReset)).toEqual([false, true]);
+    const finding = session.findings.find(item => item.type === 'heavy-canvas-work');
+    expect(finding?.maximumWindow.windowIndex).toBe(2);
+    expect(finding?.maximumWindow.followsCanvasReset).toBe(true);
+  });
+
+  it.each([
+    ['8.8 ms sits 0.8 above the gate', 8.8, 8, 0.8],
+    ['77.5 ms sits 69.5 above the gate', 77.5, 8, 69.5],
+  ])('%s', (_name, selfTimeMs, thresholdMs, excessMs) => {
+    startRecording();
+    publish('gated', selfTimeMs, 1);
+    const finding = stopRecording()!.findings.find(item => item.type === 'heavy-canvas-work');
+    expect(finding).toMatchObject({ type: 'heavy-canvas-work', gateThresholdMs: thresholdMs, gateExcessMs: excessMs });
+  });
+
+  it('counts StrictMode-style duplicates only for adjacent identical repeated windows', () => {
+    startRecording();
+    publish('strict-adjacent', 1, 1, { rasterOperationCount: 2 });
+    publish('strict-adjacent', 1, 2, { rasterOperationCount: 2 });
+    publish('strict-adjacent', 1, 3, { rasterOperationCount: 2 });
+    expect(stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work')?.strictModeStyleDuplicates).toBe(2);
+
+    startRecording();
+    publish('strict-gap', 1, 1, { rasterOperationCount: 2 });
+    publish('strict-gap', 1, 3, { rasterOperationCount: 2 });
+    expect(stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work')?.strictModeStyleDuplicates).toBe(0);
+
+    startRecording();
+    publish('strict-metrics', 1, 1, { rasterOperationCount: 2 });
+    publish('strict-metrics', 2, 2, { rasterOperationCount: 4 });
+    expect(stopRecording()!.findings.find(finding => finding.type === 'repeated-draw-work')?.strictModeStyleDuplicates).toBe(0);
   });
 });

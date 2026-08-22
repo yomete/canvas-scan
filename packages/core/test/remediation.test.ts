@@ -485,7 +485,7 @@ describe('classifier-trust remediation', () => {
       context.fillRect(0, 0, 10, 10);
       expect(finish(record, 8, 2)).toMatchObject({
         signatureStatus: 'unknown',
-        unknownReason: 'first-window',
+        unknownReason: 'previous-window',
       });
 
       setWindowCaptured(false);

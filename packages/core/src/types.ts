@@ -22,6 +22,7 @@ export interface DrawBatchReport {
   unknownReason: string | null;
   sampled: boolean;
   comparisonGap: number | null;
+  followsCanvasReset: boolean;
   methodEvidence: Record<string, CanvasMethodEvidence>;
 }
 
@@ -218,6 +219,8 @@ export interface RecordedCanvasGeometry {
 
 export type CanvasResetSource = 'width-setter' | 'height-setter' | 'width-attribute' | 'height-attribute' | 'context-reset';
 
+export type ResetDimensionChange = 'changed' | 'unchanged' | 'unavailable';
+
 export type CanvasLifecycleEventType =
   | 'first-observed'
   | 'active'
@@ -240,6 +243,7 @@ export interface RecordedResetEvent {
   windowIndex: number;
   timestampMs: number;
   source: CanvasResetSource;
+  dimensionChange: ResetDimensionChange;
   width: number | null;
   height: number | null;
   rasterOperationCount: number;
@@ -294,7 +298,9 @@ export interface HeavyCanvasWorkFinding {
   canvasApiSelfTimeMs: number;
   rasterOperationCount: number;
   topMethods: RecordedTopMethod[];
-  maximumWindow: Pick<RecordedCanvasWindow, 'windowIndex' | 'timestampMs' | 'canvasApiSelfTimeMs' | 'rasterOperationCount' | 'methodEvidence'>;
+  maximumWindow: Pick<RecordedCanvasWindow, 'windowIndex' | 'timestampMs' | 'canvasApiSelfTimeMs' | 'rasterOperationCount' | 'followsCanvasReset' | 'methodEvidence'>;
+  gateThresholdMs: number;
+  gateExcessMs: number;
   claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
   nextCheck: string;
 }
@@ -316,6 +322,7 @@ export interface RepeatedDrawWorkFinding {
   rasterOperationCount: number;
   canvasApiSelfTimeMs: number;
   repeatedWindows: RecordedRepeatedWindow[];
+  strictModeStyleDuplicates: number;
   unknownCoverage: { unknownWindowCount: number; activeWindowCount: number };
   claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
   nextCheck: string;
@@ -328,6 +335,7 @@ export interface ResizeChurnFinding {
   observedResetCount: number;
   activeResetCount: number;
   resetEvents: Array<Pick<RecordedResetEvent, 'source' | 'width' | 'height' | 'windowIndex' | 'timestampMs'>>;
+  dimensionChanges: { changed: number; unchanged: number; unavailable: number };
   affectedEpisodeIds: string[];
   commandStatuses: { same: number; changed: number; unknown: number };
   unknownReasons: Record<string, number>;

@@ -54,6 +54,7 @@ const report = (canvasId: string): DrawBatchReport => ({
   unknownReason: null,
   sampled: false,
   comparisonGap: 1,
+  followsCanvasReset: false,
   methodEvidence: {},
 });
 

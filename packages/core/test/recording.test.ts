@@ -13,7 +13,7 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
   sourceLocation: canvasId === 'canvas-a' ? { file: '/src/Chart.tsx', line: 4, column: 2 } : null,
   rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, signatureStatus: status,
   unknownReason: status === 'unknown' ? 'first-window' : null, sampled: false,
-  comparisonGap: status === 'unknown' ? null : 1, methodEvidence: {}, ...overrides,
+  comparisonGap: status === 'unknown' ? null : 1, followsCanvasReset: false, methodEvidence: {}, ...overrides,
 });
 const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: getCurrentWindowIndex() + index, timestampMs: index * 100 });
 const makeLoopRecord = (): CanvasRecord => ({
@@ -236,8 +236,8 @@ describe('recording', () => {
     const firstWindowIndex = getCurrentWindowIndex() + 1;
     publish(makeReport('reset', 'unknown', { rasterOperationCount: 2, unknownReason: 'canvas-reset' }), firstWindowIndex);
     publish(makeReport('reset', 'unknown', { rasterOperationCount: 2, unknownReason: 'canvas-reset' }), firstWindowIndex + 1);
-    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'width-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex + 1, timestampMs: 20, source: 'height-setter', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'reset', windowIndex: firstWindowIndex + 1, timestampMs: 20, source: 'height-setter', dimensionChange: 'changed', width: 300, height: 150, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const stopped = stopRecording()!;
     stopped.resetEvents[0].width = 1;
     const finding = stopped.findings.find(item => item.type === 'resize-churn');
@@ -275,9 +275,9 @@ describe('recording', () => {
 
   it('does not carry reset evidence from outside recording or before a same-window start', () => {
     const nextWindowIndex = getCurrentWindowIndex() + 1;
-    emitResetEvent({ canvasId: 'outside', windowIndex: nextWindowIndex, timestampMs: 5, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'outside', windowIndex: nextWindowIndex, timestampMs: 5, source: 'width-setter', dimensionChange: 'unchanged', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     startRecording();
-    emitResetEvent({ canvasId: 'inside', windowIndex: nextWindowIndex, timestampMs: 10, source: 'height-setter', width: 10, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'inside', windowIndex: nextWindowIndex, timestampMs: 10, source: 'height-setter', dimensionChange: 'changed', width: 10, height: 20, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     expect(stopRecording()!.resetEvents.map(event => event.canvasId)).toEqual(['inside']);
   });
 
@@ -306,7 +306,7 @@ describe('recording', () => {
     try {
       const firstWindowIndex = getCurrentWindowIndex() + 1;
       startRecording();
-      for (const source of ['width-setter', 'height-setter'] as const) emitResetEvent({ canvasId: 'partial-reset', windowIndex: firstWindowIndex, timestampMs: 10, source, width: 300, height: 150, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+      for (const source of ['width-setter', 'height-setter'] as const) emitResetEvent({ canvasId: 'partial-reset', windowIndex: firstWindowIndex, timestampMs: 10, source, dimensionChange: 'unchanged', width: 300, height: 150, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
       emitReport(makeReport('partial-reset', 'unknown', { rasterOperationCount: 3, canvasApiSelfTimeMs: 1.25, unknownReason: 'canvas-reset' }), canvas, { windowIndex: firstWindowIndex, timestampMs: 10 });
       const session = stopRecording()!;
       expect(session.windows[0].rasterOperationCount).toBe(0);
@@ -331,7 +331,7 @@ describe('recording', () => {
   it('keeps 10000 reset events in FIFO order and counts the removed event', () => {
     startRecording();
     const windowIndex = getCurrentWindowIndex() + 1;
-    for (let index = 0; index <= 10000; index++) emitResetEvent({ canvasId: 'reset-fifo', windowIndex, timestampMs: index, source: 'width-setter', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    for (let index = 0; index <= 10000; index++) emitResetEvent({ canvasId: 'reset-fifo', windowIndex, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const session = stopRecording()!;
     expect(session.resetEvents).toHaveLength(10000);
     expect(session.resetEvents[0].width).toBe(1);
@@ -355,7 +355,7 @@ describe('recording', () => {
   it('counts reset events removed with an evicted canvas lifetime', () => {
     startRecording();
     const windowIndex = getCurrentWindowIndex() + 1;
-    for (let index = 0; index <= 128; index++) emitResetEvent({ canvasId: `reset-${index}`, windowIndex, timestampMs: index, source: 'width-setter', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    for (let index = 0; index <= 128; index++) emitResetEvent({ canvasId: `reset-${index}`, windowIndex, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const session = stopRecording()!;
     expect(session.resetEvents.map(event => event.canvasId)).not.toContain('reset-0');
     expect(session.droppedEntryCounts).toMatchObject({ canvasLifetimes: 1, resetEvents: 1 });
@@ -379,7 +379,7 @@ describe('recording', () => {
   it('keeps reset-event FIFO replacement within 128 canvas lifetimes', () => {
     startRecording();
     const windowIndex = getCurrentWindowIndex() + 1;
-    const emit = (canvasId: string, timestampMs: number) => emitResetEvent({ canvasId, windowIndex, timestampMs, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    const emit = (canvasId: string, timestampMs: number) => emitResetEvent({ canvasId, windowIndex, timestampMs, source: 'width-setter', dimensionChange: 'unchanged', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     emit('single', 0);
     for (let index = 1; index < 10000; index++) emit(`retained-${index % 127}`, index);
     emit('single', 10000);
@@ -396,8 +396,8 @@ describe('recording', () => {
     try {
       startRecording();
       record.rasterOps = 5;
-      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
-      getResetEvents(record).push({ source: 'height-setter', width: 300, height: 150 });
+      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150, dimensionChange: 'unchanged' });
+      getResetEvents(record).push({ source: 'height-setter', width: 300, height: 150, dimensionChange: 'unchanged' });
       const session = stopRecording()!;
       expect(session.resetEvents).toMatchObject([
         { canvasId: 'pending', rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' },

@@ -160,19 +160,20 @@ describe('processRecord', () => {
     const events: import('../src/types').RecordedResetEvent[] = [];
     setResetEventCollectionEnabled(true);
     try {
-      getResetEvents(record).push({ source: 'width-setter', width: 320, height: 150 });
+      getResetEvents(record).push({ source: 'width-setter', width: 320, height: 150, dimensionChange: 'changed' });
       processRecordWithResetEvents(record, 4, 1, events);
       expect(events).toEqual([{
         canvasId: 'test-canvas', windowIndex: 4, timestampMs: 0,
         source: 'width-setter', width: 320, height: 150,
         rasterOperationCount: 2, activeRasterOverlap: true,
         commandStatus: 'unknown', unknownReason: 'canvas-reset',
+        dimensionChange: 'changed',
       }]);
 
       record.activeInWindow = true;
       record.rasterOps = 0;
       record.resetPendingReason = 'canvas-reset';
-      getResetEvents(record).push({ source: 'height-setter', width: 320, height: 180 });
+      getResetEvents(record).push({ source: 'height-setter', width: 320, height: 180, dimensionChange: 'changed' });
       processRecordWithResetEvents(record, 5, 1, events);
       record.activeInWindow = true;
       record.rasterOps = 3;
@@ -190,7 +191,7 @@ describe('processRecord', () => {
     const events: import('../src/types').RecordedResetEvent[] = [];
     setResetEventCollectionEnabled(true);
     try {
-      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+      getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150, dimensionChange: 'unchanged' });
       expect(processRecordWithResetEvents(record, 3, 2, events)).toBeNull();
       expect(events[0]).toMatchObject({
         windowIndex: 3, activeRasterOverlap: false,
@@ -420,10 +421,19 @@ describe('processRecord', () => {
         'unknownReason',
         'sampled',
         'comparisonGap',
+        'followsCanvasReset',
         'methodEvidence',
       ].sort(),
     );
     expect(processed?.report.sourceLocation).toBeNull();
+  });
+
+  it('tags windows that carry a reset barrier and leaves clean windows untagged', () => {
+    const resetRecord = makeRecord({ resetPendingReason: 'canvas-reset' });
+    expect(processRecord(resetRecord, 1, 1)?.report.followsCanvasReset).toBe(true);
+
+    const cleanRecord = makeRecord();
+    expect(processRecord(cleanRecord, 1, 1)?.report.followsCanvasReset).toBe(false);
   });
 
   it('republishes a source location without mutating the previous report', () => {
@@ -782,6 +792,7 @@ describe('report subscribers', () => {
     unknownReason: null,
     sampled: false,
     comparisonGap: 1,
+    followsCanvasReset: false,
     methodEvidence: {},
   };
 
@@ -925,7 +936,7 @@ describe('published metadata', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     records.add(record);
     setResetEventCollectionEnabled(true);
-    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150, dimensionChange: 'unchanged' });
     try {
       startFrameLoop({});
       callbacks.shift()!(100);
@@ -954,7 +965,7 @@ describe('published metadata', () => {
     let clock = 0; const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     records.add(record);
     startRecording();
-    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150 });
+    getResetEvents(record).push({ source: 'width-setter', width: 300, height: 150, dimensionChange: 'unchanged' });
     try {
       startFrameLoop({});
       clock = 10; callbacks.shift()!(1);

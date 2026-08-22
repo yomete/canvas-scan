@@ -183,8 +183,15 @@ export function processRecord(
     }
     const signatureStatus =
       forcedUnknownReason === null ? computedStatus : 'unknown';
-    const invalidatesBaseline =
-      resetBarrier || forcedUnknownReason === 'canvas-source-reset';
+    // Only a reset source canvas can change output without a new command
+    // stream, so only that still nulls the baseline. A plain reset clears
+    // modeled state, but the next window's signature is self-contained (head
+    // state + hashed commands), so comparing through the preserved baseline is
+    // meaningful: identical redraws are 'same' again and real size changes are
+    // 'changed' (width/height mix into head state). Reset-barrier windows keep
+    // storing no baseline of their own — commands captured before a mid-window
+    // reset must not become one.
+    const invalidatesBaseline = forcedUnknownReason === 'canvas-source-reset';
     const comparisonGap = record.prev
       ? currentWindowIndex - record.prev.windowIndex
       : null;
@@ -216,6 +223,7 @@ export function processRecord(
           : null,
       sampled: captureEvery > 1,
       comparisonGap,
+      followsCanvasReset: resetBarrier,
       methodEvidence: isMethodEvidenceCollectionEnabled()
         ? Object.fromEntries(Object.entries(getMethodEvidence(record)).map(([method, evidence]) => [method, { ...evidence, canvasApiSelfTimeMs: evidence.canvasApiSelfTimeMs === null ? null : Number(evidence.canvasApiSelfTimeMs.toFixed(3)) }]))
         : EMPTY_METHOD_EVIDENCE,
@@ -225,11 +233,13 @@ export function processRecord(
     record.lastStatus = signatureStatus;
     record.prev = invalidatesBaseline
       ? null
-      : {
-          hash: record.sig.hash,
-          unknown: record.sig.unknown,
-          windowIndex: currentWindowIndex,
-        };
+      : resetBarrier
+        ? record.prev
+        : {
+            hash: record.sig.hash,
+            unknown: record.sig.unknown,
+            windowIndex: currentWindowIndex,
+          };
     processed = { report, shouldLog };
     record.resetPendingReason = null;
     record.continuityLost = false;

@@ -185,7 +185,7 @@ describe('sampling contract', () => {
     });
   });
 
-  it('does not compare across an uncaptured same-value reset', () => {
+  it('compares across an uncaptured same-value reset through the preserved baseline', () => {
     const { canvas, context, record } = makeCanvas();
 
     context.fillRect(0, 0, 10, 10);
@@ -208,9 +208,9 @@ describe('sampling contract', () => {
     setWindowCaptured(true);
     context.fillRect(0, 0, 10, 10);
     expect(finish(record, 6)).toMatchObject({
-      signatureStatus: 'unknown',
-      unknownReason: 'first-window',
-      comparisonGap: null,
+      signatureStatus: 'same',
+      unknownReason: null,
+      comparisonGap: 4,
     });
 
     setWindowCaptured(false);

@@ -378,12 +378,12 @@ describe('canvas patch hardening', () => {
     context.reset();
 
     expect(getResetEvents(record)).toEqual([
-      { source: 'width-setter', width: 300, height: 150 },
-      { source: 'height-setter', width: 300, height: 160 },
-      { source: 'width-attribute', width: 320, height: 160 },
-      { source: 'height-attribute', width: 320, height: 150 },
-      { source: 'width-attribute', width: 330, height: 150 },
-      { source: 'context-reset', width: 330, height: 150 },
+      { source: 'width-setter', width: 300, height: 150, dimensionChange: 'unchanged' },
+      { source: 'height-setter', width: 300, height: 160, dimensionChange: 'changed' },
+      { source: 'width-attribute', width: 320, height: 160, dimensionChange: 'changed' },
+      { source: 'height-attribute', width: 320, height: 150, dimensionChange: 'changed' },
+      { source: 'width-attribute', width: 330, height: 150, dimensionChange: 'unavailable' },
+      { source: 'context-reset', width: 330, height: 150, dimensionChange: 'unchanged' },
     ]);
     records.delete(record);
   });
@@ -601,8 +601,8 @@ describe('canvas patch hardening', () => {
 
     context.fillRect(0, 0, 10, 10);
     expect(finish(record, 5)).toMatchObject({
-      signatureStatus: 'unknown',
-      unknownReason: 'first-window',
+      signatureStatus: 'same',
+      unknownReason: null,
     });
 
     context.fillRect(0, 0, 10, 10);
@@ -735,8 +735,8 @@ describe('canvas patch hardening', () => {
 
     context.fillRect(0, 0, 10, 10);
     expect(finish(record, 3)).toMatchObject({
-      signatureStatus: 'unknown',
-      unknownReason: 'first-window',
+      signatureStatus: 'changed',
+      unknownReason: null,
     });
 
     context.fillRect(0, 0, 10, 10);
@@ -756,6 +756,7 @@ describe('canvas patch hardening', () => {
       options: {
         attributes: true,
         attributeFilter: ['width', 'height'],
+        attributeOldValue: true,
       },
     });
   });
@@ -1212,7 +1213,7 @@ describe('canvas patch hardening', () => {
     context.fillRect(1, 2, 3, 4);
     expect(finish(record, 6, 2)).toMatchObject({
       signatureStatus: 'unknown',
-      unknownReason: 'first-window',
+      unknownReason: 'uncaptured-raster',
     });
 
     setWindowCaptured(false);

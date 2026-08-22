@@ -191,7 +191,7 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
       : finding.type === 'repeated-draw-work'
         ? { ...finding, repeatedWindows: finding.repeatedWindows.map(window => ({ ...window })), unknownCoverage: { ...finding.unknownCoverage }, claimBoundary: { ...finding.claimBoundary } }
         : finding.type === 'resize-churn'
-          ? { ...finding, resetEvents: finding.resetEvents.map(event => ({ ...event })), affectedEpisodeIds: [...finding.affectedEpisodeIds], commandStatuses: { ...finding.commandStatuses }, unknownReasons: { ...finding.unknownReasons }, claimBoundary: { ...finding.claimBoundary } }
+          ? { ...finding, resetEvents: finding.resetEvents.map(event => ({ ...event })), dimensionChanges: { ...finding.dimensionChanges }, affectedEpisodeIds: [...finding.affectedEpisodeIds], commandStatuses: { ...finding.commandStatuses }, unknownReasons: { ...finding.unknownReasons }, claimBoundary: { ...finding.claimBoundary } }
           : { ...finding, affectedWindows: finding.affectedWindows.map(window => ({ ...window })), affectedEpisodeIds: [...finding.affectedEpisodeIds], claimBoundary: { ...finding.claimBoundary } }),
     collectionLimits: { ...session.collectionLimits },
     droppedEntryCounts: { ...session.droppedEntryCounts },
@@ -353,7 +353,7 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
   const findings: InvestigationFinding[] = [];
   for (const episode of episodes) for (const canvas of episode.canvases) if (canvas.canvasApiSelfTimeMs >= HEAVY_CANVAS_WORK_THRESHOLD_MS) {
     const maximum = episodeMaximumWindows.get(episode.episodeId)!.get(canvas.canvasId)!;
-    findings.push({ type: 'heavy-canvas-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, rasterOperationCount: canvas.rasterOperationCount, topMethods: topMethods(canvas.methodEvidence), maximumWindow: { windowIndex: maximum.windowIndex, timestampMs: maximum.timestampMs, canvasApiSelfTimeMs: maximum.canvasApiSelfTimeMs, rasterOperationCount: maximum.rasterOperationCount, methodEvidence: copyEvidence(maximum.methodEvidence) }, claimBoundary: { ...HEAVY_CANVAS_WORK_CLAIM }, nextCheck: HEAVY_CANVAS_WORK_NEXT_CHECK });
+    findings.push({ type: 'heavy-canvas-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, rasterOperationCount: canvas.rasterOperationCount, topMethods: topMethods(canvas.methodEvidence), maximumWindow: { windowIndex: maximum.windowIndex, timestampMs: maximum.timestampMs, canvasApiSelfTimeMs: maximum.canvasApiSelfTimeMs, rasterOperationCount: maximum.rasterOperationCount, followsCanvasReset: maximum.followsCanvasReset, methodEvidence: copyEvidence(maximum.methodEvidence) }, gateThresholdMs: HEAVY_CANVAS_WORK_THRESHOLD_MS, gateExcessMs: rounded(canvas.canvasApiSelfTimeMs - HEAVY_CANVAS_WORK_THRESHOLD_MS), claimBoundary: { ...HEAVY_CANVAS_WORK_CLAIM }, nextCheck: HEAVY_CANVAS_WORK_NEXT_CHECK });
   }
   for (const episode of episodes) {
     const reports = windows.filter(window => window.windowIndex >= episode.firstWindowIndex && window.windowIndex <= episode.lastWindowIndex);
@@ -363,7 +363,18 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
         .filter(window => window.signatureStatus === 'same' && window.rasterOperationCount >= minRepeatedRasterOps)
         .map(({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }) => ({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }));
       if (repeatedWindows.length === 0) continue;
-      findings.push({ type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, repeatedWindowCount: repeatedWindows.length, rasterOperationCount: repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(repeatedWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), repeatedWindows, unknownCoverage: { unknownWindowCount: canvasReports.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: canvasReports.length }, claimBoundary: { ...REPEATED_DRAW_WORK_CLAIM }, nextCheck: REPEATED_DRAW_WORK_NEXT_CHECK });
+      // Labeling only: adjacent repeated windows that drew identical command
+      // streams AND recorded identical work are the structural stand-in for
+      // StrictMode-style double invocation. Nothing is suppressed.
+      let strictModeStyleDuplicates = 0;
+      for (let index = 1; index < repeatedWindows.length; index++) {
+        if (
+          repeatedWindows[index].windowIndex - repeatedWindows[index - 1].windowIndex === 1 &&
+          repeatedWindows[index].rasterOperationCount === repeatedWindows[index - 1].rasterOperationCount &&
+          repeatedWindows[index].canvasApiSelfTimeMs === repeatedWindows[index - 1].canvasApiSelfTimeMs
+        ) strictModeStyleDuplicates++;
+      }
+      findings.push({ type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, repeatedWindowCount: repeatedWindows.length, rasterOperationCount: repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(repeatedWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), repeatedWindows, strictModeStyleDuplicates, unknownCoverage: { unknownWindowCount: canvasReports.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: canvasReports.length }, claimBoundary: { ...REPEATED_DRAW_WORK_CLAIM }, nextCheck: REPEATED_DRAW_WORK_NEXT_CHECK });
     }
   }
   for (const canvasId of [...new Set(resetEvents.map(event => event.canvasId))]) {
@@ -389,7 +400,9 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
     const commandStatuses = { same: 0, changed: 0, unknown: 0 };
     const unknownReasons: Record<string, number> = {};
     for (const window of qualifyingWindows) { commandStatuses[window.signatureStatus]++; if (window.unknownReason) unknownReasons[window.unknownReason] = (unknownReasons[window.unknownReason] ?? 0) + 1; }
-    const finding: ResizeChurnFinding = { type: 'resize-churn', evidenceLevel: 'candidate', canvasId, observedResetCount: observed.length, activeResetCount: qualifying.length, resetEvents: qualifying.map(({ source, width, height, windowIndex, timestampMs }) => ({ source, width, height, windowIndex, timestampMs })), affectedEpisodeIds, commandStatuses, unknownReasons, canvasApiSelfTimeMs: rounded(qualifyingWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), rasterOperationCount: qualifyingWindows.reduce((total, window) => total + window.rasterOperationCount, 0), claimBoundary: { ...RESIZE_CHURN_CLAIM }, nextCheck: RESIZE_CHURN_NEXT_CHECK };
+    const dimensionChanges = { changed: 0, unchanged: 0, unavailable: 0 };
+    for (const event of qualifying) dimensionChanges[event.dimensionChange]++;
+    const finding: ResizeChurnFinding = { type: 'resize-churn', evidenceLevel: 'candidate', canvasId, observedResetCount: observed.length, activeResetCount: qualifying.length, resetEvents: qualifying.map(({ source, width, height, windowIndex, timestampMs }) => ({ source, width, height, windowIndex, timestampMs })), dimensionChanges, affectedEpisodeIds, commandStatuses, unknownReasons, canvasApiSelfTimeMs: rounded(qualifyingWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), rasterOperationCount: qualifyingWindows.reduce((total, window) => total + window.rasterOperationCount, 0), claimBoundary: { ...RESIZE_CHURN_CLAIM }, nextCheck: RESIZE_CHURN_NEXT_CHECK };
     findings.push(finding);
   }
   for (const canvasId of [...new Set(windows.map(window => window.canvasId))]) {

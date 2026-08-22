@@ -15,6 +15,7 @@ import type {
   CanvasMethodEvidence,
   CanvasLifecycleEventType,
   CanvasResetSource,
+  ResetDimensionChange,
   SignatureStatus,
 } from './types';
 import type { WindowSignature } from './signature';
@@ -197,7 +198,7 @@ type SelectedCommandSubscription = {
 };
 let selectedCommandSubscription: SelectedCommandSubscription | null = null;
 let methodEvidenceByRecord: Map<CanvasRecord, Record<string, CanvasMethodEvidence>> | null = null;
-type PendingResetEvent = { source: CanvasResetSource; width: number | null; height: number | null };
+type PendingResetEvent = { source: CanvasResetSource; width: number | null; height: number | null; dimensionChange: ResetDimensionChange };
 let resetEventsByRecord: Map<CanvasRecord, PendingResetEvent[]> | null = null;
 // Captured at install time: instance-level shadowing of getLineDash must
 // never be invoked by the tracer (a Chrome probe showed a shadowed getter
@@ -298,7 +299,25 @@ function markRecordActive(record: CanvasRecord): void {
   }
 }
 
-function recordResetEvent(record: CanvasRecord, source: CanvasResetSource): void {
+function readNativeDimension(record: CanvasRecord, name: 'width' | 'height'): number | null {
+  try {
+    const value = (name === 'width' ? nativeCanvasWidthGetter : nativeCanvasHeightGetter)?.call(record.canvas);
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// context-reset never alters element dimensions, so it is definitionally
+// 'unchanged' without a read; every other source needs both the pre-mutation
+// and post-mutation value of its own dimension or the answer is 'unavailable'.
+function classifyDimensionChange(source: CanvasResetSource, previousValue: number | null, nextWidth: number | null, nextHeight: number | null): ResetDimensionChange {
+  if (source === 'context-reset') return 'unchanged';
+  const nextValue = source === 'width-setter' || source === 'width-attribute' ? nextWidth : nextHeight;
+  return previousValue === null || nextValue === null ? 'unavailable' : previousValue === nextValue ? 'unchanged' : 'changed';
+}
+
+function recordResetEvent(record: CanvasRecord, source: CanvasResetSource, previousDimensionValue: number | null): void {
   if (!resetEventsByRecord) return;
   let width: number | null = null;
   let height: number | null = null;
@@ -310,7 +329,7 @@ function recordResetEvent(record: CanvasRecord, source: CanvasResetSource): void
     const nextHeight = nativeCanvasHeightGetter?.call(record.canvas);
     height = typeof nextHeight === 'number' ? nextHeight : null;
   } catch {}
-  getResetEvents(record).push({ source, width, height });
+  getResetEvents(record).push({ source, width, height, dimensionChange: classifyDimensionChange(source, previousDimensionValue, width, height) });
 }
 
 export function getMethodEvidence(record: CanvasRecord): Record<string, CanvasMethodEvidence> {
@@ -421,6 +440,7 @@ function recordExactReset(
   reason: ResetReason,
   reentrantActivity: boolean,
   source: CanvasResetSource,
+  previousDimensionValue: number | null,
 ): void {
   record.exactResetDepth--;
   record.contentVersion++;
@@ -432,7 +452,7 @@ function recordExactReset(
   record.resetPendingReason ??= reason;
   markRecordActive(record);
   record.contextActivityInWindow = record.exactResetDepth > 0 && reentrantActivity;
-  recordResetEvent(record, source);
+  recordResetEvent(record, source, previousDimensionValue);
 }
 
 function beginExactReset(record: CanvasRecord): boolean {
@@ -450,7 +470,7 @@ function restoreActivityAfterFailedReset(
   record.contextActivityInWindow ||= previousActivity;
 }
 
-function recordLateAttributeReset(record: CanvasRecord, source: CanvasResetSource): void {
+function recordLateAttributeReset(record: CanvasRecord, source: CanvasResetSource, previousDimensionValue: number | null): void {
   const activityMayHaveOverlapped = record.contextActivityInWindow === true;
   record.contentVersion++;
   record.resetVersion++;
@@ -464,7 +484,7 @@ function recordLateAttributeReset(record: CanvasRecord, source: CanvasResetSourc
   record.resetPendingReason ??= 'canvas-attribute-reset';
   reactivateRecord(record);
   markRecordActive(record);
-  recordResetEvent(record, source);
+  recordResetEvent(record, source, previousDimensionValue);
 }
 
 function setProp(
@@ -818,10 +838,10 @@ export function isTrackedCanvas(value: unknown): boolean {
   return typeof value === 'object' && value !== null && recordByCanvas.has(value);
 }
 
-export function markAttributeReset(canvas: unknown, source: CanvasResetSource): void {
+export function markAttributeReset(canvas: unknown, source: CanvasResetSource, previousDimensionValue: number | null): void {
   const record = recordByCanvas.get(canvas as object);
   if (!record) return;
-  recordLateAttributeReset(record, source);
+  recordLateAttributeReset(record, source, previousDimensionValue);
 }
 
 function isDimensionalAttributeRecord(
@@ -853,7 +873,10 @@ function applyAttributeRecords(
   }
   for (const [index, entry] of entries.entries()) {
     if (index !== suppressedIndex && isDimensionalAttributeRecord(entry)) {
-      markAttributeReset(entry.target, entry.attributeName === 'width' ? 'width-attribute' : 'height-attribute');
+      // MutationRecord.oldValue is null unless the observer asked for it, so a
+      // missing or non-numeric value classifies as 'unavailable' — never guess.
+      const previousValue = entry.oldValue !== null && Number.isFinite(Number(entry.oldValue)) ? Number(entry.oldValue) : null;
+      markAttributeReset(entry.target, entry.attributeName === 'width' ? 'width-attribute' : 'height-attribute', previousValue);
     }
   }
 }
@@ -1005,6 +1028,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           observeAttributes(this, {
             attributes: true,
             attributeFilter: ['width', 'height'],
+            attributeOldValue: true,
           });
           record.attributeObservationUnavailable =
             takeAttributeRecords === null;
@@ -1046,6 +1070,10 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const record = recordByCanvas.get(this);
       const attribute = raw.toLowerCase();
       const dimensional = attribute === 'width' || attribute === 'height';
+      const previousDimension =
+        record && !killed && dimensional
+          ? readNativeDimension(record, attribute === 'width' ? 'width' : 'height')
+          : null;
       const previousActivity =
         record && !killed && dimensional
           ? beginExactReset(record)
@@ -1068,6 +1096,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'canvas-reset',
           record.contextActivityInWindow,
           attribute === 'width' ? 'width-attribute' : 'height-attribute',
+          previousDimension,
         );
       }
       return result;
@@ -1104,6 +1133,12 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         record && !killed && dimensional && wasPresent
           ? beginExactReset(record)
           : null;
+      // Removal restores the browser defaults (300×150), so the pre-mutation
+      // value decides between 'unchanged' and 'changed'.
+      const previousDimension =
+        record && !killed && dimensional && wasPresent
+          ? readNativeDimension(record, attribute === 'width' ? 'width' : 'height')
+          : null;
       let result;
       try {
         result = originalRemoveAttribute.call(this, raw, ...args);
@@ -1122,13 +1157,14 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'canvas-reset',
           record.contextActivityInWindow,
           attribute === 'width' ? 'width-attribute' : 'height-attribute',
+          previousDimension,
         );
       }
       return result;
     };
   }
 
-  for (const name of ['width', 'height']) {
+  for (const name of ['width', 'height'] as const) {
     const descriptor =
       name === 'width' ? widthDescriptor : heightDescriptor;
     if (!descriptor?.get || !descriptor.set) continue;
@@ -1138,6 +1174,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       ...descriptor,
       set(this: any, value: unknown) {
         const record = recordByCanvas.get(this);
+        // Read the assigned dimension through the native getter before the
+        // mutation so a same-value assignment can be told from a real resize.
+        const previousDimension = record && !killed ? readNativeDimension(record, name) : null;
         const previousActivity =
           record && !killed
             ? beginExactReset(record)
@@ -1158,6 +1197,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'canvas-reset',
           record.contextActivityInWindow,
           name === 'width' ? 'width-setter' : 'height-setter',
+          previousDimension,
         );
       },
     });
@@ -1220,6 +1260,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           'canvas-reset',
           record.contextActivityInWindow,
           'context-reset',
+          null,
         );
       } else {
         if (record.activeInWindow) record.contextActivityInWindow = true;

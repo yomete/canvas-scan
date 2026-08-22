@@ -126,7 +126,7 @@ describe('canvas context wrapping', () => {
     expect(getResetEvents(record)).toEqual([]);
     setResetEventCollectionEnabled(true);
     context.reset();
-    expect(getResetEvents(record)).toEqual([{ source: 'context-reset', width: 300, height: 150 }]);
+    expect(getResetEvents(record)).toEqual([{ source: 'context-reset', width: 300, height: 150, dimensionChange: 'unchanged' }]);
     setResetEventCollectionEnabled(false);
   });
   it('preserves context identity and registers the canvas once', () => {

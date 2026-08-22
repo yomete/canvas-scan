@@ -269,10 +269,9 @@ button { font: inherit; }
 .comparison-copy:focus-visible,
 .canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
-.finding-line, .session-line, .raw-evidence { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
+.finding-line, .session-line { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
 .session-owner { color: #fff; }
 .session-identifier { color: rgba(255, 255, 255, 0.48); }
-.raw-evidence { color: rgba(255, 255, 255, 0.48); font-size: 10px; line-height: 14px; }
 .finding-actions { display: flex; gap: 4px; margin-top: 5px; }
 .finding-toggle, .current-action, .session-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
 .explanation-action, .explanation-copy { border: 1px solid rgba(255,255,255,.16); border-radius: 4px; background: transparent; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
@@ -926,11 +925,15 @@ function appendLine(card: HTMLElement, label: string, text: string): void {
 function findingMeasurements(finding: InvestigationFinding): string[] {
   if (finding.type === 'heavy-canvas-work') return [
     `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`,
-    `Maximum frame: ${finding.maximumWindow.canvasApiSelfTimeMs} ms, ${finding.maximumWindow.rasterOperationCount} raster operations`,
+    `Maximum frame: ${finding.maximumWindow.canvasApiSelfTimeMs} ms, ${finding.maximumWindow.rasterOperationCount} raster operations${finding.maximumWindow.followsCanvasReset ? ', after canvas reset' : ''}`,
     `Top methods: ${finding.topMethods.map(method => `${method.method} ${method.count} ${method.canvasApiSelfTimeMs ?? 'unknown'} ms`).join(', ')}`,
+    `Gate distance: ${finding.gateExcessMs} ms above the ${finding.gateThresholdMs} ms threshold`,
   ];
-  if (finding.type === 'repeated-draw-work') return [`${finding.repeatedWindowCount} repeated frames`, `Repeated raster operations: ${finding.rasterOperationCount}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`];
-  if (finding.type === 'resize-churn') return [`${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`, `Resets: ${finding.resetEvents.map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ')}`, `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`, `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`, `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
+  if (finding.type === 'repeated-draw-work') return [`${finding.repeatedWindowCount} repeated frames`, `Repeated raster operations: ${finding.rasterOperationCount}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`, `StrictMode-style consecutive duplicates: ${finding.strictModeStyleDuplicates}`];
+  if (finding.type === 'resize-churn') {
+    const resets = finding.resetEvents.slice(0, 3).map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ');
+    return [`${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`, `Resets: ${finding.resetEvents.length > 3 ? `${resets}, +${finding.resetEvents.length - 3} more` : resets}`, `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`, `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`, `Dimension changes: changed ${finding.dimensionChanges.changed}, unchanged ${finding.dimensionChanges.unchanged}, unavailable ${finding.dimensionChanges.unavailable}`, `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
+  }
   return [`${finding.affectedWindowCount} affected frames`, ...finding.affectedWindows.map(window => `Actual ${window.backingWidth}×${window.backingHeight}; expected ${window.expectedBackingWidth}×${window.expectedBackingHeight}; area ratio ${window.actualToExpectedAreaRatio}`), `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
 }
 
@@ -1210,21 +1213,21 @@ function createFinding(
   control.textContent = `${index + 1}  ${findingLabel(finding.type)} · Review candidate — inspect evidence`;
   card.append(control);
 
-  const owner = session.canvases.find(canvas => canvas.canvasId === finding.canvasId)?.nearestReactOwner;
-  appendLine(card, '', `Owner: ${owner ?? 'Not attributed'}`);
   const identifiers = document.createElement('div');
   identifiers.className = 'finding-line session-identifier';
-  identifiers.textContent = `Canvas ID: ${finding.canvasId} · Episode ID: ${episodes.join(', ') || 'none'}`;
+  identifiers.textContent = `Episode ID: ${episodes.join(', ') || 'none'}`;
   card.append(identifiers);
 
   const evidence = document.createElement('div');
   evidence.className = 'finding-evidence';
   evidence.id = `${id}-evidence`;
-  for (const association of session.episodeAssociations.filter(item => episodes.includes(item.episodeId))) {
+  const associations = session.episodeAssociations.filter(item => episodes.includes(item.episodeId));
+  for (const association of associations.slice(0, 3)) {
     const entry = session.browserEntries.find(item => item.entryId === association.entryId);
     const label = entry?.kind === 'user-mark' ? ` ${entry.label}` : '';
     appendLine(evidence, '', `${entry?.kind ?? association.entryKind}${label} associated with Episode ${association.episodeId} · overlapped ${association.startedAtTimestampMs.toFixed(1)}–${association.endedAtTimestampMs.toFixed(1)} ms`);
   }
+  if (associations.length > 3) appendLine(evidence, '', `+${associations.length - 3} more associations`);
 
   appendLine(evidence, 'Observed', finding.claimBoundary.observation);
   for (const line of findingMeasurements(finding)) appendLine(evidence, '', line);
@@ -1282,11 +1285,6 @@ function createFinding(
   status.setAttribute('aria-live', 'polite');
   evidence.append(status);
 
-  const raw = document.createElement('div');
-  raw.className = 'raw-evidence';
-  const reasons = Object.entries(unknown.reasons).map(([reason, count]) => `${reason}:${count}`).join(',');
-  raw.textContent = `type=${finding.type} evidenceLevel=${finding.evidenceLevel} canvasId=${finding.canvasId} episodeIds=${episodes.join(',')} activeWindowCount=${unknown.active} unknownWindowCount=${unknown.unknown} unknownReasons=${reasons || 'none'}`;
-  evidence.append(raw);
   card.append(evidence);
   findingNodes.set(key, card);
   return card;
@@ -1340,24 +1338,25 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   if (session.findings.length && expandedFindingId === null) expandedFindingId = findingKey(session.findings[0]);
   const root = document.createElement('div');
   root.className = 'completed-session';
-  const scope = document.createElement('div');
-  scope.className = 'session-heading session-section';
-  scope.textContent = 'SAVED RECORDING';
-  root.append(scope);
   const header = document.createElement('div');
   header.className = 'session-section session-header';
   const heading = document.createElement('div');
   heading.className = 'session-heading';
-  heading.textContent = 'Recording complete';
+  heading.textContent = 'SAVED RECORDING';
   const copy = document.createElement('button');
   copy.className = 'session-copy';
   copy.type = 'button';
   copy.dataset.action = 'copy-session';
   copy.textContent = 'Copy session JSON';
+  const download = document.createElement('button');
+  download.className = 'session-copy';
+  download.type = 'button';
+  download.dataset.action = 'download-session';
+  download.textContent = 'Download session JSON';
   const copyStatus = document.createElement('div');
   copyStatus.className = 'session-copy-status';
   copyStatus.setAttribute('aria-live', 'polite');
-  header.append(heading, copy, copyStatus);
+  header.append(heading, copy, download, copyStatus);
   root.append(header);
 
   const coverage = document.createElement('div');
@@ -1413,7 +1412,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   findingsHeading.className = 'session-heading';
   findingsHeading.textContent = 'FINDINGS';
   findings.append(findingsHeading);
-  appendLine(findings, '', 'A review candidate is a place to inspect. It is not a confirmed problem.');
+  if (session.findings.length > 0) appendLine(findings, '', 'A review candidate is a place to inspect. It is not a confirmed problem.');
   if (session.findings.length === 0) appendLine(findings, '', 'No review candidates met the finding thresholds in this recording.');
   for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
   root.append(findings);
@@ -1878,6 +1877,19 @@ function handleFlyoutClick(event: MouseEvent): void {
       if (!navigator.clipboard?.writeText) copied('Copy failed');
       else void navigator.clipboard.writeText(JSON.stringify(shownSession)).then(() => copied('Session JSON copied')).catch(() => copied('Copy failed'));
     } catch { copied('Copy failed'); }
+    return;
+  }
+  if (action?.dataset.action === 'download-session' && shownSession) {
+    const blob = new Blob([JSON.stringify(shownSession)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${shownSession.sessionId}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    copySessionStatus = 'Session JSON downloaded';
+    flyoutRevision++;
+    markDirty();
     return;
   }
   if (action?.dataset.action === 'inspect-current' && action.dataset.canvasId) { flyoutInvoker = action; openPopover(action.dataset.canvasId); return; }

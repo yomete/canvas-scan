@@ -57,6 +57,7 @@ function makeReport(
     unknownReason: null,
     sampled: false,
     comparisonGap: 1,
+    followsCanvasReset: false,
     methodEvidence: {},
     ...overrides,
   };
@@ -418,17 +419,18 @@ describe('overlay flyout', () => {
     emitReport(makeReport({ canvasId: 'heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), heavy, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'repeated', canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), repeated, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 1, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 2, timestampMs: 20 });
-    emitResetEvent({ canvasId: 'resize', windowIndex: 2, timestampMs: 20, source: 'height-setter', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 2 }), backing, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 3 }), backing, { windowIndex: 2, timestampMs: 20 });
     const session = stopRecording()!;
     refreshOverlay();
     const root = getShadowRoot();
-    const rawTypes = [...root.querySelectorAll<HTMLElement>('.finding-card .raw-evidence')].map(node => node.textContent?.match(/type=([^ ]+)/)?.[1]);
+    const rawTypes = [...root.querySelectorAll<HTMLElement>('.finding-card')].map(node => node.dataset.findingId?.split(':')[0]);
     expect(new Set(rawTypes)).toEqual(new Set(['heavy-canvas-work', 'repeated-draw-work', 'resize-churn', 'backing-store-mismatch']));
     expect(rawTypes).toEqual(session.findings.map(finding => finding.type));
+    expect(root.querySelectorAll('.raw-evidence')).toHaveLength(0);
     expect(root.querySelector('.canvas-summaries')?.textContent).toContain('Canvas2D API self-time');
     expect(root.querySelector('.candidate-count')?.textContent).toBe(`${session.findings.length} review candidates`);
   });
@@ -656,8 +658,8 @@ describe('overlay flyout', () => {
     const canvas = makeCanvas();
     startRecording();
     emitReport(makeReport({ canvasId: 'resize-seeded', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3, canvasApiSelfTimeMs: 2 }), canvas, { windowIndex: 101, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 102, timestampMs: 20, source: 'context-reset', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 102, timestampMs: 20, source: 'context-reset', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();
@@ -717,9 +719,9 @@ describe('overlay flyout', () => {
     const canvas = makeCanvas(false);
     startRecording();
     emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 101, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source: 'width-setter', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 102, timestampMs: 20 });
-    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 102, timestampMs: 20, source: 'height-setter', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 102, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();
@@ -745,7 +747,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = [...root.querySelectorAll<HTMLElement>('.repeated-finding[data-canvas-id="seeded"]')]
-      .find(candidate => candidate.textContent?.includes('type=repeated-draw-work'))!;
+      .find(candidate => candidate.dataset.findingId?.startsWith('repeated-draw-work'))!;
     expect(card.textContent).toContain('Repeated draw commands');
     expect(card.textContent).toContain('Review candidate');
     expect(card.textContent).toContain('2 repeated frames');
@@ -1794,7 +1796,7 @@ describe('overlay session comparison', () => {
 
   function recordIncompleteFinding(canvasId: string): void {
     startRecording();
-    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
     const canvas = makeCanvas();
     canvas.width = 100; canvas.height = 50;
     emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 1, timestampMs: 10 });
@@ -2375,5 +2377,165 @@ describe('overlay outline compatibility and cleanup', () => {
       'keydown',
       expect.any(Function),
     );
+  });
+});
+
+describe('overlay saved-session trims and export', () => {
+  function openCompletedFlyout(): ShadowRoot {
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    return root;
+  }
+
+  it('marks heavy maximum frames that absorb deferred reallocation after a canvas reset', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'flagged-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3, followsCanvasReset: true }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'clean-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(false), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="flagged-heavy"]')?.textContent).toContain(', after canvas reset');
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="clean-heavy"]')?.textContent).not.toContain('after canvas reset');
+  });
+
+  it('reports the numeric distance above the heavy-work gate', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'gated', canvasApiSelfTimeMs: 8.8, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="gated"]')?.textContent).toContain('Gate distance: 0.8 ms above the 8 ms threshold');
+  });
+
+  it('labels StrictMode-style consecutive duplicate frames on the card', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    canvas.width = 100; canvas.height = 50;
+    startRecording();
+    for (const windowIndex of [1, 2, 3]) {
+      emitReport(makeReport({ canvasId: 'strict-duplicates', rasterOperationCount: 2 }), canvas, { windowIndex, timestampMs: windowIndex * 10 });
+    }
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="strict-duplicates"]')?.textContent).toContain('StrictMode-style consecutive duplicates: 2');
+  });
+
+  it('downloads the session JSON under a deterministic filename', () => {
+    const createObjectURL = vi.fn(() => 'blob:mock');
+    const revokeObjectURL = vi.fn();
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    window.URL.createObjectURL = createObjectURL as typeof URL.createObjectURL;
+    window.URL.revokeObjectURL = revokeObjectURL as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      mountOverlay();
+      startRecording();
+      emitReport(makeReport({ canvasId: 'downloadable' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+      stopRecording(); refreshOverlay();
+      const root = getShadowRoot();
+      const sessionId = getLastSession()!.sessionId;
+      root.querySelector<HTMLButtonElement>('[data-action="download-session"]')!.click();
+      refreshOverlay();
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      const anchor = clickSpy.mock.contexts[0] as HTMLAnchorElement;
+      expect(anchor.download).toBe(`${sessionId}.json`);
+      expect(anchor.href).toBe('blob:mock');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock');
+      expect(root.querySelector('.session-copy-status')?.textContent).toBe('Session JSON downloaded');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      clickSpy.mockRestore();
+    }
+  });
+
+  it('keeps one merged header and the download control in the session header structure', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'header-download' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    const completedText = root.querySelector<HTMLElement>('.completed-session')!.textContent!;
+    expect(completedText).toContain('SAVED RECORDING');
+    expect(completedText.match(/SAVED RECORDING/g)).toHaveLength(1);
+    expect(completedText).not.toContain('Recording complete');
+    const header = root.querySelector<HTMLElement>('.session-header')!;
+    const download = header.querySelector<HTMLButtonElement>('[data-action="download-session"]')!;
+    expect(download.type).toBe('button');
+    expect(download.textContent).toBe('Download session JSON');
+    expect(download.dataset.action).toBe('download-session');
+    const children = [...header.children];
+    expect(children.indexOf(header.querySelector<HTMLElement>('[data-action="copy-session"]')!)).toBeLessThan(children.indexOf(download));
+    expect(children.indexOf(download)).toBeLessThan(children.indexOf(header.querySelector<HTMLElement>('.session-copy-status')!));
+  });
+
+  it('shows the finding disclaimer only when findings exist', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'with-finding' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    let text = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.textContent!;
+    expect(text).toContain('A review candidate is a place to inspect.');
+    startRecording();
+    stopRecording(); refreshOverlay();
+    text = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.textContent!;
+    expect(text).not.toContain('A review candidate is a place to inspect.');
+    expect(text.match(/No review candidates met the finding thresholds/g)).toHaveLength(1);
+  });
+
+  it('shows Owner and Canvas ID once per view section', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'dedupe-owner', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    const card = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="dedupe-owner"]')!;
+    card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
+    refreshOverlay();
+    expect(card.textContent).not.toContain('Owner:');
+    expect(card.textContent).not.toContain('Canvas ID:');
+    expect(card.textContent).toContain('Episode ID:');
+    const summariesText = root.querySelector<HTMLElement>('.canvas-summaries')!.textContent!;
+    expect(summariesText.match(/Owner: EffectCanvas/g)).toHaveLength(1);
+    expect(summariesText).toContain('Canvas ID: dedupe-owner');
+  });
+
+  it('caps the reset-event list at three events plus a remaining count', () => {
+    vi.stubGlobal('devicePixelRatio', 4);
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    for (const windowIndex of [101, 102] as const) {
+      emitReport(makeReport({ canvasId: 'capped-resets', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3 }), canvas, { windowIndex, timestampMs: windowIndex });
+    }
+    const sources = ['width-setter', 'height-setter', 'context-reset', 'width-setter', 'height-setter'] as const;
+    sources.forEach((source, index) => emitResetEvent({ canvasId: 'capped-resets', windowIndex: index < 3 ? 101 : 102, timestampMs: (index + 1) * 10, source, dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' }));
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    const text = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="capped-resets"]')!.textContent!;
+    expect(text).toContain('Resets: width-setter (240×120), height-setter (240×120), context-reset (240×120), +2 more');
+    expect(text.match(/height-setter \(240×120\)/g)).toHaveLength(1);
+  });
+
+  it('caps association lines with a remaining count', () => {
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    mountOverlay();
+    const canvas = makeCanvas();
+    startRecording();
+    clock = 20; mark(' mark one ');
+    clock = 21; mark(' mark two ');
+    clock = 22; mark(' mark three ');
+    clock = 23; mark(' mark four ');
+    emitReport(makeReport({ canvasId: 'association-cap' }), canvas, { windowIndex: 1, timestampMs: 20, startedAtTimestampMs: 10, endedAtTimestampMs: 30 });
+    emitReport(makeReport({ canvasId: 'association-cap' }), canvas, { windowIndex: 2, timestampMs: 25, startedAtTimestampMs: 20, endedAtTimestampMs: 30 });
+    clock = 40;
+    stopRecording(); refreshOverlay();
+    const root = openCompletedFlyout();
+    const text = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="association-cap"]')!.textContent!;
+    expect(text.match(/associated with/g)).toHaveLength(3);
+    expect(text).toContain('+1 more associations');
   });
 });
