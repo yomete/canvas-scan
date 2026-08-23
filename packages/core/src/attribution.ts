@@ -3,7 +3,7 @@ import {
   getFiberFromHostInstance,
   isCompositeFiber,
 } from 'bippy';
-import type { AttributionKind } from './types';
+import type { AttributionKind } from './types.js';
 
 type FiberNode = NonNullable<ReturnType<typeof getFiberFromHostInstance>>;
 

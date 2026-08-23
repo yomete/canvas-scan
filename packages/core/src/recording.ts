@@ -1,10 +1,10 @@
-import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop';
-import { drainAttributeRecords, getConnectionState, getRecord, isKilled, reactivateRecord, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context';
-import { collectCanvasGeometry } from './geometry';
-import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence';
-import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture';
-import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, shouldCaptureFirstDifference, shouldCaptureFirstRaster } from './draw-callsite';
-import { subscribeToSelectedCommands } from './wrap-context';
+import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop.js';
+import { drainAttributeRecords, getConnectionState, getRecord, isKilled, reactivateRecord, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context.js';
+import { collectCanvasGeometry } from './geometry.js';
+import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence.js';
+import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture.js';
+import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, shouldCaptureFirstDifference, shouldCaptureFirstRaster } from './draw-callsite.js';
+import { subscribeToSelectedCommands } from './wrap-context.js';
 import type {
   CanvasMethodEvidence,
   CanvasScanOptions,
@@ -30,7 +30,7 @@ import type {
   ExplanationStartResult,
   ExplanationLimitResult,
   ExplanationCallsiteCoverage,
-} from './types';
+} from './types.js';
 
 const MAX_DURATION_MS = 30000;
 const EXPLANATION_MAX_DURATION_MS = 10000;
@@ -477,7 +477,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
-    stopReason, canvasScanVersion: '0.5.0', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    stopReason, canvasScanVersion: '0.6.1', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },

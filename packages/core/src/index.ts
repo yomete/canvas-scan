@@ -1,20 +1,20 @@
 import { safelyInstallRDTHook } from 'bippy';
-import { addSkippedOwners } from './attribution';
+import { addSkippedOwners } from './attribution.js';
 import {
   copyReport,
   getHistory,
   latestReports,
   startFrameLoop,
-} from './frame-loop';
-import { mountOverlay } from './overlay';
-import { compareSessions } from './comparison';
-import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';
+} from './frame-loop.js';
+import { mountOverlay } from './overlay.js';
+import { compareSessions } from './comparison.js';
+import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording.js';
 import type {
   CanvasScanOptions,
   DrawBatchReport,
-} from './types';
-import { installCanvasPatch } from './wrap-context';
-import { installPath2DPatch } from './wrap-path2d';
+} from './types.js';
+import { installCanvasPatch } from './wrap-context.js';
+import { installPath2DPatch } from './wrap-path2d.js';
 
 let started = false;
 
@@ -36,7 +36,7 @@ export function start(options: CanvasScanOptions = {}): void {
   startFrameLoop(options);
   if (options.overlay !== false) mountOverlay(options);
   (window as any).__CANVAS_SCAN__ = {
-    version: '0.5.0',
+    version: '0.6.1',
     getHistory,
     getReports,
     startRecording,
@@ -106,7 +106,7 @@ export type {
   ComparisonMeasure,
   ComparisonFindingRef,
   ComparisonArtifactV1,
-} from './types';
+} from './types.js';
 
-export { getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording';
-export { compareSessions } from './comparison';
+export { getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording.js';
+export { compareSessions } from './comparison.js';

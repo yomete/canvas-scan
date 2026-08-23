@@ -1,4 +1,4 @@
-import type { RecordedBrowserEvidenceEntry, RecordedLongAnimationFrameScript } from './types';
+import type { RecordedBrowserEvidenceEntry, RecordedLongAnimationFrameScript } from './types.js';
 
 const MAX_ENTRIES = 2000;
 const MAX_SCRIPTS = 20;

@@ -21,6 +21,7 @@ const checks = {};
 let server;
 let browser;
 let browserVersion = null;
+let installedVersion = null;
 let continuous = null;
 let burst = null;
 
@@ -73,7 +74,9 @@ try {
   await page.goto(baseUrl, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__MANUAL_RELEASE__ && window.__CANVAS_SCAN__);
   const identity = await page.evaluate(() => ({ version: window.__CANVAS_SCAN__.version, earlyLoad: window.__MANUAL_RELEASE__.earlyLoad }));
-  check('runtimeVersion', identity.version === '0.4.0');
+  const installedManifest = JSON.parse(await readFile(path.join(fixture, 'node_modules/canvas-scan/package.json'), 'utf8'));
+  installedVersion = installedManifest.version;
+  check('runtimeVersion', identity.version === installedVersion);
   check('earlyLoad', identity.earlyLoad === true);
   continuous = await page.evaluate(() => window.__MANUAL_RELEASE__.recordContinuous());
   burst = await page.evaluate(() => window.__MANUAL_RELEASE__.recordBurst());
@@ -99,7 +102,7 @@ const result = {
   startedFromExactTarball: true,
   gitSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
   expectedGitSha,
-  packageVersion: '0.4.0',
+  packageVersion: installedVersion,
   tarballSha256: expectedTarballSha256,
   iifeSha256: expectedIifeSha256,
   browserVersion,

@@ -230,7 +230,20 @@ describe('canvas-scan init CLI', () => {
   });
 
   it('reads the package version', () => {
-    expect(readVersion()).toBe('0.5.0');
+    const pkg = JSON.parse(
+      fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    );
+    expect(readVersion()).toBe(pkg.version);
+  });
+
+  it('runtime sources carry the package version', () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    );
+    const indexSource = fs.readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const recordingSource = fs.readFileSync(new URL('../src/recording.ts', import.meta.url), 'utf8');
+    expect(indexSource).toContain(`version: '${pkg.version}'`);
+    expect(recordingSource).toContain(`canvasScanVersion: '${pkg.version}'`);
   });
 
   it('plans the npm install command when canvas-scan is missing', () => {

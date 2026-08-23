@@ -1,6 +1,6 @@
 {
   "name": "canvas-scan",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Drop-in Canvas2D investigation for observable main-thread canvas work.",
   "type": "module",
   "license": "MIT",

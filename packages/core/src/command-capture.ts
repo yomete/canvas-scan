@@ -1,6 +1,6 @@
-import { getBuildKind, getBuildSignature } from './build-registry';
-import { isTrackedCanvas } from './wrap-context';
-import type { CommandDifference, ExplanationCommandWindow, ExplanationUnknownReason, ExplanationWindowComparison, NormalizedCanvasCommand } from './types';
+import { getBuildKind, getBuildSignature } from './build-registry.js';
+import { isTrackedCanvas } from './wrap-context.js';
+import type { CommandDifference, ExplanationCommandWindow, ExplanationUnknownReason, ExplanationWindowComparison, NormalizedCanvasCommand } from './types.js';
 
 export const MAX_ACTIVE_WINDOWS = 120;
 export const MAX_COMMAND_ENTRIES = 5000;

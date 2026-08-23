@@ -1,5 +1,5 @@
-import { getBuildSignature, trackBuild } from './build-registry';
-import { captureOp, newWindowSignature } from './signature';
+import { getBuildSignature, trackBuild } from './build-registry.js';
+import { captureOp, newWindowSignature } from './signature.js';
 
 const PATH_METHODS = [
   'addPath',

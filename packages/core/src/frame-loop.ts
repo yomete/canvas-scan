@@ -1,13 +1,13 @@
-import { resolveAttribution } from './attribution';
-import { computeStatus, newWindowSignature } from './signature';
+import { resolveAttribution } from './attribution.js';
+import { computeStatus, newWindowSignature } from './signature.js';
 import type {
   CanvasScanOptions,
   RecordedCanvasLifecycleEvent,
   DrawBatchReport,
   RecordedResetEvent,
   SourceLocation,
-} from './types';
-import type { CanvasRecord } from './wrap-context';
+} from './types.js';
+import type { CanvasRecord } from './wrap-context.js';
 import {
   clearMethodEvidence,
   drainAttributeRecords,
@@ -20,7 +20,7 @@ import {
   takeResetEvents,
   takeLifecycleEvents,
   notifySelectedCommandBoundary,
-} from './wrap-context';
+} from './wrap-context.js';
 
 export const latestReports = new Map<string, DrawBatchReport>();
 

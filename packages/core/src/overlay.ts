@@ -4,7 +4,7 @@ import {
   latestReports,
   setSourceLocation,
   subscribeToReports,
-} from './frame-loop';
+} from './frame-loop.js';
 import {
   getLastSession,
   getLastExplanation,
@@ -13,10 +13,10 @@ import {
   startRecording,
   stopRecording,
   subscribeToRecordingState,
-} from './recording';
-import { collectCanvasGeometry } from './geometry';
-import { compareSessions } from './comparison';
-import { resolveSourceOutcome } from './symbolicate';
+} from './recording.js';
+import { collectCanvasGeometry } from './geometry.js';
+import { compareSessions } from './comparison.js';
+import { resolveSourceOutcome } from './symbolicate.js';
 import type {
   AttributionKind,
   CanvasScanOptions,
@@ -32,7 +32,7 @@ import type {
   InvestigationSessionV1,
   RecordedCanvasGeometry,
   SourceLocation,
-} from './types';
+} from './types.js';
 
 interface CanvasStats {
   candidate: boolean;

@@ -1,5 +1,5 @@
-import type { NormalizedCanvasCommand, SignatureStatus } from './types';
-import { getBuildSignature } from './build-registry';
+import type { NormalizedCanvasCommand, SignatureStatus } from './types.js';
+import { getBuildSignature } from './build-registry.js';
 
 export interface WindowSignature {
   hash: number;

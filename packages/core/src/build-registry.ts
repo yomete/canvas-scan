@@ -1,4 +1,4 @@
-import type { WindowSignature } from './signature';
+import type { WindowSignature } from './signature.js';
 
 const buildSignatures = new WeakMap<object, WindowSignature>();
 const buildKinds = new WeakMap<object, 'path' | 'gradient'>();

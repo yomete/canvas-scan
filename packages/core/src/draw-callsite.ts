@@ -1,6 +1,6 @@
 import { getSourceFromSourceMap, getSourceMap, parseStack } from 'bippy/source';
-import type { CommandWindowIdentity } from './command-capture';
-import type { ExplanationStackFrame, ExplanationStackSample } from './types';
+import type { CommandWindowIdentity } from './command-capture.js';
+import type { ExplanationStackFrame, ExplanationStackSample } from './types.js';
 
 export const MAX_STACK_SAMPLES = 8;
 export const MAX_FRAMES_PER_STACK = 20;

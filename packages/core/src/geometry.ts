@@ -1,4 +1,4 @@
-import type { CanvasGeometryUnavailableReason, RecordedCanvasGeometry } from './types';
+import type { CanvasGeometryUnavailableReason, RecordedCanvasGeometry } from './types.js';
 
 const unavailable = (reason: CanvasGeometryUnavailableReason): RecordedCanvasGeometry => ({
   backingWidth: null, backingHeight: null, cssWidth: null, cssHeight: null,

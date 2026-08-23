@@ -5,7 +5,7 @@ import type {
   ComparisonMeasureId,
   InvestigationSessionV1,
   SessionFindingPairing,
-} from './types';
+} from './types.js';
 
 type UnknownRecord = Record<string, unknown>;
 type IncomparableReason = ComparisonArtifactV1['incomparableReasons'][number];

@@ -1,6 +1,6 @@
 import { getOwnerStack } from 'bippy/source';
-import { findOwnerFiberForCanvas } from './attribution';
-import type { SourceLocation } from './types';
+import { findOwnerFiberForCanvas } from './attribution.js';
+import type { SourceLocation } from './types.js';
 
 const sourceLocations = new WeakMap<
   object,

@@ -1,4 +1,4 @@
-import { getBuildSignature, trackBuild } from './build-registry';
+import { getBuildSignature, trackBuild } from './build-registry.js';
 import {
   captureHeadState,
   captureNormalizedCommand,
@@ -9,7 +9,7 @@ import {
   mixTokenInto,
   mixUintInto,
   newWindowSignature,
-} from './signature';
+} from './signature.js';
 import type {
   AttributionKind,
   CanvasMethodEvidence,
@@ -17,8 +17,8 @@ import type {
   CanvasResetSource,
   ResetDimensionChange,
   SignatureStatus,
-} from './types';
-import type { WindowSignature } from './signature';
+} from './types.js';
+import type { WindowSignature } from './signature.js';
 
 export interface PatchTargets {
   canvasProto: any;
