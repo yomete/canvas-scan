@@ -2060,6 +2060,39 @@ describe('overlay explanation action', () => {
     stopRecording();
   });
 
+  it('confirms activation inline near the action and scrolls the panel into view', () => {
+    const scrollSpy = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scrollSpy as unknown as Element['scrollIntoView'] });
+    try {
+      mountOverlay();
+      const { canvas, record } = explanationCanvas('explain-inline-canvas');
+      const action = openExplanationSource(canvas, record.id);
+      scrollSpy.mockClear();
+      action.click();
+      refreshOverlay();
+      const status = getShadowRoot().querySelector<HTMLElement>('.finding-status');
+      expect(status?.textContent).toContain('Explaining now');
+      expect(status?.textContent).toContain('Capture stops after 10 seconds');
+      expect(scrollSpy).toHaveBeenCalled();
+      stopRecording();
+      refreshOverlay();
+      expect(getShadowRoot().querySelector<HTMLElement>('.finding-status')?.textContent).toBe('');
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it('reports a stale selection instead of failing silently', () => {
+    mountOverlay();
+    const { canvas, record } = explanationCanvas('explain-stale-canvas');
+    const action = openExplanationSource(canvas, record.id);
+    action.dataset.sessionId = 'stale-session';
+    action.click();
+    refreshOverlay();
+    expect(getShadowRoot().querySelector<HTMLElement>('.finding-status')?.textContent).toContain('saved recording changed');
+    expect(getRecordingState()).not.toBe('recording');
+  });
+
   it('uses the same completed panel structure for manual and automatic stop', () => {
     mountOverlay();
     const { canvas, record } = explanationCanvas('stop-structure');

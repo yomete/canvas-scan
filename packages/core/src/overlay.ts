@@ -1114,6 +1114,7 @@ function updateExplanationPanel(): void {
   panel.replaceChildren();
   panel.className = 'explanation-panel';
   const selection = explanationSelection;
+  if ((selection && getRecordingState() === 'recording') || completedExplanation || explanationStartFailure) panel.scrollIntoView?.({ block: 'nearest' });
   if (selection && getRecordingState() === 'recording') {
     panel.classList.add('active');
     const finding = shownSession?.findings[selection.findingIndex];
@@ -1836,7 +1837,11 @@ function handleFlyoutClick(event: MouseEvent): void {
     const findingIndex = Number(action.dataset.findingIndex);
     const source = shownSession;
     const finding = source?.findings[findingIndex];
-    if (!source || !finding || action.dataset.sessionId !== source.sessionId) return;
+    if (!source || !finding || action.dataset.sessionId !== source.sessionId) {
+      const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
+      if (status) status.textContent = 'Explain next interaction cannot start because the saved recording changed. Record again, then select a finding.';
+      return;
+    }
     const key = findingKey(finding);
     explanationSelection = { sessionId: source.sessionId, findingIndex, key };
     explanationRecordingActive = true;
@@ -1847,6 +1852,12 @@ function handleFlyoutClick(event: MouseEvent): void {
     if (result.status === 'started' || result.status === 'already-active') {
       expandedFindingId = key;
       flyoutOpen = true;
+      const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
+      if (status) {
+        status.textContent = result.status === 'already-active'
+          ? 'An explanation capture is already active. Repeat the interaction now.'
+          : 'Explaining now — repeat the interaction. Capture stops after 10 seconds.';
+      }
     } else {
       explanationSelection = null;
       explanationRecordingActive = false;
@@ -2168,6 +2179,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
         findingNodes.clear();
       }
     } else if (state === 'complete') {
+      for (const node of flyout?.querySelectorAll<HTMLElement>('.finding-status') ?? []) node.textContent = '';
       const explanation = getLastExplanation();
       const explanationCompleted = explanationRecordingActive;
       explanationRecordingActive = false;
