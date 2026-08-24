@@ -388,9 +388,6 @@ button { font: inherit; }
 // visible strings avoid the internal vocabulary (window, signature, raster op)
 // and the diagnostic reason codes. The precise terms stay in tooltips, and the
 // raw codes stay one hover away so a bug report can still quote them.
-const EXPLAINER =
-  'canvas-scan watches what your app asks each canvas to draw. When a canvas ' +
-  'sends repeated commands, that work is a review candidate.';
 
 const UNKNOWN_PHRASES = new Map([
   ['first-window', 'first frame seen — nothing to compare yet'],
@@ -894,7 +891,7 @@ function openPopover(canvasId: string): void {
 }
 
 function findingLabel(type: InvestigationFinding['type']): string {
-  return { 'heavy-canvas-work': 'Concentrated canvas work', 'repeated-draw-work': 'Repeated draw commands', 'resize-churn': 'Resets during active work', 'backing-store-mismatch': 'Large canvas backing store' }[type];
+  return { 'heavy-canvas-work': 'Heavy frame', 'repeated-draw-work': 'Repeated drawing', 'resize-churn': 'Canvas resets while drawing', 'backing-store-mismatch': 'Oversized canvas' }[type];
 }
 
 function findingEpisodeIds(finding: InvestigationFinding): string[] {
@@ -922,19 +919,24 @@ function appendLine(card: HTMLElement, label: string, text: string): void {
   card.append(line);
 }
 
-function findingMeasurements(finding: InvestigationFinding): string[] {
-  if (finding.type === 'heavy-canvas-work') return [
-    `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`,
-    `Maximum frame: ${finding.maximumWindow.canvasApiSelfTimeMs} ms, ${finding.maximumWindow.rasterOperationCount} raster operations${finding.maximumWindow.followsCanvasReset ? ', after canvas reset' : ''}`,
-    `Top methods: ${finding.topMethods.map(method => `${method.method} ${method.count} ${method.canvasApiSelfTimeMs ?? 'unknown'} ms`).join(', ')}`,
-    `Gate distance: ${finding.gateExcessMs} ms above the ${finding.gateThresholdMs} ms threshold`,
-  ];
-  if (finding.type === 'repeated-draw-work') return [`${finding.repeatedWindowCount} repeated frames`, `Repeated raster operations: ${finding.rasterOperationCount}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Comparison gaps: ${finding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`, `StrictMode-style consecutive duplicates: ${finding.strictModeStyleDuplicates}`];
-  if (finding.type === 'resize-churn') {
-    const resets = finding.resetEvents.slice(0, 3).map(event => `${event.source} (${event.width ?? 'unknown'}×${event.height ?? 'unknown'})`).join(', ');
-    return [`${finding.activeResetCount} active resets of ${finding.observedResetCount} observed resets`, `Resets: ${finding.resetEvents.length > 3 ? `${resets}, +${finding.resetEvents.length - 3} more` : resets}`, `Affected episodes: ${finding.affectedEpisodeIds.join(', ') || 'none'}`, `Command statuses: same ${finding.commandStatuses.same}, changed ${finding.commandStatuses.changed}, unknown ${finding.commandStatuses.unknown}`, `Dimension changes: changed ${finding.dimensionChanges.changed}, unchanged ${finding.dimensionChanges.unchanged}, unavailable ${finding.dimensionChanges.unavailable}`, `Unknown reasons: ${Object.entries(finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ') || 'none'}`, `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
-  }
-  return [`${finding.affectedWindowCount} affected frames`, ...finding.affectedWindows.map(window => `Actual ${window.backingWidth}×${window.backingHeight}; expected ${window.expectedBackingWidth}×${window.expectedBackingHeight}; area ratio ${window.actualToExpectedAreaRatio}`), `Canvas2D API self-time: ${finding.canvasApiSelfTimeMs} ms`, `Raster operations: ${finding.rasterOperationCount}`];
+function sessionCanvas(session: InvestigationSessionV1, canvasId: string) {
+  return session.canvases.find(canvas => canvas.canvasId === canvasId);
+}
+
+function findingSummary(finding: InvestigationFinding): string {
+  if (finding.type === 'heavy-canvas-work') return `Slowest frame ${finding.maximumWindow.canvasApiSelfTimeMs} ms · ${finding.rasterOperationCount} draw calls`;
+  if (finding.type === 'repeated-draw-work') return `${finding.repeatedWindowCount} near-identical frames · ${finding.rasterOperationCount} draw calls · ${finding.canvasApiSelfTimeMs} ms`;
+  if (finding.type === 'resize-churn') return `${finding.activeResetCount} canvas resets · ${finding.dimensionChanges.unchanged} didn't change the size`;
+  const worst = finding.affectedWindows.reduce((worst, window) => (window.actualToExpectedAreaRatio ?? 0) > (worst.actualToExpectedAreaRatio ?? 0) ? window : worst, finding.affectedWindows[0]);
+  const ratio = worst?.actualToExpectedAreaRatio == null ? null : Math.round(worst.actualToExpectedAreaRatio * 10) / 10;
+  return `${finding.affectedWindowCount} frames · backing store${ratio && ratio !== 1 ? ` up to ${ratio}× larger` : ' larger'} than displayed`;
+}
+
+function findingDrawnFrom(session: InvestigationSessionV1, finding: InvestigationFinding): string | null {
+  const location = sessionCanvas(session, finding.canvasId)?.sourceLocation;
+  if (!location) return null;
+  const basename = location.file.split(/[\\/]/).pop() || location.file;
+  return `Drawn from ${basename}:${location.line}`;
 }
 
 function findingWindows(
@@ -949,68 +951,41 @@ function findingWindows(
       window.windowIndex <= episode.lastWindowIndex));
 }
 
-function findingUnknowns(
-  session: InvestigationSessionV1,
-  finding: InvestigationFinding,
-): { active: number; reasons: Record<string, number>; unknown: number } {
-  if (finding.type === 'repeated-draw-work') {
-    const reasons: Record<string, number> = {};
-    for (const window of findingWindows(session, finding)) {
-      if (window.unknownReason) reasons[window.unknownReason] = (reasons[window.unknownReason] ?? 0) + 1;
-    }
-    return { active: finding.unknownCoverage.activeWindowCount, reasons, unknown: finding.unknownCoverage.unknownWindowCount };
-  }
-  if (finding.type === 'resize-churn') {
-    return {
-      active: Object.values(finding.commandStatuses).reduce((total, count) => total + count, 0),
-      reasons: finding.unknownReasons,
-      unknown: finding.commandStatuses.unknown,
-    };
-  }
-  const windows = findingWindows(session, finding);
-  const reasons: Record<string, number> = {};
-  for (const window of windows) {
-    if (window.unknownReason) reasons[window.unknownReason] = (reasons[window.unknownReason] ?? 0) + 1;
-  }
-  return {
-    active: windows.length,
-    reasons,
-    unknown: windows.filter(window => window.signatureStatus === 'unknown').length,
-  };
-}
-
 function droppedEntries(session: InvestigationSessionV1): Array<[string, number]> {
   return Object.entries(session.droppedEntryCounts).filter(([, count]) => count > 0);
 }
 
 const explanationStartCopy: Record<Exclude<ExplanationStartResult, { status: 'started' } | { status: 'already-active' }>['reason'], string> = {
-  'no-session': 'Explain next interaction cannot start because the saved recording changed. Select a finding from the current saved recording.',
-  'session-mismatch': 'Explain next interaction cannot start because the saved recording changed. Select the finding again.',
-  'finding-not-found': 'Explain next interaction cannot start because the selected finding changed. Select a current finding.',
-  'canvas-unavailable': 'Explain next interaction cannot start because the recorded canvas is not available. Saved evidence remains available.',
-  'recording-active': 'Explain next interaction cannot start while a recording is active. Stop the recording first.',
-  'instrumentation-disabled': 'Explain next interaction cannot start because canvas-scan instrumentation is unavailable. Reload the page before you try again.',
+  'no-session': 'Recording changed — select the finding again.',
+  'session-mismatch': 'Recording changed — select the finding again.',
+  'finding-not-found': 'Finding changed — select it again.',
+  'canvas-unavailable': 'Canvas is no longer on the page.',
+  'recording-active': 'Stop the recording first.',
+  'instrumentation-disabled': 'Instrumentation unavailable — reload the page.',
 };
 
-const differenceCopy: Record<CommandDifference['reason'], string> = {
-  'operation-kind': 'The command operation kind changed.',
-  'operation-name': 'The command operation name changed.',
-  'argument-count': 'The command argument count changed.',
-  'argument-kind': 'A command argument kind changed.',
-  'argument-token': 'A normalized command argument changed.',
-  'command-added': 'A command was added.',
-  'command-removed': 'A command was removed.',
-};
+function differenceVerdict(difference: CommandDifference): string {
+  const name = (difference.target ?? difference.reference)?.name;
+  switch (difference.reason) {
+    case 'argument-token': return difference.reference?.operationKind === 'set' ? `${name} changed` : `${name} was called with different arguments`;
+    case 'argument-kind': return `${name} got a different kind of argument`;
+    case 'argument-count': return `${name} got a different number of arguments`;
+    case 'operation-name': return `${difference.reference?.name ?? 'the command'} became ${name}`;
+    case 'operation-kind': return `${name} is now a different kind of call`;
+    case 'command-added': return 'A draw command was added';
+    case 'command-removed': return 'A draw command was removed';
+  }
+}
 
 const explanationUnknownCopy: Record<ExplanationUnknownReason, string> = {
-  'unsupported-value': 'Canvas-scan cannot safely compare an unsupported command value.',
-  'argument-limit': 'Canvas-scan reached the argument collection limit.',
-  'value-token-limit': 'Canvas-scan reached the value token limit.',
-  'command-limit': 'Canvas-scan reached the command collection limit.',
-  'window-limit': 'Canvas-scan reached the active window limit.',
-  'sampling-gap': 'Canvas-scan found a sampling gap.',
-  'missing-reference': 'No two active captured frames were available to compare.',
-  'instrumentation-disabled': 'Canvas-scan instrumentation became unavailable.',
+  'unsupported-value': 'a value could not be compared',
+  'argument-limit': 'too many arguments to record',
+  'value-token-limit': 'too many values to record',
+  'command-limit': 'too many commands to record',
+  'window-limit': 'too many frames to record',
+  'sampling-gap': 'some commands were not sampled',
+  'missing-reference': 'no two frames were available to compare',
+  'instrumentation-disabled': 'instrumentation stopped',
 };
 
 function appendExplanationLine(root: HTMLElement, text: string, title?: string): void {
@@ -1019,11 +994,6 @@ function appendExplanationLine(root: HTMLElement, text: string, title?: string):
   line.textContent = text;
   if (title) line.title = title;
   root.append(line);
-}
-
-function commandSummary(command: CommandDifference['reference']): string {
-  if (!command) return 'No command exists at this ordinal.';
-  return `${command.operationKind} ${command.name} · ${command.argumentCount} arguments · ${command.arguments.map(argument => argument.kind).join(', ') || 'none'}`;
 }
 
 function selectedComparison(artifact: ExplanationArtifactV1) {
@@ -1053,11 +1023,6 @@ function comparisonMeasureLabel(id: ComparisonMeasureId): string {
   return labels[id as Exclude<ComparisonMeasureId, `method:${string}:operation-count` | `method:${string}:self-time-ms`>];
 }
 
-function comparisonDirection(measure: ComparisonMeasure): string {
-  if (measure.interpretation === 'structural') return measure.direction;
-  return ({ increased: 'higher in this pair', decreased: 'lower in this pair', unchanged: 'equal in this pair', unknown: 'unknown in this pair' } as const)[measure.direction];
-}
-
 function updateComparisonPanel(): void {
   const panel = flyout?.querySelector<HTMLElement>('.comparison-panel');
   if (!panel) return;
@@ -1072,22 +1037,20 @@ function updateComparisonPanel(): void {
   if (baseline) {
     const finding = baseline.session.findings[baseline.findingIndex];
     appendExplanationLine(panel, 'BASELINE KEPT');
-    appendExplanationLine(panel, `Session: ${baseline.session.sessionId}`);
-    if (finding) appendExplanationLine(panel, `Finding ${baseline.findingIndex + 1}: ${findingLabel(finding.type)}`);
+    if (finding) appendExplanationLine(panel, `Finding ${baseline.findingIndex + 1} · ${findingLabel(finding.type)}`);
   }
   const artifact = completedComparison;
   if (!artifact) return;
   appendExplanationLine(panel, 'COMPARISON COMPLETE');
-  appendExplanationLine(panel, `Baseline: Session ${artifact.baseline.sessionId} · Finding ${artifact.baseline.findingIndex + 1}: ${artifact.baseline.findingType ? findingLabel(artifact.baseline.findingType) : 'Selected finding'}`);
-  appendExplanationLine(panel, `Candidate: Session ${artifact.candidate.sessionId} · Finding ${artifact.candidate.findingIndex + 1}: ${artifact.candidate.findingType ? findingLabel(artifact.candidate.findingType) : 'Selected finding'}`);
-  appendExplanationLine(panel, 'Pairing: user-selected');
-  appendExplanationLine(panel, 'Canvas IDs and owner names are session-local labels and were not used to pair the findings.');
-  appendExplanationLine(panel, `Comparison status: ${artifact.status}`);
-  appendExplanationLine(panel, 'One selected pair does not establish a performance improvement.');
-  appendExplanationLine(panel, 'improvementEstablished: false');
+  const sessionLabel = (id: string) => id.replace(/^canvas-scan-/, '');
+  appendExplanationLine(panel, `Baseline: Finding ${artifact.baseline.findingIndex + 1} · ${artifact.baseline.findingType ? findingLabel(artifact.baseline.findingType) : 'Selected finding'} · session ${sessionLabel(artifact.baseline.sessionId)}`);
+  appendExplanationLine(panel, `Candidate: Finding ${artifact.candidate.findingIndex + 1} · ${artifact.candidate.findingType ? findingLabel(artifact.candidate.findingType) : 'Selected finding'} · session ${sessionLabel(artifact.candidate.sessionId)}`);
   if (artifact.status === 'comparable') {
-    for (const measure of artifact.measures) appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: baseline ${measure.baseline} · candidate ${measure.candidate} · delta ${measure.delta} · ${measure.unit} · ${comparisonDirection(measure)} · ${measure.interpretation}`);
-  } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Incomparable reason: ${reason}`);
+    for (const measure of artifact.measures) {
+      const delta = measure.delta === null ? '' : ` (${measure.delta > 0 ? '+' : ''}${measure.delta}${measure.unit === 'ms' ? ' ms' : ''})`;
+      appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`);
+    }
+  } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Couldn't compare: ${reason.replaceAll('-', ' ')}`);
   const copy = document.createElement('button');
   copy.className = 'comparison-copy'; copy.type = 'button'; copy.dataset.action = 'copy-comparison'; copy.textContent = 'Copy comparison JSON';
   const status = document.createElement('div');
@@ -1119,9 +1082,8 @@ function updateExplanationPanel(): void {
     panel.classList.add('active');
     const finding = shownSession?.findings[selection.findingIndex];
     appendExplanationLine(panel, 'EXPLANATION ACTIVE');
-    appendExplanationLine(panel, `Finding ${selection.findingIndex + 1}: ${finding ? findingLabel(finding.type) : 'Selected finding'}`);
-    appendExplanationLine(panel, 'Repeat the interaction now. Capture stops after 10 seconds.');
-    appendExplanationLine(panel, 'The toolbar Stop button ends capture now.');
+    if (finding) appendExplanationLine(panel, `Finding ${selection.findingIndex + 1} · ${findingLabel(finding.type)}`);
+    appendExplanationLine(panel, 'Repeat the interaction now — stops after 10 s, or press Stop.');
     return;
   }
   if (completedExplanation) {
@@ -1129,54 +1091,34 @@ function updateExplanationPanel(): void {
     const artifact = completedExplanation;
     const comparison = selectedComparison(artifact);
     appendExplanationLine(panel, 'EXPLANATION COMPLETE');
-    appendExplanationLine(panel, `Source finding: ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`);
-    appendExplanationLine(panel, `Stop reason: ${artifact.stopReason}`);
+    appendExplanationLine(panel, `Finding ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`);
     const status = comparison?.status ?? 'unknown';
-    appendExplanationLine(panel, `Command result: ${status}`);
     if (status === 'changed' && artifact.firstDifference) {
-      const difference = artifact.firstDifference;
-      appendExplanationLine(panel, 'First normalized command difference');
-      appendExplanationLine(panel, `Command ${difference.ordinal}: ${differenceCopy[difference.reason]}`, difference.reason);
-      appendExplanationLine(panel, `Reference command: ${commandSummary(difference.reference)}`);
-      appendExplanationLine(panel, `Target command: ${commandSummary(difference.target)}`);
-    } else if (status === 'same' && comparison) {
-      appendExplanationLine(panel, 'No normalized command difference was observed.');
-      const reference = artifact.windows.find(window => window.windowIndex === comparison.referenceWindowIndex);
-      const target = artifact.windows.find(window => window.windowIndex === comparison.targetWindowIndex);
-      appendExplanationLine(panel, `Compared windows: ${comparison.referenceWindowIndex} (${reference?.commands.length ?? 0} commands) and ${comparison.targetWindowIndex} (${target?.commands.length ?? 0} commands).`);
+      appendExplanationLine(panel, differenceVerdict(artifact.firstDifference), artifact.firstDifference.reason);
+    } else if (status === 'same') {
+      appendExplanationLine(panel, 'The same commands ran again — nothing changed between the frames.');
     } else {
-      appendExplanationLine(panel, 'Command difference is unknown.');
       const reason = comparison?.unknownReason ?? artifact.firstGap?.reason ?? 'missing-reference';
-      appendExplanationLine(panel, `Unknown reason: ${reason}`);
-      appendExplanationLine(panel, explanationUnknownCopy[reason]);
-      if (comparison) appendExplanationLine(panel, `Compared windows: ${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}.`);
+      appendExplanationLine(panel, `Couldn't compare the frames — ${explanationUnknownCopy[reason]}.`, reason);
     }
-    appendExplanationLine(panel, `Compared frame indices: ${comparison ? `${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}` : 'none'}`);
-    appendExplanationLine(panel, 'Draw callsite');
-    if (!artifact.stacks.length) appendExplanationLine(panel, 'No bounded draw callsite was captured.');
-    for (const sample of artifact.stacks) {
-      appendExplanationLine(panel, sample.reason === 'first-raster' ? 'First selected raster' : 'First command difference');
-      appendExplanationLine(panel, `Window ${sample.windowIndex}, command ${sample.commandOrdinal}`);
+    const sample = artifact.stacks.find(candidate => candidate.frames.length > 0);
+    if (!sample) {
+      appendExplanationLine(panel, 'No draw callsite captured.');
+    } else {
+      let appFrames = 0;
+      let frameworkFrames = 0;
       for (const frame of sample.frames) {
-        if (frame.functionName) appendExplanationLine(panel, `callsite ${frame.functionName}`);
-        if (frame.mapped) appendExplanationLine(panel, `mapped ${frame.mapped.file}:${frame.mapped.line}:${frame.mapped.column}`);
-        if (frame.generated) appendExplanationLine(panel, `generated ${frame.generated.file}:${frame.generated.line}:${frame.generated.column}`);
-        appendExplanationLine(panel, frame.mappingStatus);
-        if (frame.mappingStatus === 'unresolved') appendExplanationLine(panel, `unresolved ${frame.unresolvedReason}`);
+        const mapped = frame.mapped;
+        const file = mapped?.file;
+        if (!mapped || !file || /node_modules/.test(file) || appFrames >= 3) { frameworkFrames++; continue; }
+        const basename = file.split(/[\\/]/).pop() || file;
+        const name = frame.functionName || 'anonymous';
+        appendExplanationLine(panel, appFrames === 0 ? `Drawn by ${name} — ${basename}:${mapped.line}` : `via ${name} — ${basename}:${mapped.line}`, `${file}:${mapped.line}:${mapped.column}`);
+        appFrames++;
       }
-      if (sample.droppedFrameCount) appendExplanationLine(panel, `Dropped frames: ${sample.droppedFrameCount}`);
+      if (!appFrames) appendExplanationLine(panel, 'Callsite captured but not mapped to app source');
+      if (frameworkFrames) appendExplanationLine(panel, `+${frameworkFrames} framework frames`);
     }
-    appendExplanationLine(panel, `Limits: ${Object.entries(artifact.collectionLimits).map(([name, value]) => `${name}=${value}`).join(' · ')}`);
-    const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
-    appendExplanationLine(panel, `Drops: ${drops.length ? drops.map(([name, value]) => `${name}=${value}`).join(' · ') : 'none'}`);
-    appendExplanationLine(panel, 'Explanation limits');
-    for (const limit of artifact.limitResults) {
-      const coordinate = limit.firstAffected ? `${limit.firstAffected.scope}:${limit.firstAffected.windowIndex ?? 'none'}:${limit.firstAffected.commandOrdinal ?? 'none'}` : 'none';
-      appendExplanationLine(panel, `${limit.name}: maximum=${limit.maximum}, rejected=${limit.rejectedCount}, reason=${limit.reason ?? 'none'}, first=${coordinate}`);
-    }
-    appendExplanationLine(panel, `Callsite coverage: ${artifact.callsiteCoverage.status}`);
-    if (artifact.callsiteCoverage.incompleteReasons.length) appendExplanationLine(panel, `Callsite limits: ${artifact.callsiteCoverage.incompleteReasons.join(', ')}`);
-    if (artifact.firstGap) appendExplanationLine(panel, `First gap: window ${artifact.firstGap.windowIndex}, command ${artifact.firstGap.commandOrdinal ?? 'none'} (${artifact.firstGap.reason})`);
     const copy = document.createElement('button');
     copy.className = 'explanation-copy'; copy.type = 'button'; copy.dataset.action = 'copy-explanation'; copy.textContent = 'Copy explanation JSON';
     const copyStatus = document.createElement('div');
@@ -1195,9 +1137,9 @@ function createFinding(
   finding: InvestigationFinding,
   index: number,
 ): HTMLElement {
-  const episodes = findingEpisodeIds(finding);
   const key = findingKey(finding);
   const id = `canvas-scan-finding-${key.replaceAll(':', '-')}`;
+  const owner = sessionCanvas(session, finding.canvasId)?.nearestReactOwner ?? finding.canvasId;
   const card = document.createElement('section');
   card.className = 'repeated-finding finding-card';
   card.dataset.canvasId = finding.canvasId;
@@ -1211,46 +1153,25 @@ function createFinding(
   control.type = 'button';
   control.dataset.findingId = key;
   control.setAttribute('aria-controls', `${id}-evidence`);
-  control.textContent = `${index + 1}  ${findingLabel(finding.type)} · Review candidate — inspect evidence`;
+  control.textContent = `${index + 1}  ${findingLabel(finding.type)} · ${owner}`;
   card.append(control);
-
-  const identifiers = document.createElement('div');
-  identifiers.className = 'finding-line session-identifier';
-  identifiers.textContent = `Episode ID: ${episodes.join(', ') || 'none'}`;
-  card.append(identifiers);
 
   const evidence = document.createElement('div');
   evidence.className = 'finding-evidence';
   evidence.id = `${id}-evidence`;
-  const associations = session.episodeAssociations.filter(item => episodes.includes(item.episodeId));
-  for (const association of associations.slice(0, 3)) {
-    const entry = session.browserEntries.find(item => item.entryId === association.entryId);
-    const label = entry?.kind === 'user-mark' ? ` ${entry.label}` : '';
-    appendLine(evidence, '', `${entry?.kind ?? association.entryKind}${label} associated with Episode ${association.episodeId} · overlapped ${association.startedAtTimestampMs.toFixed(1)}–${association.endedAtTimestampMs.toFixed(1)} ms`);
-  }
-  if (associations.length > 3) appendLine(evidence, '', `+${associations.length - 3} more associations`);
-
-  appendLine(evidence, 'Observed', finding.claimBoundary.observation);
-  for (const line of findingMeasurements(finding)) appendLine(evidence, '', line);
-  appendLine(evidence, 'Explanation', finding.claimBoundary.explanation);
-  appendLine(evidence, 'Does not establish', finding.claimBoundary.nonEstablishedFacts);
-  const unknown = findingUnknowns(session, finding);
-  appendLine(evidence, 'Unknown coverage', `${unknown.unknown} of ${unknown.active} active frames`);
-  const limits = droppedEntries(session);
-  if (limits.length) {
-    appendLine(evidence, 'Collection limit', limits.map(([name, count]) => `droppedEntryCounts.${name}=${count}`).join(' · '));
-  }
-  appendLine(evidence, 'Next check', finding.nextCheck);
+  appendLine(evidence, '', findingSummary(finding));
+  const drawnFrom = findingDrawnFrom(session, finding);
+  if (drawnFrom) appendLine(evidence, '', drawnFrom);
 
   if (lifecycleEndsRetired(session, finding.canvasId)) {
     const retired = document.createElement('div');
     retired.className = 'finding-line finding-retired';
-    retired.textContent = 'The recorded canvas retired during the saved recording. Saved evidence remains available.';
+    retired.textContent = 'This canvas closed during the recording.';
     evidence.append(retired);
   }
   const unavailable = document.createElement('div');
   unavailable.className = 'finding-line finding-unavailable';
-  unavailable.textContent = 'Capture cannot start because the canvas is not on the page. Saved evidence remains available.';
+  unavailable.textContent = 'Canvas not on the page.';
   evidence.append(unavailable);
 
   const actions = document.createElement('div');
@@ -1362,10 +1283,10 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
 
   const coverage = document.createElement('div');
   coverage.className = 'session-section session-coverage';
-  if (!session.browserFeatures.eventTiming) appendLine(coverage, '', 'This browser did not provide Event Timing. Canvas-scan still recorded supported document events. browserFeatures.eventTiming=false');
-  if (!session.browserFeatures.longAnimationFrames) appendLine(coverage, '', 'This browser did not provide Long Animation Frame entries. browserFeatures.longAnimationFrames=false');
+  if (!session.browserFeatures.eventTiming) appendLine(coverage, '', 'Event Timing is unavailable in this browser.');
+  if (!session.browserFeatures.longAnimationFrames) appendLine(coverage, '', 'Long Animation Frames are unavailable in this browser.');
   for (const [name, count] of droppedEntries(session)) {
-    appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name)} were dropped (droppedEntryCounts.${name}=${count}).`);
+    appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name)} dropped`);
   }
   coverage.hidden = coverage.childElementCount === 0;
   root.append(coverage);
@@ -1373,7 +1294,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   if (session.windows.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'session-section session-empty';
-    empty.textContent = 'No Canvas2D activity occurred during this recording. Record again and reproduce the canvas interaction before you stop.';
+    empty.textContent = 'No canvas activity in this recording. Record again and interact with the canvas.';
     root.append(empty);
   }
 
@@ -1392,7 +1313,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
       line.dataset.sessionCanvasId = canvas.canvasId;
       const owner = document.createElement('div');
       owner.className = 'session-owner';
-      owner.textContent = `Owner: ${canvas.nearestReactOwner ?? 'Not attributed'} · ${canvas.canvasApiSelfTimeMs} ms Canvas2D API self-time · ${canvas.maxWindowSelfTimeMs} ms maximum frame · ${canvas.rasterOperationCount} raster operations · ${canvas.evidenceLevel}`;
+      owner.textContent = `${canvas.nearestReactOwner ?? 'Unattributed'} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
       const identifier = document.createElement('div');
       identifier.className = 'session-identifier';
       identifier.textContent = `Canvas ID: ${canvas.canvasId}`;
@@ -1403,6 +1324,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
     more.className = 'more summary-more';
     more.type = 'button';
     more.dataset.action = 'show-session-canvases';
+    more.hidden = true;
     summaries.append(more);
     root.append(summaries);
   }
@@ -1413,8 +1335,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   findingsHeading.className = 'session-heading';
   findingsHeading.textContent = 'FINDINGS';
   findings.append(findingsHeading);
-  if (session.findings.length > 0) appendLine(findings, '', 'A review candidate is a place to inspect. It is not a confirmed problem.');
-  if (session.findings.length === 0) appendLine(findings, '', 'No review candidates met the finding thresholds in this recording.');
+  if (session.findings.length === 0) appendLine(findings, '', 'No findings in this recording.');
   for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
   root.append(findings);
   const explanation = document.createElement('div');
@@ -1477,13 +1398,6 @@ function renderFlyout(): void {
     row.remove();
     flyoutRows.delete(canvasId);
   }
-  let note = flyout.querySelector<HTMLDivElement>('.note');
-  if (!note) {
-    note = document.createElement('div');
-    note.className = 'note';
-    note.textContent = EXPLAINER;
-  }
-  if (!note.isConnected) flyout.append(note);
   let recording = flyout.querySelector<HTMLElement>('.recording-session');
   if (getRecordingState() === 'recording') {
     if (!recording) {
@@ -1839,7 +1753,7 @@ function handleFlyoutClick(event: MouseEvent): void {
     const finding = source?.findings[findingIndex];
     if (!source || !finding || action.dataset.sessionId !== source.sessionId) {
       const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
-      if (status) status.textContent = 'Explain next interaction cannot start because the saved recording changed. Record again, then select a finding.';
+      if (status) status.textContent = 'Recording changed — select the finding again.';
       return;
     }
     const key = findingKey(finding);
@@ -1855,8 +1769,8 @@ function handleFlyoutClick(event: MouseEvent): void {
       const status = action.closest<HTMLElement>('.finding-card')?.querySelector<HTMLElement>('.finding-status');
       if (status) {
         status.textContent = result.status === 'already-active'
-          ? 'An explanation capture is already active. Repeat the interaction now.'
-          : 'Explaining now — repeat the interaction. Capture stops after 10 seconds.';
+          ? 'Already explaining — repeat the interaction.'
+          : 'Explaining now — repeat the interaction (stops after 10 s).';
       }
     } else {
       explanationSelection = null;
@@ -2021,9 +1935,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   countsButton = document.createElement('button');
   countsButton.className = 'control counts';
   countsButton.type = 'button';
-  countsButton.title =
-    `${EXPLAINER} A completed recording can also show concentrated work, ` +
-    'active resets, and large backing stores as review candidates.';
+  countsButton.title = 'Show canvas activity and findings.';
   countsButton.setAttribute('aria-expanded', 'false');
   canvasCount = document.createElement('span');
   canvasCount.className = 'canvas-count';

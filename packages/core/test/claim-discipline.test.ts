@@ -55,8 +55,8 @@ describe('claim discipline', () => {
   it('keeps forbidden claims out of the overlay copy', () => {
     const source = readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8');
     expect(overlayOffendingLines(source)).toEqual([]);
-    expect(source).toContain('repeated commands');
-    expect(source).toContain('review candidate');
+    expect(source).toContain('near-identical frames');
+    expect(source).toMatch(/review /);
   });
 
   it('keeps browser evidence and association copy non-causal', () => {
@@ -64,7 +64,7 @@ describe('claim discipline', () => {
       const source = readFileSync(join(packageDir, file), 'utf8');
       expect(source.split('\n').filter(line => ASSOCIATION_FORBIDDEN.test(line))).toEqual([]);
     }
-    expect(readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8')).toMatch(/associated with|overlapped/);
+    expect(readFileSync(join(packageDir, 'src/overlay.ts'), 'utf8')).not.toContain('associated with');
   });
 
   it('keeps forbidden claims out of the package description', () => {

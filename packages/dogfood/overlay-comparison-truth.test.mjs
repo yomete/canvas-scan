@@ -17,7 +17,8 @@ const row = id => expectedMatrix.rows.find(value => value.id === id);
 const checkKeys = ['record-comparable:focus-after', 'record-comparable:focus-before', 'stop-comparable:focus-after', 'stop-comparable:focus-before', 'copy-comparable:focus-after', 'copy-comparable:focus-before', 'record-incomparable:focus-after', 'record-incomparable:focus-before', 'stop-incomparable:focus-after', 'stop-incomparable:focus-before', 'compare-incomparable:focus-after', 'compare-incomparable:focus-before', 'copy-incomparable:focus-after', 'copy-incomparable:focus-before', 'replace-baseline:focus-after', 'replace-baseline:focus-before', 'baselineAfterReattach', 'baselineSelected', 'browserDiagnostics', 'claimWords', 'hostReattached', 'incompleteDrop', 'keyboardComparableCopy', 'keyboardIncomparable', 'keyboardReplacement', 'pointerBaseline', 'pointerComparable', 'sameTypeFilter', 'tabOrderAfterReattach'];
 execFileSync('pnpm', ['--filter', 'canvas-scan', 'run', 'build'], { cwd: root, stdio: 'inherit' });
 
-function findingLabel(type) { return { 'heavy-canvas-work': 'Concentrated canvas work', 'repeated-draw-work': 'Repeated draw commands', 'resize-churn': 'Resets during active work', 'backing-store-mismatch': 'Large canvas backing store' }[type]; }
+function findingLabel(type) { return { 'heavy-canvas-work': 'Heavy frame', 'repeated-draw-work': 'Repeated drawing', 'resize-churn': 'Canvas resets while drawing', 'backing-store-mismatch': 'Oversized canvas' }[type]; }
+const sessionLabel = id => id.replace(/^canvas-scan-/, '');
 function installedChromeVersion() {
   const command = process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome';
   const version = execFileSync(command, ['--version'], { encoding: 'utf8' }).match(/\d+\.\d+\.\d+\.\d+/)?.[0];
@@ -30,10 +31,14 @@ function measureLabel(id) {
   return labels[id];
 }
 function direction(measure) { return measure.interpretation === 'structural' ? measure.direction : { increased: 'higher in this pair', decreased: 'lower in this pair', unchanged: 'equal in this pair', unknown: 'unknown in this pair' }[measure.direction]; }
+function measureLine(measure) {
+  const delta = measure.delta === null ? '' : ` (${measure.delta > 0 ? '+' : ''}${measure.delta}${measure.unit === 'ms' ? ' ms' : ''})`;
+  return `${measureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`;
+}
 function panel(baseline, artifact) {
-  const lines = ['BASELINE KEPT', `Session: ${baseline.sessionId}`, `Finding ${artifact.baseline.findingIndex + 1}: ${findingLabel(artifact.baseline.findingType)}`, 'COMPARISON COMPLETE', `Baseline: Session ${artifact.baseline.sessionId} · Finding ${artifact.baseline.findingIndex + 1}: ${findingLabel(artifact.baseline.findingType)}`, `Candidate: Session ${artifact.candidate.sessionId} · Finding ${artifact.candidate.findingIndex + 1}: ${findingLabel(artifact.candidate.findingType)}`, 'Pairing: user-selected', 'Canvas IDs and owner names are session-local labels and were not used to pair the findings.', `Comparison status: ${artifact.status}`, 'One selected pair does not establish a performance improvement.', 'improvementEstablished: false'];
-  if (artifact.status === 'comparable') for (const measure of artifact.measures) lines.push(`${measureLabel(measure.id)}: baseline ${measure.baseline} · candidate ${measure.candidate} · delta ${measure.delta} · ${measure.unit} · ${direction(measure)} · ${measure.interpretation}`);
-  else for (const reason of artifact.incomparableReasons) lines.push(`Incomparable reason: ${reason}`);
+  const lines = ['BASELINE KEPT', `Finding ${artifact.baseline.findingIndex + 1} · ${findingLabel(artifact.baseline.findingType)}`, 'COMPARISON COMPLETE', `Baseline: Finding ${artifact.baseline.findingIndex + 1} · ${findingLabel(artifact.baseline.findingType)} · session ${sessionLabel(artifact.baseline.sessionId)}`, `Candidate: Finding ${artifact.candidate.findingIndex + 1} · ${findingLabel(artifact.candidate.findingType)} · session ${sessionLabel(artifact.candidate.sessionId)}`];
+  if (artifact.status === 'comparable') for (const measure of artifact.measures) lines.push(measureLine(measure));
+  else for (const reason of artifact.incomparableReasons) lines.push(`Couldn't compare: ${reason.replaceAll('-', ' ')}`);
   lines.push('Copy comparison JSON');
   return lines.join('\n');
 }
@@ -59,7 +64,7 @@ function createFixture() {
   const flow = {
     chromeVersion: installedChromeVersion(), gitCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), initialStatus: currentStatus, finalStatus: currentStatus,
     bundleSha256: hash(readFileSync(join(root, 'packages/core/dist/canvas-scan.iife.js'))), command: 'pnpm --filter dogfood run probe:overlay-comparison', selectedIndexes,
-    panelText: { comparable: comparablePanel, incomparable: incomparablePanel, beforeReplacement: comparablePanel, afterReplacement: `BASELINE KEPT\nSession: ${incomparable.sessionId}\nFinding 1: Repeated draw commands` },
+    panelText: { comparable: comparablePanel, incomparable: incomparablePanel, beforeReplacement: comparablePanel, afterReplacement: `BASELINE KEPT\nFinding 1 · Repeated drawing` },
     actions: {
       baseline: { inputMethod: 'pointer', sessionId: baseline.sessionId, findingIndex: 0, labelBefore: 'Keep as baseline', labelAfter: 'Baseline kept', ariaPressedAfter: 'true' },
       hydration: { hostRemoved: true, reattachedHostCount: 1, baselineActionCount: 1 },

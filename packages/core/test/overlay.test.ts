@@ -324,7 +324,7 @@ describe('overlay flyout', () => {
     const stop = root.querySelector<HTMLButtonElement>('.stop-recording')!;
     record.click(); stop.focus(); stop.click(); refreshOverlay();
     expect(root.querySelector<HTMLElement>('.flyout')?.hidden).toBe(false);
-    expect(root.querySelector('.session-empty')?.textContent).toBe('No Canvas2D activity occurred during this recording. Record again and reproduce the canvas interaction before you stop.');
+    expect(root.querySelector('.session-empty')?.textContent).toBe('No canvas activity in this recording. Record again and interact with the canvas.');
     expect(root.activeElement).toBe(stop);
 
     record.click();
@@ -385,22 +385,22 @@ describe('overlay flyout', () => {
     const text = root.querySelector<HTMLElement>('.flyout')!.textContent!;
     expect(text.indexOf('SAVED RECORDING')).toBeLessThan(text.indexOf('CANVAS WORK'));
     expect(text.indexOf('SAVED RECORDING')).toBeLessThan(text.indexOf('FINDINGS'));
-    expect(text.indexOf('CURRENT CANVAS ACTIVITY')).toBeLessThan(text.indexOf('Owner: EffectCanvas · Canvas ID: current-attributed'));
+    expect(text.indexOf('CURRENT CANVAS ACTIVITY')).toBeLessThan(text.indexOf('EffectCanvas · Canvas ID: current-attributed'));
     const attributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-attributed"]')!.textContent!;
-    expect(attributedSummary.indexOf('Owner: EffectCanvas')).toBeLessThan(attributedSummary.indexOf('Canvas ID: saved-attributed'));
+    expect(attributedSummary.indexOf('EffectCanvas')).toBeLessThan(attributedSummary.indexOf('Canvas ID: saved-attributed'));
     const unattributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-unattributed"]')!.textContent!;
-    expect(unattributedSummary.indexOf('Owner: Not attributed')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
+    expect(unattributedSummary.indexOf('Unattributed')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
   });
 
-  it('uses review-candidate copy and a neutral focus background', () => {
+  it('uses plain finding copy and a neutral focus background', () => {
     mountOverlay(); startRecording();
     emitReport(makeReport({ canvasId: 'candidate-copy', canvasApiSelfTimeMs: 9 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
     const root = getShadowRoot();
     const card = root.querySelector<HTMLElement>('.finding-card')!;
-    expect(card.textContent).toContain('Review candidate — inspect evidence');
-    expect(card.textContent).not.toMatch(/confirmed problem|confirmed defect/i);
-    expect(root.querySelector('.findings-list')?.textContent).toContain('A review candidate is a place to inspect. It is not a confirmed problem.');
+    expect(card.textContent).toMatch(/1\s+Heavy frame · EffectCanvas/);
+    expect(card.textContent).not.toMatch(/confirmed problem|confirmed defect|review candidate/i);
+    expect(root.querySelector('.findings-list')?.textContent).not.toContain('review candidate');
     const style = root.querySelector('style')?.textContent ?? '';
     const focusRule = style.match(/\.finding-card:focus-visible,[\s\S]*?\.canvas-summary:focus-visible \{[^}]*\}/)?.[0] ?? '';
     expect(focusRule).toContain('background: rgba(255, 255, 255, 0.18)');
@@ -431,7 +431,7 @@ describe('overlay flyout', () => {
     expect(new Set(rawTypes)).toEqual(new Set(['heavy-canvas-work', 'repeated-draw-work', 'resize-churn', 'backing-store-mismatch']));
     expect(rawTypes).toEqual(session.findings.map(finding => finding.type));
     expect(root.querySelectorAll('.raw-evidence')).toHaveLength(0);
-    expect(root.querySelector('.canvas-summaries')?.textContent).toContain('Canvas2D API self-time');
+    expect(root.querySelector('.canvas-summaries')?.textContent).toContain('ms in Canvas2D');
     expect(root.querySelector('.candidate-count')?.textContent).toBe(`${session.findings.length} review candidates`);
   });
 
@@ -524,14 +524,14 @@ describe('overlay flyout', () => {
     const root = getShadowRoot();
     const card = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="retired-card"]')!;
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click(); refreshOverlay();
-    expect(card.textContent).toContain('The recorded canvas retired during the saved recording. Saved evidence remains available.');
+    expect(card.textContent).toContain('This canvas closed during the recording.');
     expect(card.textContent).not.toContain('Capture cannot start now.');
     expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(true);
     document.body.append(canvas);
     emitReport(makeReport({ canvasId: 'retired-card', rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
     refreshOverlay();
     expect(card.querySelector<HTMLElement>('.finding-actions')?.hidden).toBe(false);
-    expect(card.textContent).toContain('The recorded canvas retired during the saved recording. Saved evidence remains available.');
+    expect(card.textContent).toContain('This canvas closed during the recording.');
     expect(card.textContent).not.toContain('Capture cannot start now.');
   });
 
@@ -617,13 +617,14 @@ describe('overlay flyout', () => {
     expect(root.querySelector('.session-copy-status')?.textContent).toBe('Copy failed');
   });
 
-  it('shows plain and raw collection-limit details', () => {
+  it('shows plain collection-limit details and keeps raw counts in the JSON', () => {
     mountOverlay(); startRecording();
     for (let index = 0; index < 2001; index++) mark(`limit ${index}`);
     stopRecording(); refreshOverlay();
     const coverage = getShadowRoot().querySelector('.session-coverage')?.textContent ?? '';
-    expect(coverage).toContain('user marks were dropped');
-    expect(coverage).toContain('droppedEntryCounts.userMarks=1');
+    expect(coverage).toContain('1 user marks dropped');
+    expect(coverage).not.toContain('droppedEntryCounts');
+    expect(JSON.stringify(getLastSession())).toContain('"userMarks":1');
   });
 
   it('keeps completed-session plain copy within the approved claim boundary', () => {
@@ -633,13 +634,11 @@ describe('overlay flyout', () => {
     const copy = getShadowRoot().querySelector('.completed-session')!.cloneNode(true) as HTMLElement;
     copy.querySelectorAll('.raw-evidence').forEach(node => node.remove());
     const text = copy.textContent ?? '';
-    expect(text).toContain('Canvas2D API self-time');
-    expect(text).toMatch(/review candidate/i);
-    expect(text).not.toMatch(/caused|wasted|pixel-identical/i);
-    expect(text.match(/avoidable/gi)?.length ?? 0).toBe(text.match(/does not establish[^.]*avoidable/gi)?.length ?? 0);
+    expect(text).toContain('ms in Canvas2D');
+    expect(text).not.toMatch(/caused|wasted|pixel-identical|avoidable|does not establish/i);
   });
 
-  it('shows associated evidence without causal language and shows unsupported browser features', () => {
+  it('keeps associations out of the card and in the exported session', () => {
     let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
     mountOverlay(); const canvas = makeCanvas(); startRecording(); clock = 20; mark(' shared mark '); clock = 35; mark(' hidden mark ');
     emitReport(makeReport({ canvasId: 'association-a' }), canvas, { windowIndex: 1, timestampMs: 20, startedAtTimestampMs: 10, endedAtTimestampMs: 20 });
@@ -647,9 +646,10 @@ describe('overlay flyout', () => {
     clock = 40;
     stopRecording(); refreshOverlay(); const root = getShadowRoot(); root.querySelector<HTMLButtonElement>('.counts')!.click(); refreshOverlay();
     const text = root.querySelector('.flyout')!.textContent!;
-    expect(text.match(/user-mark shared mark associated with/g)).toHaveLength(2); expect(text).toContain('overlapped');
+    expect(text).not.toContain('shared mark');
     expect(text).not.toContain('hidden mark');
-    expect(text).toContain('This browser did not provide Event Timing.'); expect(text).toContain('This browser did not provide Long Animation Frame entries.');
+    expect(JSON.stringify(getLastSession())).toContain('shared mark');
+    expect(text).toContain('Event Timing is unavailable in this browser.'); expect(text).toContain('Long Animation Frames are unavailable in this browser.');
     expect(text).not.toMatch(/caused|triggered|responsible/i);
   });
 
@@ -666,15 +666,10 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="resize-seeded"]')!;
-    expect(card.textContent).toContain('Resets during active work · Review candidate');
-    expect(card.textContent).toContain('2 active resets of 2 observed resets');
-    expect(card.textContent).toContain('width-setter (240×120)');
-    expect(card.textContent).toContain('context-reset (240×120)');
-    expect(card.textContent).toContain('Affected episodes:');
-    expect(card.textContent).toContain('Command statuses: same 0, changed 0, unknown 2');
-    expect(card.textContent).toContain('Unknown reasons: canvas-reset 2');
-    expect(card.textContent).toContain('does not show that resets made the application slow');
-    expect(card.textContent).not.toMatch(/caused|wasted|avoidable|render time|GPU time|pixel/i);
+    expect(card.textContent).toContain('Canvas resets while drawing · EffectCanvas');
+    expect(card.textContent).toContain('2 canvas resets · 2 didn\'t change the size');
+    expect(card.textContent).not.toMatch(/caused|wasted|avoidable|render time|GPU time|pixel|episode|width-setter/i);
+    expect(JSON.stringify(getLastSession())).toContain('width-setter');
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
     refreshOverlay();
     card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
@@ -699,11 +694,8 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="backing-seeded"]')!;
-    expect(card.textContent).toContain('Large canvas backing store · Review candidate');
-    expect(card.textContent).toContain('Actual 400×200; expected 200×100; area ratio 4');
-    expect(card.textContent).toContain('2 affected frames');
-    expect(card.textContent).toContain('GPU cost');
-    expect(card.textContent).toContain('required image quality');
+    expect(card.textContent).toContain('Oversized canvas · EffectCanvas');
+    expect(card.textContent).toContain('2 frames · backing store up to 4× larger than displayed');
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
     refreshOverlay();
     card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
@@ -728,7 +720,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-resize"]')!;
-    expect(card.textContent).toContain('Resets during active work');
+    expect(card.textContent).toContain('Canvas resets while drawing');
     card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="detached-resize"]')).toBeNull();
@@ -748,14 +740,10 @@ describe('overlay flyout', () => {
     refreshOverlay();
     const card = [...root.querySelectorAll<HTMLElement>('.repeated-finding[data-canvas-id="seeded"]')]
       .find(candidate => candidate.dataset.findingId?.startsWith('repeated-draw-work'))!;
-    expect(card.textContent).toContain('Repeated draw commands');
-    expect(card.textContent).toContain('Review candidate');
-    expect(card.textContent).toContain('2 repeated frames');
-    expect(card.textContent).toContain('Repeated raster operations: 5');
-    expect(card.textContent).toContain('Canvas2D API self-time: 3.5 ms');
-    expect(card.textContent).toContain('Comparison gaps: 3, 2');
-    expect(card.textContent).toContain('Unknown coverage: 1 of 3 active frames');
-    expect(card.textContent).not.toMatch(/wasted|pixel-identical|avoidable/i);
+    expect(card.textContent).toContain('Repeated drawing · EffectCanvas');
+    expect(card.textContent).toContain('2 near-identical frames · 5 draw calls · 3.5 ms');
+    expect(card.textContent).not.toMatch(/wasted|pixel-identical|avoidable|gap/i);
+    expect(JSON.stringify(getLastSession())).toContain('"comparisonGap":2');
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
     refreshOverlay();
     card.querySelector<HTMLButtonElement>('[data-action="locate-current"]')!.click();
@@ -776,7 +764,7 @@ describe('overlay flyout', () => {
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
     const card = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="detached-repeated"]')!;
-    expect(card.textContent).toContain('Repeated draw commands');
+    expect(card.textContent).toContain('Repeated drawing');
     card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     refreshOverlay();
     expect(root.querySelector('.outline[data-canvas-id="detached-repeated"]')).toBeNull();
@@ -1617,9 +1605,7 @@ describe('overlay copy', () => {
 
     root.querySelector<HTMLButtonElement>('.counts')!.click();
     refreshOverlay();
-    expect(root.querySelector('.note')?.textContent).toContain(
-      'canvas-scan watches what your app asks each canvas to draw',
-    );
+    expect(root.querySelector('.note')).toBeNull();
     expect(JARGON.filter((pattern) => pattern.test(visibleText()))).toEqual([]);
 
     root
@@ -1834,8 +1820,8 @@ describe('overlay session comparison', () => {
     expect(artifact.candidate.canvasId).toBe('candidate-b');
     expect(artifact.candidate.findingIndex).toBe(Number(compare.dataset.findingIndex));
     const panel = root.querySelector<HTMLElement>('.comparison-panel')!;
-    expect(panel.textContent).toContain('Pairing: user-selected');
-    expect(panel.textContent).toContain('improvementEstablished: false');
+    expect(panel.textContent).toContain('Baseline: Finding 1');
+    expect(panel.textContent).toContain('Candidate: Finding');
   });
 
   it('renders every comparable measure with neutral pair wording', () => {
@@ -1844,11 +1830,8 @@ describe('overlay session comparison', () => {
     root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
     recordFinding('second', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
     const text = root.querySelector('.comparison-panel')?.textContent ?? '';
-    for (const label of ['Active window count', 'Raster operation count', 'Canvas2D API self-time', 'Maximum window Canvas2D API self-time', 'Unknown command window count', 'Repeated window count', 'Repeated raster operation count', 'Comparison gap count']) expect(text).toContain(`${label}: baseline `);
-    expect(text).toContain('equal in this pair');
-    expect(text).toContain('observed-timing-pair');
-    expect(text).toContain('One selected pair does not establish a performance improvement.');
-    expect(text).not.toMatch(/\b(fixed|faster|improved|regressed)\b|same pixels|pixel identity|caused by|wasted work|auto.?match/i);
+    for (const label of ['Active window count', 'Raster operation count', 'Canvas2D API self-time', 'Maximum window Canvas2D API self-time', 'Unknown command window count', 'Repeated window count', 'Repeated raster operation count', 'Comparison gap count']) expect(text).toMatch(new RegExp(`${label}: [\\d.]+ → [\\d.]+`));
+    expect(text).not.toMatch(/\b(fixed|faster|improved|regressed)\b|same pixels|pixel identity|caused by|wasted work|auto.?match|in this pair|observed-timing-pair|improvementEstablished/i);
   });
 
   it('shows exact incomplete evidence without measures and keeps the baseline for a later recording', () => {
@@ -1859,8 +1842,7 @@ describe('overlay session comparison', () => {
     const compare = root.querySelector<HTMLButtonElement>('.comparison-action')!;
     activateWithKeyboard(compare, ' '); refreshOverlay();
     const text = root.querySelector('.comparison-panel')?.textContent ?? '';
-    expect(text).toContain('Comparison status: incomparable');
-    expect(text).toContain('Incomparable reason: incomplete-evidence');
+    expect(text).toContain("Couldn't compare: incomplete evidence");
     expect(text).not.toMatch(/\bdelta\b|higher in this pair|lower in this pair|equal in this pair|unknown in this pair/);
     root.querySelector<HTMLButtonElement>('.record')!.click(); refreshOverlay();
     expect(root.querySelector('.comparison-panel')?.textContent ?? '').not.toContain('COMPARISON COMPLETE');
@@ -1979,13 +1961,13 @@ describe('overlay explanation action', () => {
     refreshOverlay();
     expect(getRecordingState()).toBe('recording');
     expect(root.querySelector('.explanation-panel')?.textContent).toContain('EXPLANATION ACTIVE');
-    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Repeat the interaction now. Capture stops after 10 seconds.');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Repeat the interaction now — stops after 10 s, or press Stop.');
     expect(action.getAttribute('aria-pressed')).toBe('true');
     root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
     refreshOverlay();
     expect(action.getAttribute('aria-pressed')).toBe('false');
-    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Command result: unknown');
-    expect(root.querySelector('.explanation-panel')?.textContent).toContain('missing-reference');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain("Couldn't compare the frames");
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('no two frames were available to compare');
     expect(getLastExplanation()).toMatchObject({
       source: { sessionId: sourceSessionId, findingIndex: 0, canvasId: record.id },
       followUp: { canvasId: record.id },
@@ -2054,7 +2036,7 @@ describe('overlay explanation action', () => {
     expect(root.activeElement).toBe(actions[1]);
     actions[1].click();
     refreshOverlay();
-    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Finding 2:');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Finding 2 ·');
     expect(actions[0].getAttribute('aria-pressed')).toBe('false');
     expect(actions[1].getAttribute('aria-pressed')).toBe('true');
     stopRecording();
@@ -2072,7 +2054,7 @@ describe('overlay explanation action', () => {
       refreshOverlay();
       const status = getShadowRoot().querySelector<HTMLElement>('.finding-status');
       expect(status?.textContent).toContain('Explaining now');
-      expect(status?.textContent).toContain('Capture stops after 10 seconds');
+      expect(status?.textContent).toContain('stops after 10 s');
       expect(scrollSpy).toHaveBeenCalled();
       stopRecording();
       refreshOverlay();
@@ -2089,7 +2071,7 @@ describe('overlay explanation action', () => {
     action.dataset.sessionId = 'stale-session';
     action.click();
     refreshOverlay();
-    expect(getShadowRoot().querySelector<HTMLElement>('.finding-status')?.textContent).toContain('saved recording changed');
+    expect(getShadowRoot().querySelector<HTMLElement>('.finding-status')?.textContent).toContain('Recording changed');
     expect(getRecordingState()).not.toBe('recording');
   });
 
@@ -2102,7 +2084,7 @@ describe('overlay explanation action', () => {
     const manual = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
     const structure = (panel: HTMLElement) => [...panel.children].map(child => `${child.tagName}.${child.className}`);
     const manualStructure = structure(manual);
-    expect(manual.textContent).toContain('Stop reason: manual');
+    expect(manual.textContent).toContain('EXPLANATION COMPLETE');
 
     startRecording();
     emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
@@ -2112,7 +2094,7 @@ describe('overlay explanation action', () => {
     refreshOverlay();
     vi.advanceTimersByTime(10000);
     const automatic = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
-    expect(automatic.textContent).toContain('Stop reason: max-duration');
+    expect(automatic.textContent).toContain('EXPLANATION COMPLETE');
     expect(structure(automatic)).toEqual(manualStructure);
   });
 
@@ -2137,9 +2119,8 @@ describe('overlay explanation action', () => {
     vi.advanceTimersByTime(10000);
     const panel = getShadowRoot().querySelector<HTMLElement>('.explanation-panel')!;
     expect(panel.textContent).toContain('EXPLANATION COMPLETE');
-    expect(panel.textContent).toContain('Stop reason: max-duration');
-    expect(panel.textContent).toContain('Command result: unknown');
-    expect(panel.textContent).toContain('missing-reference');
+    expect(panel.textContent).toContain("Couldn't compare the frames");
+    expect(panel.textContent).toContain('no two frames were available to compare');
     const copy = panel.querySelector('.explanation-copy');
     refreshOverlay();
     expect(getShadowRoot().querySelector('.explanation-copy')).toBe(copy);
@@ -2201,15 +2182,10 @@ describe('overlay explanation action', () => {
     expect(artifact.firstDifference).toMatchObject({ ordinal: 0, reason: 'argument-token' });
     expect(artifact.stacks.map(sample => sample.reason)).toEqual(['first-raster', 'first-difference']);
     expect(artifact.stacks[1]).toMatchObject({ windowIndex: 12, commandOrdinal: 0 });
-    expect(visible).toContain('Command result: changed');
-    expect(visible).toContain('First normalized command difference');
-    expect(visible).toContain('Reference command: call fillRect');
-    expect(visible).toContain('Target command: call fillRect');
-    expect(visible).toContain('Draw callsite');
-    expect(visible).toContain('First selected raster');
-    expect(visible).toContain('First command difference');
-    expect(visible).toContain('Window 12, command 0');
-    expect(visible).not.toMatch(/caused by|responsible|wasted work|same pixels/i);
+    expect(visible).toContain('fillRect was called with different arguments');
+    expect(visible).toContain('Callsite captured but not mapped to app source');
+    expect(visible).toContain('+9 framework frames');
+    expect(visible).not.toMatch(/caused by|responsible|wasted work|same pixels|Reference command|Target command/i);
     expect(visible).not.toContain('918273.645');
     expect(visible).not.toContain('771928.125');
     for (const token of tokens) expect(visible).not.toContain(token);
@@ -2242,12 +2218,10 @@ describe('overlay explanation action', () => {
       expect(dropped).toBeGreaterThan(0);
       expect(artifact.stacks[0].frames).toHaveLength(20);
       expect(artifact.droppedEntryCounts.stackFrames).toBe(dropped);
-      expect(visible).toContain(`Dropped frames: ${dropped}`);
-      expect(visible).toContain(`stackFrames=${dropped}`);
-      expect(visible).toContain('Command result: unknown');
-      expect(visible).toContain('Callsite coverage: incomplete');
-      expect(visible).toContain('Callsite limits: stack-frame-limit');
-      expect(visible).toContain(`frames-per-stack: maximum=20, rejected=${dropped}, reason=stack-frame-limit`);
+      expect(visible).toContain('+20 framework frames');
+      expect(visible).not.toContain(`stackFrames=${dropped}`);
+      expect(JSON.stringify(artifact)).toContain(`"stackFrames":${dropped}`);
+      expect(visible).toContain("Couldn't compare the frames");
     } finally {
       error.stackTraceLimit = previousLimit;
     }
@@ -2267,9 +2241,8 @@ describe('overlay explanation action', () => {
     const artifact = getLastExplanation()!;
     const visible = getShadowRoot().querySelector('.explanation-panel')?.textContent ?? '';
     expect(artifact.comparisons.map(comparison => comparison.status)).toEqual(['unknown', 'same']);
-    expect(visible).toContain('Command result: same');
-    expect(visible).toContain('No normalized command difference was observed.');
-    expect(visible).toContain('1 commands');
+    expect(visible).toContain('The same commands ran again — nothing changed between the frames.');
+    expect(visible).not.toContain('normalized');
   });
 
   it('shows an unknown limit, drop count, and gap without raw arguments', () => {
@@ -2289,13 +2262,11 @@ describe('overlay explanation action', () => {
     const visible = getShadowRoot().querySelector('.explanation-panel')?.textContent ?? '';
     expect(artifact.comparisons.at(-1)).toMatchObject({ status: 'unknown', unknownReason: 'argument-limit' });
     expect(artifact.droppedEntryCounts.commandArguments).toBe(1);
-    expect(visible).toContain('Command result: unknown');
-    expect(visible).toContain('Command difference is unknown.');
-    expect(visible).toContain('Unknown reason: argument-limit');
-    expect(visible).toContain('maxArgumentsPerCommand=20');
-    expect(visible).toContain('commandArguments=1');
-    expect(visible).toContain('First gap:');
+    expect(visible).toContain("Couldn't compare the frames — too many arguments to record.");
+    expect(visible).not.toContain('argument-limit');
+    expect(visible).not.toContain('maxArgumentsPerCommand');
     expect(visible).not.toContain('400000');
+    expect(JSON.stringify(artifact)).toContain('"commandArguments":1');
   });
 
   it('hides the action for a detached finding and keeps one unavailable message', () => {
@@ -2309,7 +2280,7 @@ describe('overlay explanation action', () => {
     card.querySelector<HTMLButtonElement>('.finding-toggle')!.click();
     refreshOverlay();
     expect(card.querySelector<HTMLButtonElement>('.explanation-action')?.hidden).toBe(true);
-    expect(card.textContent).toContain('Capture cannot start because the canvas is not on the page. Saved evidence remains available.');
+    expect(card.textContent).toContain('Canvas not on the page.');
     expect(card.querySelectorAll('.finding-unavailable')).toHaveLength(1);
     document.body.append(canvas);
     emitReport(makeReport({ canvasId: 'detached-explanation', rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
@@ -2329,8 +2300,8 @@ describe('overlay explanation action', () => {
     action.click();
     refreshOverlay();
     expect(getRecordingState()).toBe('complete');
-    expect(root.querySelector('.finding-status')?.textContent).toBe('Explain next interaction cannot start because the recorded canvas is not available. Saved evidence remains available.');
-    expect(root.querySelector('.explanation-panel')?.textContent).toContain('recorded canvas is not available');
+    expect(root.querySelector('.finding-status')?.textContent).toBe('Canvas is no longer on the page.');
+    expect(root.querySelector('.explanation-panel')?.textContent).toContain('Canvas is no longer on the page.');
     expect(root.querySelectorAll('.finding-status')).toHaveLength(1);
   });
 });
@@ -2421,27 +2392,31 @@ describe('overlay saved-session trims and export', () => {
     return root;
   }
 
-  it('marks heavy maximum frames that absorb deferred reallocation after a canvas reset', () => {
+  it('keeps heavy reset context in the JSON and off the card', () => {
     mountOverlay();
     startRecording();
     emitReport(makeReport({ canvasId: 'flagged-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3, followsCanvasReset: true }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'clean-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(false), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
-    const root = openCompletedFlyout();
-    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="flagged-heavy"]')?.textContent).toContain(', after canvas reset');
-    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="clean-heavy"]')?.textContent).not.toContain('after canvas reset');
+    openCompletedFlyout();
+    expect(getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="flagged-heavy"]')?.textContent).not.toContain('canvas reset');
+    expect(JSON.stringify(getLastSession())).toContain('"followsCanvasReset":true');
   });
 
-  it('reports the numeric distance above the heavy-work gate', () => {
+  it('keeps the heavy-work gate numbers in the JSON', () => {
     mountOverlay();
     startRecording();
     emitReport(makeReport({ canvasId: 'gated', canvasApiSelfTimeMs: 8.8, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
-    const root = openCompletedFlyout();
-    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="gated"]')?.textContent).toContain('Gate distance: 0.8 ms above the 8 ms threshold');
+    openCompletedFlyout();
+    const card = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="gated"]')!;
+    expect(card.textContent).toContain('Slowest frame');
+    expect(card.textContent).not.toContain('threshold');
+    const finding = getLastSession()!.findings.find(candidate => candidate.canvasId === 'gated')!;
+    expect(finding.type === 'heavy-canvas-work' && finding.gateExcessMs === 0.8).toBe(true);
   });
 
-  it('labels StrictMode-style consecutive duplicate frames on the card', () => {
+  it('keeps StrictMode duplicate counts in the JSON and off the card', () => {
     mountOverlay();
     const canvas = makeCanvas();
     canvas.width = 100; canvas.height = 50;
@@ -2450,8 +2425,11 @@ describe('overlay saved-session trims and export', () => {
       emitReport(makeReport({ canvasId: 'strict-duplicates', rasterOperationCount: 2 }), canvas, { windowIndex, timestampMs: windowIndex * 10 });
     }
     stopRecording(); refreshOverlay();
-    const root = openCompletedFlyout();
-    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="strict-duplicates"]')?.textContent).toContain('StrictMode-style consecutive duplicates: 2');
+    openCompletedFlyout();
+    const card = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="strict-duplicates"]')!;
+    expect(card.textContent).not.toContain('StrictMode');
+    const finding = getLastSession()!.findings.find(candidate => candidate.canvasId === 'strict-duplicates')!;
+    expect(finding.type === 'repeated-draw-work' && finding.strictModeStyleDuplicates === 2).toBe(true);
   });
 
   it('downloads the session JSON under a deterministic filename', () => {
@@ -2504,21 +2482,21 @@ describe('overlay saved-session trims and export', () => {
     expect(children.indexOf(download)).toBeLessThan(children.indexOf(header.querySelector<HTMLElement>('.session-copy-status')!));
   });
 
-  it('shows the finding disclaimer only when findings exist', () => {
+  it('shows the empty-findings line only when findings are absent', () => {
     mountOverlay();
     startRecording();
     emitReport(makeReport({ canvasId: 'with-finding' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
     let text = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.textContent!;
-    expect(text).toContain('A review candidate is a place to inspect.');
+    expect(text).not.toContain('No findings in this recording.');
+    expect(text).not.toContain('review candidate');
     startRecording();
     stopRecording(); refreshOverlay();
     text = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.textContent!;
-    expect(text).not.toContain('A review candidate is a place to inspect.');
-    expect(text.match(/No review candidates met the finding thresholds/g)).toHaveLength(1);
+    expect(text.match(/No findings in this recording\./g)).toHaveLength(1);
   });
 
-  it('shows Owner and Canvas ID once per view section', () => {
+  it('shows the owner once in the summaries and once in each finding headline', () => {
     mountOverlay();
     startRecording();
     emitReport(makeReport({ canvasId: 'dedupe-owner', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
@@ -2529,13 +2507,14 @@ describe('overlay saved-session trims and export', () => {
     refreshOverlay();
     expect(card.textContent).not.toContain('Owner:');
     expect(card.textContent).not.toContain('Canvas ID:');
-    expect(card.textContent).toContain('Episode ID:');
+    expect(card.textContent).not.toContain('Episode ID:');
+    expect(card.textContent).toContain('Heavy frame · EffectCanvas');
     const summariesText = root.querySelector<HTMLElement>('.canvas-summaries')!.textContent!;
-    expect(summariesText.match(/Owner: EffectCanvas/g)).toHaveLength(1);
+    expect(summariesText.match(/EffectCanvas/g)).toHaveLength(1);
     expect(summariesText).toContain('Canvas ID: dedupe-owner');
   });
 
-  it('caps the reset-event list at three events plus a remaining count', () => {
+  it('keeps the reset-event list in the JSON and off the card', () => {
     vi.stubGlobal('devicePixelRatio', 4);
     mountOverlay();
     const canvas = makeCanvas();
@@ -2546,13 +2525,14 @@ describe('overlay saved-session trims and export', () => {
     const sources = ['width-setter', 'height-setter', 'context-reset', 'width-setter', 'height-setter'] as const;
     sources.forEach((source, index) => emitResetEvent({ canvasId: 'capped-resets', windowIndex: index < 3 ? 101 : 102, timestampMs: (index + 1) * 10, source, dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' }));
     stopRecording(); refreshOverlay();
-    const root = openCompletedFlyout();
-    const text = root.querySelector<HTMLElement>('.repeated-finding[data-canvas-id="capped-resets"]')!.textContent!;
-    expect(text).toContain('Resets: width-setter (240×120), height-setter (240×120), context-reset (240×120), +2 more');
-    expect(text.match(/height-setter \(240×120\)/g)).toHaveLength(1);
+    openCompletedFlyout();
+    const text = getShadowRoot().querySelector<HTMLElement>('.repeated-finding[data-canvas-id="capped-resets"]')!.textContent!;
+    expect(text).toContain('5 canvas resets · 5 didn\'t change the size');
+    expect(text).not.toContain('width-setter');
+    expect(JSON.stringify(getLastSession())).toContain('"source":"width-setter"');
   });
 
-  it('caps association lines with a remaining count', () => {
+  it('keeps association lines in the JSON and off the card', () => {
     let clock = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     mountOverlay();
@@ -2566,9 +2546,9 @@ describe('overlay saved-session trims and export', () => {
     emitReport(makeReport({ canvasId: 'association-cap' }), canvas, { windowIndex: 2, timestampMs: 25, startedAtTimestampMs: 20, endedAtTimestampMs: 30 });
     clock = 40;
     stopRecording(); refreshOverlay();
-    const root = openCompletedFlyout();
-    const text = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="association-cap"]')!.textContent!;
-    expect(text.match(/associated with/g)).toHaveLength(3);
-    expect(text).toContain('+1 more associations');
+    openCompletedFlyout();
+    const text = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="association-cap"]')!.textContent!;
+    expect(text).not.toContain('associated with');
+    expect(JSON.stringify(getLastSession()).match(/mark one/g)).toHaveLength(1);
   });
 });

@@ -109,9 +109,9 @@ const runScenario = async (name, mode, action) => {
     let popoverOwner = '';
     let located = false;
     if (finding) {
-      await page.waitForFunction(canvasId => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].some(card => card.getAttribute('data-canvas-id') === canvasId && card.textContent.includes('Resets during active work')), finding.canvasId);
+      await page.waitForFunction(canvasId => [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].some(card => card.getAttribute('data-canvas-id') === canvasId && card.textContent.includes('Canvas resets while drawing')), finding.canvasId);
       ({ cardText, cardCanvasId } = await page.evaluate(canvasId => {
-        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Resets during active work'));
+        const card = [...document.querySelector('[data-canvas-scan]').shadowRoot.querySelectorAll('.repeated-finding')].find(item => item.getAttribute('data-canvas-id') === canvasId && item.textContent.includes('Canvas resets while drawing'));
         return { cardText: card?.textContent ?? '', cardCanvasId: card?.getAttribute('data-canvas-id') ?? '' };
       }, finding.canvasId));
       await page.evaluate(canvasId => {
@@ -166,12 +166,7 @@ const setupEvents = setup?.session?.resetEvents.filter(event => event.canvasId.s
 const setupWindows = setup?.session?.windows.filter(window => window.canvasId.startsWith('one-shot-')) ?? [];
 const outsideEvents = outside?.session?.resetEvents.filter(event => event.canvasId.startsWith('outside-canvas#')) ?? [];
 const cardEvidence = bad?.finding && [
-  `${bad.finding.activeResetCount} active resets of ${bad.finding.observedResetCount} observed resets`,
-  `Affected episodes: ${bad.finding.affectedEpisodeIds.join(', ')}`,
-  `Command statuses: same ${bad.finding.commandStatuses.same}, changed ${bad.finding.commandStatuses.changed}, unknown ${bad.finding.commandStatuses.unknown}`,
-  `Unknown reasons: ${Object.entries(bad.finding.unknownReasons).map(([reason, count]) => `${reason} ${count}`).join(', ')}`,
-  bad.finding.claimBoundary.nonEstablishedFacts,
-  bad.finding.nextCheck,
+  `${bad.finding.activeResetCount} canvas resets · ${bad.finding.dimensionChanges.unchanged} didn't change the size`,
 ];
 const checks = {
   jsonOnly: Boolean(bad && fixed && setup && outside && [bad, fixed, setup, outside].every(result => plain(result.session))),
@@ -190,7 +185,7 @@ const checks = {
   }) && setupEvents.length === 6 && setupWindows.length === 3 && !setup?.session?.findings.some(item => item.type === 'resize-churn'),
   badSpansTwoActiveWindows: new Set(bad?.finding?.resetEvents.map(event => event.windowIndex)).size >= 2,
   outsideResetsStayIdleEvidence: outsideEvents.length === 2 && outsideEvents.map(event => event.source).join(',') === 'width-setter,height-setter' && outsideEvents.every(event => !event.activeRasterOverlap && event.rasterOperationCount === 0) && !outside?.session?.findings.some(item => item.type === 'resize-churn'),
-  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Resets during active work.*Review candidate/.test(bad?.cardText ?? '') && !/caused|wasted|avoidable|render time|GPU time|pixel/i.test(bad?.cardText ?? '')),
+  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Canvas resets while drawing/.test(bad?.cardText ?? '') && !/caused|wasted|avoidable|render time|GPU time|pixel/i.test(bad?.cardText ?? '')),
   locateAndInspect: bad?.located && bad?.cardCanvasId === bad?.finding?.canvasId && bad?.popoverOwner === bad?.finding?.canvasId,
   noWarningsOrPageErrors: warnings.length === 0 && pageErrors.length === 0,
   browserVersionCaptured: Boolean(browserVersion),

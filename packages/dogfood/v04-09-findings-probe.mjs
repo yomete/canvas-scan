@@ -147,16 +147,13 @@ async function runFindingsCase() {
   const renderedTypes = await page.locator('.finding-card .raw-evidence').evaluateAll(nodes => nodes.map(node => node.textContent.match(/type=([^ ]+)/)?.[1]));
   check(JSON.stringify(renderedTypes) === JSON.stringify(session.findings.map(finding => finding.type)), 'renderedFindingOrder');
   check(await page.locator('.finding-card').count() === session.findings.length, 'findingCardCount');
-  check(await page.locator('.findings-list').textContent().then(text => ['Observed:', 'Explanation:', 'Does not establish:', 'Unknown coverage:', 'Next check:', 'Review candidate'].every(label => text.includes(label))), 'findingEvidenceOrder');
+  check(await page.locator('.findings-list').textContent().then(text => ['Heavy frame', 'Repeated drawing', 'Canvas resets while drawing', 'Oversized canvas'].every(label => text.includes(label))), 'findingEvidenceOrder');
   check(await page.locator('.finding-card').evaluateAll(cards => cards.every(card => /type=.+evidenceLevel=candidate canvasId=.+episodeIds=/.test(card.querySelector('.raw-evidence')?.textContent ?? ''))), 'rawFindingCodes');
   check(await page.locator('.finding-card').evaluateAll(cards => cards.every(card => {
     const text = card.textContent ?? '';
     return !/caused|wasted|pixel-identical/i.test(text) && (!/avoidable/i.test(text) || /does not establish[^.]*avoidable/i.test(text));
   })), 'safeFindingClaims');
-  check(await page.locator('.finding-card').evaluateAll(cards => {
-    const lines = cards.flatMap(card => [...card.querySelectorAll('.finding-line')].map(line => line.textContent ?? '')).filter(line => /associated with|overlapped/.test(line));
-    return lines.length > 0 && lines.every(line => /associated with|overlapped/.test(line));
-  }), 'associationLanguage');
+  check(await page.locator('.finding-card').evaluateAll(cards => cards.every(card => !/associated with|overlapped/.test(card.textContent ?? ''))), 'associationLinesOffCards');
   check(await page.locator('.completed-session > .finding-line').count() === 0, 'noGlobalAssociations');
 
   const controls = page.locator('.finding-toggle');

@@ -52,43 +52,35 @@ async function visibleOverlayText(page) {
 
 function findingLabel(type) {
   return {
-    'heavy-canvas-work': 'Heavy canvas work',
-    'repeated-draw-work': 'Repeated draw commands',
-    'resize-churn': 'Canvas resets during active work',
-    'backing-store-mismatch': 'Large canvas backing store',
+    'heavy-canvas-work': 'Heavy frame',
+    'repeated-draw-work': 'Repeated drawing',
+    'resize-churn': 'Canvas resets while drawing',
+    'backing-store-mismatch': 'Oversized canvas',
   }[type];
 }
 
-function commandSummary(command) {
-  if (!command) return 'No command exists at this ordinal.';
-  return `${command.operationKind} ${command.name} · ${command.argumentCount} arguments · ${command.arguments.map(argument => argument.kind).join(', ') || 'none'}`;
+function differenceVerdict(difference) {
+  const name = (difference.target ?? difference.reference)?.name;
+  switch (difference.reason) {
+    case 'argument-token': return difference.reference?.operationKind === 'set' ? `${name} changed` : `${name} was called with different arguments`;
+    case 'argument-kind': return `${name} got a different kind of argument`;
+    case 'argument-count': return `${name} got a different number of arguments`;
+    case 'operation-name': return `${difference.reference?.name ?? 'the command'} became ${name}`;
+    case 'operation-kind': return `${name} is now a different kind of call`;
+    case 'command-added': return 'A draw command was added';
+    case 'command-removed': return 'A draw command was removed';
+  }
+  return '';
 }
 
 function shownChangedEvidence(artifact) {
   const difference = artifact.firstDifference;
   if (!difference) return null;
-  const comparison = artifact.comparisons.find(item => item.difference?.referenceWindowIndex === difference.referenceWindowIndex && item.difference?.targetWindowIndex === difference.targetWindowIndex && item.difference?.ordinal === difference.ordinal && item.difference?.reason === difference.reason);
-  if (!comparison) return null;
   const expected = [
-    `Source finding: ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`,
-    `Stop reason: ${artifact.stopReason}`,
-    `Command result: ${comparison.status}`,
-    `Command ${difference.ordinal}:`,
-    `Reference command: ${commandSummary(difference.reference)}`,
-    `Target command: ${commandSummary(difference.target)}`,
-    `Compared frame indices: ${comparison.referenceWindowIndex} and ${comparison.targetWindowIndex}`,
-    ...Object.entries(artifact.collectionLimits).map(([name, value]) => `${name}=${value}`),
+    'EXPLANATION COMPLETE',
+    `Finding ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`,
+    differenceVerdict(difference),
   ];
-  const drops = Object.entries(artifact.droppedEntryCounts).filter(([, value]) => value > 0);
-  if (drops.length) expected.push(`Drops: ${drops.map(([name, value]) => `${name}=${value}`).join(' · ')}`);
-  expected.push('Explanation limits');
-  for (const limit of artifact.limitResults) {
-    const coordinate = limit.firstAffected ? `${limit.firstAffected.scope}:${limit.firstAffected.windowIndex ?? 'none'}:${limit.firstAffected.commandOrdinal ?? 'none'}` : 'none';
-    expected.push(`${limit.name}: maximum=${limit.maximum}, rejected=${limit.rejectedCount}, reason=${limit.reason ?? 'none'}, first=${coordinate}`);
-  }
-  expected.push(`Callsite coverage: ${artifact.callsiteCoverage.status}`);
-  if (artifact.callsiteCoverage.incompleteReasons.length) expected.push(`Callsite limits: ${artifact.callsiteCoverage.incompleteReasons.join(', ')}`);
-  if (artifact.firstGap) expected.push(`First gap: window ${artifact.firstGap.windowIndex}, command ${artifact.firstGap.commandOrdinal ?? 'none'} (${artifact.firstGap.reason})`);
   return { difference, expected };
 }
 
@@ -158,7 +150,7 @@ try {
   const changedPanel = page.locator('.explanation-panel');
   const changedText = await changedPanel.innerText();
   const changedVisible = await visibleOverlayText(page);
-  check(changedText.includes('Command result: changed') && changedText.includes('First normalized command difference') && changedText.includes('Reference command:') && changedText.includes('Target command:'), 'changedPointerPanel');
+  check(changedText.includes('EXPLANATION COMPLETE') && changedText.includes('fillRect was called with different arguments'), 'changedPointerPanel');
   const copy = page.locator('.explanation-copy');
   await copy.focus();
   check(await copy.evaluate(node => node.getRootNode().activeElement === node), 'copyKeyboardFocus');
@@ -201,7 +193,7 @@ try {
   const unknownText = await unknownPanel.innerText();
   const unknownVisible = await visibleOverlayText(page);
   checks.unknownPanelText = unknownText;
-  check(unknownText.includes('Command result: unknown') && unknownText.includes('Command difference is unknown.') && unknownText.includes('unsupported-value') && unknownText.includes('First gap:'), 'unknownKeyboardPanel');
+  check(unknownText.includes("Couldn't compare the frames") && unknownText.includes('a value could not be compared'), 'unknownKeyboardPanel');
   const unknownPrivateValues = ['#123456', '918273.645', 'privateFixtureKey', 'private fixture object value', 'privateFixtureFunction', 'private fixture function source', 'secret.example.invalid', 'private-path', 'private-query', 'private-fragment', '987654.321'];
   const unknownTokens = unknown.windows.flatMap(window => window.commands).flatMap(command => command.arguments).map(argument => argument.token).filter(Boolean);
   check(unknownPrivateValues.every(value => !unknownVisible.includes(value)) && unknownTokens.every(token => !unknownVisible.includes(token)), 'unknownPrivateValuesHidden');
@@ -216,7 +208,7 @@ try {
   const sameReference = same.windows.find(window => window.windowIndex === sameComparison?.referenceWindowIndex);
   const sameTarget = same.windows.find(window => window.windowIndex === sameComparison?.targetWindowIndex);
   check(same.firstDifference === null && sameComparison?.status === 'same' && sameComparison.difference === null && sameComparison.unknownReason === null, 'sameArtifact');
-  check(sameText.includes('Command result: same') && sameText.includes('No normalized command difference was observed.') && sameText.includes(`Compared windows: ${sameComparison.referenceWindowIndex} (${sameReference.commands.length} commands) and ${sameComparison.targetWindowIndex} (${sameTarget.commands.length} commands).`), 'samePanel');
+  check(sameText.includes('The same commands ran again — nothing changed between the frames.') && sameText.includes(`Finding ${same.source.findingIndex + 1} · ${findingLabel(same.source.findingType)}`), 'samePanel');
   const sameTokens = same.windows.flatMap(window => window.commands).flatMap(command => command.arguments).map(argument => argument.token).filter(Boolean);
   const samePrivateValues = ['#123456', '918273.645'];
   check(samePrivateValues.every(value => !sameVisible.includes(value)) && sameTokens.every(token => !sameVisible.includes(token)), 'samePrivateValuesHidden');
@@ -230,7 +222,7 @@ try {
     const action = root?.querySelector('.explanation-action');
     return action?.hidden === true;
   });
-  check(!await action.isVisible() && (await page.locator('.finding-card').first().innerText()).includes('Capture cannot start because the canvas is not on the page. Saved evidence remains available.'), 'retiredUnavailable');
+  check(!await action.isVisible() && (await page.locator('.finding-card').first().innerText()).includes('Canvas not on the page.'), 'retiredUnavailable');
   checks.privateValuesHidden = checks.changedPrivateValuesHidden && checks.unknownPrivateValuesHidden && checks.samePrivateValuesHidden;
   check(diagnostics.warnings.length === 0 && diagnostics.errors.length === 0 && diagnostics.pageErrors.length === 0, 'browserDiagnostics');
   await context.close();

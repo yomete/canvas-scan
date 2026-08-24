@@ -5,7 +5,7 @@
   "endedAt": "2026-08-04T10:00:01.000Z",
   "durationMs": 1000,
   "stopReason": "manual",
-  "canvasScanVersion": "0.6.1",
+  "canvasScanVersion": "0.6.2",
   "browserFeatures": { "monotonicTime": true, "eventTiming": false, "longAnimationFrames": false },
   "canvases": [
     { "canvasId": "canvas-a", "nearestReactOwner": "Chart", "attributionKind": "jsx-owner", "sourceLocation": { "file": "/src/Chart.tsx", "line": 4, "column": 2 }, "activeWindowCount": 2, "rasterOperationCount": 3, "canvasApiSelfTimeMs": 1.5, "maxWindowSelfTimeMs": 1, "evidenceLevel": "measured", "methodEvidence": {}, "commandStatuses": { "same": 1, "changed": 1, "unknown": 0 } },

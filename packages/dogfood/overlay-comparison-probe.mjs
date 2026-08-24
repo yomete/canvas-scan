@@ -136,7 +136,7 @@ try {
   actions.sameTypeFilter = { findingCount: await page.locator('.finding-card').count(), visibleCandidateIndexes, hiddenCandidateIndexes };
   await comparableAction.click(); await settle(page);
   const comparableText = await page.locator('.comparison-panel').innerText();
-  check(comparableText.includes('Comparison status: comparable'), 'pointerComparable');
+  check(comparableText.includes('COMPARISON COMPLETE') && /: \d+(\.\d+)? → \d+(\.\d+)?/.test(comparableText), 'pointerComparable');
   await activate(page, '.comparison-copy', 'Enter', '.comparison-copy', 'copy-comparable');
   const copiedComparable = await page.evaluate(() => navigator.clipboard.readText());
   evidence.copiedComparable = JSON.parse(copiedComparable);
@@ -155,7 +155,7 @@ try {
   incomparableCandidateIndex = Number(await incomparableAction.getAttribute('data-finding-index'));
   await activate(page, '.comparison-action:not([hidden])', 'Enter', '.comparison-action:not([hidden])', 'compare-incomparable');
   const incomparableText = await page.locator('.comparison-panel').innerText();
-  check(incomparableText.includes('incomplete-evidence') && !/delta|higher in this pair|lower in this pair/.test(incomparableText), 'keyboardIncomparable');
+  check(incomparableText.includes("Couldn't compare: incomplete evidence") && !/delta|higher in this pair|lower in this pair/.test(incomparableText), 'keyboardIncomparable');
   await activate(page, '.comparison-copy', 'Space', '.comparison-copy', 'copy-incomparable');
   const copiedIncomparable = await page.evaluate(() => navigator.clipboard.readText());
   evidence.copiedIncomparable = JSON.parse(copiedIncomparable);

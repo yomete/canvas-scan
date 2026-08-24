@@ -118,13 +118,7 @@ bad ??= capturedModes.bad;
 fixed ??= capturedModes.fixed;
 const badFinding = bad?.session?.findings?.find(finding => finding.type === 'repeated-draw-work' && finding.canvasId === bad?.cardCanvasId);
 const cardEvidence = badFinding && [
-  `${badFinding.repeatedWindowCount} repeated frames`,
-  `Repeated raster operations: ${badFinding.rasterOperationCount}`,
-  `Canvas2D API self-time: ${badFinding.canvasApiSelfTimeMs} ms`,
-  `Comparison gaps: ${badFinding.repeatedWindows.map(window => window.comparisonGap ?? 'none').join(', ')}`,
-  `Unknown coverage: ${badFinding.unknownCoverage.unknownWindowCount} of ${badFinding.unknownCoverage.activeWindowCount} active frames`,
-  badFinding.claimBoundary.nonEstablishedFacts,
-  badFinding.nextCheck,
+  `${badFinding.repeatedWindowCount} near-identical frames · ${badFinding.rasterOperationCount} draw calls · ${badFinding.canvasApiSelfTimeMs} ms`,
 ];
 const checks = {
   jsonOnly: Boolean(bad?.session && fixed?.session && plain(bad.session) && plain(fixed.session)),
@@ -135,7 +129,7 @@ const checks = {
   changedAndUnknownExcluded: Boolean(badFinding && badFinding.repeatedWindows.every(entry => bad.session.windows.find(window => window.windowIndex === entry.windowIndex && window.canvasId === badFinding.canvasId)?.signatureStatus === 'same')),
   wakeUpHasNoFinding: !bad?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('wake-up-canvas#')) && !fixed?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('wake-up-canvas#')),
   fixedHasNoSeededFinding: !fixed?.session?.findings?.some(finding => finding.type === 'repeated-draw-work' && finding.canvasId.startsWith('seeded-canvas#')),
-  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Repeated draw commands.*Review candidate/.test(bad?.cardText ?? '') && !/wasted|pixel-identical|avoidable/i.test(bad?.cardText ?? '')),
+  cardShowsSafeEvidence: Boolean(cardEvidence?.every(text => bad?.cardText.includes(text)) && /Repeated drawing/.test(bad?.cardText ?? '') && !/wasted|pixel-identical|avoidable/i.test(bad?.cardText ?? '')),
   cardOpensSeededCanvas: bad?.popoverOwner === bad?.cardCanvasId,
   noWarningsOrPageErrors: warnings.length === 0 && pageErrors.length === 0,
   instrumentationStayedEnabled: !warnings.some(warning => /disabled|kill/i.test(warning)),

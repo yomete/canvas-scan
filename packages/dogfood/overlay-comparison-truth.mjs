@@ -31,8 +31,9 @@ function exactKeys(value, keys, label) {
 }
 function exactArray(value, expected, label) { if (!Array.isArray(value) || stable(value) !== stable(expected)) fail(`${label} is wrong`); }
 function findingLabel(type) {
-  return { 'heavy-canvas-work': 'Concentrated canvas work', 'repeated-draw-work': 'Repeated draw commands', 'resize-churn': 'Resets during active work', 'backing-store-mismatch': 'Large canvas backing store' }[type];
+  return { 'heavy-canvas-work': 'Heavy frame', 'repeated-draw-work': 'Repeated drawing', 'resize-churn': 'Canvas resets while drawing', 'backing-store-mismatch': 'Oversized canvas' }[type];
 }
+const sessionLabel = id => id.replace(/^canvas-scan-/, '');
 function measureLabel(id) {
   const labels = {
     'active-window-count': 'Active window count', 'raster-operation-count': 'Raster operation count',
@@ -51,7 +52,10 @@ function directionText(measure) {
   if (measure.interpretation === 'structural') return measure.direction;
   return { increased: 'higher in this pair', decreased: 'lower in this pair', unchanged: 'equal in this pair', unknown: 'unknown in this pair' }[measure.direction];
 }
-function measureLine(measure) { return `${measureLabel(measure.id)}: baseline ${measure.baseline} · candidate ${measure.candidate} · delta ${measure.delta} · ${measure.unit} · ${directionText(measure)} · ${measure.interpretation}`; }
+function measureLine(measure) {
+  const delta = measure.delta === null ? '' : ` (${measure.delta > 0 ? '+' : ''}${measure.delta}${measure.unit === 'ms' ? ' ms' : ''})`;
+  return `${measureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`;
+}
 function validatePng(value, name) {
   if (!value.subarray(0, 8).equals(png) || value.length < 1000 || value.length < 24) fail(`${name} is not a nontrivial PNG`);
   const width = value.readUInt32BE(16); const height = value.readUInt32BE(20);
@@ -137,16 +141,15 @@ export function checkOverlayComparisonEvidence(directory) {
 
   const comparablePanel = flow.panelText.comparable; const incomparablePanel = flow.panelText.incomparable;
   for (const expected of [
-    'BASELINE KEPT', `Session: ${baseline.sessionId}`, `Finding ${flow.selectedIndexes.comparable.baselineFindingIndex + 1}: ${findingLabel(baseline.findings[flow.selectedIndexes.comparable.baselineFindingIndex].type)}`,
-    'COMPARISON COMPLETE', `Baseline: Session ${expectedComparable.baseline.sessionId} · Finding ${expectedComparable.baseline.findingIndex + 1}: ${findingLabel(expectedComparable.baseline.findingType)}`,
-    `Candidate: Session ${expectedComparable.candidate.sessionId} · Finding ${expectedComparable.candidate.findingIndex + 1}: ${findingLabel(expectedComparable.candidate.findingType)}`,
-    'Pairing: user-selected', 'Canvas IDs and owner names are session-local labels and were not used to pair the findings.', 'Comparison status: comparable',
-    'One selected pair does not establish a performance improvement.', 'improvementEstablished: false', ...expectedComparable.measures.map(measureLine),
+    'BASELINE KEPT', `Finding ${flow.selectedIndexes.comparable.baselineFindingIndex + 1} · ${findingLabel(baseline.findings[flow.selectedIndexes.comparable.baselineFindingIndex].type)}`,
+    'COMPARISON COMPLETE', `Baseline: Finding ${expectedComparable.baseline.findingIndex + 1} · ${findingLabel(expectedComparable.baseline.findingType)} · session ${sessionLabel(expectedComparable.baseline.sessionId)}`,
+    `Candidate: Finding ${expectedComparable.candidate.findingIndex + 1} · ${findingLabel(expectedComparable.candidate.findingType)} · session ${sessionLabel(expectedComparable.candidate.sessionId)}`,
+    ...expectedComparable.measures.map(measureLine),
   ]) if (!comparablePanel.includes(expected)) fail(`comparable panel lacks: ${expected}`);
-  for (const expected of ['Comparison status: incomparable', 'Incomparable reason: incomplete-evidence', 'One selected pair does not establish a performance improvement.', 'improvementEstablished: false']) if (!incomparablePanel.includes(expected)) fail(`incomparable panel lacks: ${expected}`);
+  for (const expected of ["Couldn't compare: incomplete evidence"]) if (!incomparablePanel.includes(expected)) fail(`incomparable panel lacks: ${expected}`);
   if (/\bdelta\b|higher in this pair|lower in this pair|equal in this pair|unknown in this pair/.test(incomparablePanel)) fail('incomparable panel has measure claims');
   const replacementFinding = incomparable.findings[flow.actions.replacement.findingIndexAfter];
-  if (!flow.panelText.beforeReplacement.includes('COMPARISON COMPLETE') || !flow.panelText.afterReplacement.includes('BASELINE KEPT') || flow.panelText.afterReplacement.includes('COMPARISON COMPLETE') || !flow.panelText.afterReplacement.includes(`Session: ${incomparable.sessionId}`) || !flow.panelText.afterReplacement.includes(`Finding ${flow.actions.replacement.findingIndexAfter + 1}: ${findingLabel(replacementFinding.type)}`)) fail('replacement panel differs');
+  if (!flow.panelText.beforeReplacement.includes('COMPARISON COMPLETE') || !flow.panelText.afterReplacement.includes('BASELINE KEPT') || flow.panelText.afterReplacement.includes('COMPARISON COMPLETE') || !flow.panelText.afterReplacement.includes(`Finding ${flow.actions.replacement.findingIndexAfter + 1} · ${findingLabel(replacementFinding.type)}`)) fail('replacement panel differs');
   const publicText = `${comparablePanel}\n${incomparablePanel}\n${stable(copiedComparable)}\n${stable(copiedIncomparable)}`;
   if (forbidden.test(publicText)) fail('forbidden claim text');
   if (privateText.test(publicText)) fail('private fixture text leaked');
