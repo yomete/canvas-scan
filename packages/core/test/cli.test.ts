@@ -372,3 +372,75 @@ describe('next gate: stacked comparators', () => {
     }
   });
 });
+
+describe('canvas-scan init CLI: entry candidates and reporting', () => {
+  it('finds a plain-JavaScript src/index.js entry', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    installPackage(dir);
+    fs.mkdirSync(path.join(dir, 'src'));
+    // src/index.ts was a candidate while its JavaScript sibling was not, so a
+    // plain-JavaScript project using this entry was told no entry existed.
+    fs.writeFileSync(path.join(dir, 'src/index.js'), 'console.log(1);\n');
+
+    const plan = planInit(dir);
+
+    expect(plan.action).toMatchObject({ kind: 'prepend', file: path.join(dir, 'src/index.js') });
+    expect(applyInit(plan, dir)).toMatchObject({ changed: true });
+    expect(fs.readFileSync(path.join(dir, 'src/index.js'), 'utf8').split('\n')[0])
+      .toBe("import 'canvas-scan/auto';");
+  });
+
+  it('finds src/index.jsx as well', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    installPackage(dir);
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src/index.jsx'), 'export {};\n');
+
+    expect(planInit(dir).action).toMatchObject({ kind: 'prepend', file: path.join(dir, 'src/index.jsx') });
+  });
+
+  it('reports a write failure instead of throwing a stack trace', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    installPackage(dir);
+    fs.mkdirSync(path.join(dir, 'src'));
+    const entry = path.join(dir, 'src/main.ts');
+    fs.writeFileSync(entry, 'export {};\n');
+    fs.chmodSync(entry, 0o444);
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+
+    try {
+      const code = cli.run(['init', dir, '--write']);
+      expect(code).toBe(1);
+      expect(errors.join('\n')).toContain('Could not write:');
+      expect(errors.join('\n')).not.toContain('at ');
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+      fs.chmodSync(entry, 0o644);
+    }
+  });
+
+  it('prints the instructions once with --write', () => {
+    const dir = fixture();
+    // No manifest at all, so the framework is unknown and the plan is manual.
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      expect(cli.run(['init', dir, '--write'])).toBe(0);
+    } finally {
+      console.log = originalLog;
+    }
+    const plan = planInit(dir);
+    const repeated = logs.filter(line => line === plan.instructions);
+    expect(repeated).toHaveLength(1);
+  });
+});

@@ -40,6 +40,10 @@ Reload, press **Record investigation** in the overlay, reproduce the slow intera
 
 ![the canvas-scan overlay with ranked findings](docs/overlay.png)
 
+Findings are ranked by measured Canvas2D API self-time, highest first, across all four types. Each card carries a **What this shows, and what it does not** disclosure holding the evidence level, the claim boundary, and the next check.
+
+**Keyboard.** The overlay's controls, the canvas rows in the activity flyout, and the finding cards are all reachable by Tab. Enter opens a canvas row's details and Escape returns focus to the row that opened it. Escape acts only while focus is inside the overlay, so a dialog or menu in your own application keeps its own dismissal. Inspect mode's outlines are a pointer affordance: they highlight canvases under the cursor and have no tab stops of their own, because adding one per canvas would insert them into your application's tab order. The activity flyout offers the same canvases as focusable rows, so nothing is reachable only by pointer.
+
 ## What it finds
 
 - **`heavy-canvas-work`** — one draw episode contains at least 8 ms of measured synchronous Canvas2D API self-time. Not GPU or render time. Next: check the top measured methods and the application code that calls them.
@@ -99,6 +103,25 @@ import {
 } from 'canvas-scan';
 ```
 
+### Options
+
+`start(options)` — and `import 'canvas-scan/auto'`, which calls it with the defaults — accepts:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `captureEvery` | `1` | Report one window in every *n*. See **Sampling** below. |
+| `minFlashRasterOps` | `2` | The raster operations a repeated window must reach before the overlay flashes its outline. Also sets `minRepeatedRasterOps` when that is absent. |
+| `minRepeatedRasterOps` | `minFlashRasterOps` | The raster operations a repeated window must reach to count towards a `repeated-draw-work` finding. Set it to tune findings without changing the flash, or the flash without changing findings. |
+| `overlay` | `true` | Mount the in-page overlay. |
+| `skipOwners` | `[]` | Component names to skip when naming a canvas's owner. |
+| `debug` | `false` | Write the frame loop's per-canvas `console.debug` lines. |
+
+### Sampling
+
+Above `captureEvery: 1`, canvas-scan reports one window in every *n*. The windows in between are still measured: their raster operations, Canvas2D API self-time, and method evidence are carried into the next reported window, and that window's `coveredWindowCount` says how many windows it covers. A sampled recording therefore totals the whole of what was measured, and the 8 ms heavy-work gate sees the real figure. The episode-break gap scales with `captureEvery` for the same reason, so grouping does not collapse into one window per episode.
+
+The session records the rate it was made at as `captureEvery`. `compareSessions` refuses a pair recorded at different rates with `sampling-mismatch`, because their totals are not on one scale.
+
 ## The artifacts
 
 `InvestigationSessionV1`, `ExplanationArtifactV1`, and `ComparisonArtifactV1` are versioned plain JSON: session metadata, browser features, canvases, windows, reset and lifecycle events, episodes, browser evidence entries, findings, collection limits, and dropped-entry counts. Every finding carries a `claimBoundary` stating what the evidence cannot prove and a `nextCheck` naming the next useful step.
@@ -111,11 +134,12 @@ Measured at the 1,000-operation gate level: full capture adds < 2 ms mean and < 
 
 ## Scope and honest limits
 
-- Main-realm, main-thread Canvas2D only. Worker and transferred (OffscreenCanvas) canvases are outside the boundary and are reported as unobservable, never as zero-cost.
+- Main-realm, main-thread Canvas2D only. Worker and transferred (OffscreenCanvas) canvases are outside the boundary. Work there is absent from the artifact — no canvas, no windows, no marker — and is never reported as zero-cost. canvas-scan reports what it observed and never claims the recording is complete.
 - Command signatures cannot prove pixel identity. Untracked or changed inputs make a window `unknown`. `CanvasPattern` inputs remain `unknown`; animated images behind stable URLs are not proven stable.
 - A `reset()` call or a width/height reset makes that window `unknown`, and observer-only reset detection can keep later windows `unknown` until a directly observed reset restores trusted state.
 - Tracked source-canvas invalidation follows direct `drawImage()` dependencies only — it does not propagate through deeper chains.
-- Raster work inside a skipped sampling window makes the next captured comparison `unknown`; idle skipped windows remain comparable.
+- Raster work inside a skipped sampling window makes the next captured comparison `unknown`; idle skipped windows remain comparable. The work itself is not discarded — see **Sampling**.
+- `getImageData` and `measureText` are timed and counted but their arguments are not part of the command signature, so they never make a window `changed`. `createPattern` and `isPointInPath` are not instrumented at all, and time spent in them is not measured.
 - Native canvas APIs captured before canvas-scan installs are outside the observable boundary — hence the "first import" rule.
 - Browser features (event timing, long animation frames) are detected per session and can be unavailable; associated evidence never claims causality.
 - React attribution requires an early load and a supported React setup; callsite mapping requires development source maps.

@@ -379,4 +379,46 @@ describe('sampling contract', () => {
       unknownReason: null,
     });
   });
+
+  it('carries work from skipped windows into the next reported one', () => {
+    const { context, record } = makeCanvas();
+
+    // Window 1 is skipped by sampling and window 2 is reported.
+    setWindowCaptured(false);
+    context.fillRect(0, 0, 10, 10);
+    context.fillRect(0, 0, 10, 10);
+    record.selfTimeMs = 3;
+    expect(finish(record, 1)).toBeUndefined();
+
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    // Pinned after the call, so the wrapper's own measured microseconds do not
+    // make the assertion depend on the clock.
+    record.selfTimeMs = 1;
+    const report = finish(record, 2)!;
+
+    // Three raster operations happened across the two windows and all three
+    // are counted. Sampling decides what is reported, not what is measured.
+    expect(report.rasterOperationCount).toBe(3);
+    expect(report.canvasApiSelfTimeMs).toBe(4);
+    expect(report.coveredWindowCount).toBe(2);
+    // Method evidence from the skipped window travels with the totals.
+    expect(report.methodEvidence.fillRect.count).toBe(3);
+
+    // The carry is cleared, so the next reported window is its own again.
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    record.selfTimeMs = 0.5;
+    const next = finish(record, 4)!;
+    expect(next.rasterOperationCount).toBe(1);
+    expect(next.canvasApiSelfTimeMs).toBe(0.5);
+    expect(next.coveredWindowCount).toBe(1);
+  });
+
+  it('reports one covered window when nothing was skipped', () => {
+    const { context, record } = makeCanvas();
+    setWindowCaptured(true);
+    context.fillRect(0, 0, 10, 10);
+    expect(finish(record, 2)?.coveredWindowCount).toBe(1);
+  });
 });

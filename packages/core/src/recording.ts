@@ -60,9 +60,14 @@ const RESIZE_CHURN_NEXT_CHECK = 'Check whether sizing or reset calls can run onl
 const BACKING_STORE_MISMATCH_CLAIM = {
   observation: 'The recorded backing area is larger than the DPR-adjusted expected area in the named active windows.',
   explanation: 'The recorded dimensions are a review candidate.',
-  nonEstablishedFacts: 'The evidence does not establish GPU cost, render cost, or the required image quality.',
+  // The displayed size is read from getBoundingClientRect, which reflects CSS
+  // transforms. A canvas scaled down by CSS is genuinely over-provisioned for
+  // the size it is displayed at, so the ratio stands — but a reader has to know
+  // a transform can be the whole reason, or they go hunting a sizing bug that
+  // is not in the sizing code.
+  nonEstablishedFacts: 'The evidence does not establish GPU cost, render cost, or the required image quality. The displayed size includes any CSS transform on the canvas, so a scaled-down canvas raises this ratio without its backing store changing.',
 };
-const BACKING_STORE_MISMATCH_NEXT_CHECK = 'Check the canvas sizing policy and the required image quality.';
+const BACKING_STORE_MISMATCH_NEXT_CHECK = 'Check the canvas sizing policy, any CSS transform on the canvas, and the required image quality.';
 
 let state: RecordingState = 'idle';
 let lastSession: InvestigationSessionV1 | undefined;
@@ -101,6 +106,7 @@ let unsubscribeResetEvents: (() => void) | undefined;
 let unsubscribeLifecycleEvents: (() => void) | undefined;
 let recordingStartWindowIndex = 0;
 let minRepeatedRasterOps = 2;
+let captureEvery = 1;
 let recordingStartOffsets = new Map<string, { rasterOperationCount: number; canvasApiSelfTimeMs: number }>();
 let browserEntries: RecordedBrowserEvidenceEntry[] = [];
 let episodeAssociations: RecordedEpisodeAssociation[] = [];
@@ -320,7 +326,11 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
   let boundaryIndex: number | undefined;
   for (const window of windows) {
     if (window.windowIndex !== boundaryIndex) {
-      if (previousIndex === undefined || window.windowIndex - previousIndex >= 3) {
+      // Three boundaries of stillness end an episode. Sampling makes reported
+      // indices at least captureEvery apart, so the gap scales with it —
+      // otherwise every reported window becomes its own episode at
+      // captureEvery 3 and the per-episode heavy-work gate never fires.
+      if (previousIndex === undefined || window.windowIndex - previousIndex >= 3 * captureEvery) {
         group = [];
         groups.push(group);
       }
@@ -363,24 +373,34 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
         .filter(window => window.signatureStatus === 'same' && window.rasterOperationCount >= minRepeatedRasterOps)
         .map(({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }) => ({ windowIndex, timestampMs, rasterOperationCount, canvasApiSelfTimeMs, comparisonGap }));
       if (repeatedWindows.length === 0) continue;
-      // Labeling only: adjacent repeated windows that drew identical command
-      // streams AND recorded identical work are the structural stand-in for
-      // StrictMode-style double invocation. Nothing is suppressed.
-      let strictModeStyleDuplicates = 0;
+      // Labeling only: back-to-back windows that drew the same command stream
+      // and the same number of raster operations. Nothing is suppressed.
+      //
+      // This used to be called strictModeStyleDuplicates and also required the
+      // two self-times to be equal. Neither part held up. Equality after
+      // rounding to three decimals is trivially true for cheap draws, so the
+      // field fired on applications with no Strict Mode in them; and React's
+      // Strict Mode double-invokes inside one commit, so its duplicate draws
+      // land in the same window rather than in two adjacent ones. What is left
+      // is what can be measured: adjacent identical redraws.
+      let adjacentIdenticalWindowPairs = 0;
       for (let index = 1; index < repeatedWindows.length; index++) {
         if (
           repeatedWindows[index].windowIndex - repeatedWindows[index - 1].windowIndex === 1 &&
-          repeatedWindows[index].rasterOperationCount === repeatedWindows[index - 1].rasterOperationCount &&
-          repeatedWindows[index].canvasApiSelfTimeMs === repeatedWindows[index - 1].canvasApiSelfTimeMs
-        ) strictModeStyleDuplicates++;
+          repeatedWindows[index].rasterOperationCount === repeatedWindows[index - 1].rasterOperationCount
+        ) adjacentIdenticalWindowPairs++;
       }
-      findings.push({ type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, repeatedWindowCount: repeatedWindows.length, rasterOperationCount: repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(repeatedWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), repeatedWindows, strictModeStyleDuplicates, unknownCoverage: { unknownWindowCount: canvasReports.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: canvasReports.length }, claimBoundary: { ...REPEATED_DRAW_WORK_CLAIM }, nextCheck: REPEATED_DRAW_WORK_NEXT_CHECK });
+      findings.push({ type: 'repeated-draw-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, repeatedWindowCount: repeatedWindows.length, rasterOperationCount: repeatedWindows.reduce((total, window) => total + window.rasterOperationCount, 0), canvasApiSelfTimeMs: rounded(repeatedWindows.reduce((total, window) => total + window.canvasApiSelfTimeMs, 0)), repeatedWindows, adjacentIdenticalWindowPairs, unknownCoverage: { unknownWindowCount: canvasReports.filter(window => window.signatureStatus === 'unknown').length, activeWindowCount: canvasReports.length }, claimBoundary: { ...REPEATED_DRAW_WORK_CLAIM }, nextCheck: REPEATED_DRAW_WORK_NEXT_CHECK });
     }
   }
   for (const canvasId of [...new Set(resetEvents.map(event => event.canvasId))]) {
     const observed = resetEvents.filter(event => event.canvasId === canvasId);
     const qualifying = observed.filter(event => event.activeRasterOverlap);
-    if (new Set(qualifying.map(event => event.windowIndex)).size < 2) continue;
+    // The gate wants resets in two windows the application actually drew in.
+    // A reset flushed at the stop carries a window index no frame closed, so
+    // it cannot be the second one — otherwise the finding exists because of
+    // when the user pressed Stop.
+    if (new Set(qualifying.filter(event => !event.flushedAtStop).map(event => event.windowIndex)).size < 2) continue;
     const reportedWindows = new Map(windows.filter(window => window.canvasId === canvasId).map(window => [window.windowIndex, window]));
     const qualifyingWindows = [...new Map(qualifying.map(event => {
       const key = event.windowIndex;
@@ -446,7 +466,11 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   for (const record of records) {
     const pending = takeResetEvents(record);
     if (!pending?.length) continue;
-    const offset = recordingStartOffsets.get(record.id);
+    // record.rasterOps holds the operations since the last window boundary, so
+    // the recording-start offset only applies when the recording began inside
+    // the window that is still open. Subtracting it otherwise takes a
+    // start-of-recording total off a since-last-boundary count.
+    const offset = getCurrentWindowIndex() === recordingStartWindowIndex ? recordingStartOffsets.get(record.id) : undefined;
     const rasterOperationCount = Math.max(0, record.rasterOps - (offset?.rasterOperationCount ?? 0));
     for (const event of pending) captureResetEvent({
       ...event,
@@ -457,6 +481,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
       activeRasterOverlap: rasterOperationCount > 0,
       commandStatus: 'unknown',
       unknownReason: record.resetPendingReason,
+      flushedAtStop: true,
     });
   }
   setMethodEvidenceCollectionEnabled(false);
@@ -477,7 +502,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
-    stopReason, canvasScanVersion: '0.6.2', browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    stopReason, canvasScanVersion: '0.6.2', captureEvery, browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
@@ -583,13 +608,20 @@ function startRecordingWithDuration(durationMs: number): void {
   });
   timer = setTimeout(() => { finish('max-duration'); }, durationMs);
   lastSession = undefined;
+  // The stored explanation names a session that no longer exists once this
+  // recording starts, so it goes with it. startExplanation clears it too, for
+  // the run that is about to produce a new one.
+  lastExplanation = undefined;
   notify();
 }
 
 export function startRecording(): void { startRecordingWithDuration(MAX_DURATION_MS); }
 
 export function configureRecording(options: CanvasScanOptions): void {
-  minRepeatedRasterOps = options.minFlashRasterOps ?? 2;
+  // minFlashRasterOps still sets this when nothing more specific is given, so
+  // an existing installation keeps the findings it had.
+  minRepeatedRasterOps = options.minRepeatedRasterOps ?? options.minFlashRasterOps ?? 2;
+  captureEvery = Math.max(1, Math.trunc(options.captureEvery ?? 1));
 }
 
 export function stopRecording(): InvestigationSessionV1 | undefined { return finish('manual'); }
@@ -704,6 +736,7 @@ export function resetRecordingForTests(): void {
   recordingStartWindowIndex = 0;
   recordingStartOffsets.clear();
   minRepeatedRasterOps = 2;
+  captureEvery = 1;
   sequence = 0;
   explanationSequence = 0;
   listeners.clear();

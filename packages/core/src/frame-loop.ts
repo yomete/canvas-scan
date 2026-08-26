@@ -24,7 +24,15 @@ import {
 
 export const latestReports = new Map<string, DrawBatchReport>();
 
-const MAX_TRACKED_CANVASES = 64;
+export const MAX_TRACKED_CANVASES = 64;
+// Canvases the passive history ceiling pushed out and that have not drawn
+// again since. The live counts say so rather than implying the list is
+// complete — the same honesty the recorded artifacts carry as dropped counts.
+export const droppedCanvasIds = new Set<string>();
+// Canvases that went quiet long enough to be retired. Their history stays
+// readable, but the live views mark them so a still row is not read as a
+// canvas that is still drawing.
+export const retiredCanvasIds = new Set<string>();
 const histories = new Map<string, DrawBatchReport[]>();
 const lastReportedWindows = new Map<string, number>();
 const sourceLocations = new Map<string, SourceLocation | null>();
@@ -208,8 +216,9 @@ export function processRecord(
       nearestReactOwner: record.attribution.nearestReactOwner,
       attributionKind: record.attribution.attributionKind,
       sourceLocation: sourceLocations.get(record.id) ?? null,
-      rasterOperationCount: record.rasterOps,
-      canvasApiSelfTimeMs: Number(record.selfTimeMs.toFixed(3)),
+      rasterOperationCount: record.rasterOps + record.carriedRasterOps,
+      canvasApiSelfTimeMs: Number((record.selfTimeMs + record.carriedSelfTimeMs).toFixed(3)),
+      coveredWindowCount: 1 + record.carriedWindows,
       signatureStatus,
       unknownReason:
         signatureStatus === 'unknown'
@@ -243,7 +252,17 @@ export function processRecord(
     processed = { report, shouldLog };
     record.resetPendingReason = null;
     record.continuityLost = false;
+    record.carriedRasterOps = 0;
+    record.carriedSelfTimeMs = 0;
+    record.carriedWindows = 0;
   } else {
+    // Sampling decides which windows are reported, not which work is counted.
+    // The measured totals move into the next reported window, which says how
+    // many windows it covers, so a sampled recording never reports observed
+    // work as zero work.
+    record.carriedRasterOps += record.rasterOps;
+    record.carriedSelfTimeMs += record.selfTimeMs;
+    record.carriedWindows++;
     if (record.rasterOps > 0) {
       // Any raster in an uncaptured window breaks continuity, not just a reset.
       // The skipped window's commands were never hashed, so we cannot know
@@ -270,7 +289,9 @@ export function processRecord(
   record.sig = newWindowSignature();
   record.rasterOps = 0;
   record.selfTimeMs = 0;
-  clearMethodEvidence(record);
+  // A window sampling skipped keeps its method evidence, so it reaches the
+  // next reported window alongside the totals carried with it.
+  if (processed !== null) clearMethodEvidence(record);
   record.activeInWindow = false;
   record.contextActivityInWindow = false;
   record.sourceResetVersions.clear();
@@ -297,6 +318,7 @@ export function processRecordWithResetEvents(
     timestampMs: 0,
     rasterOperationCount,
     activeRasterOverlap: rasterOperationCount > 0,
+    flushedAtStop: false,
     commandStatus: report?.signatureStatus ?? 'unknown',
     unknownReason: report?.unknownReason ?? unknownReason,
   })));
@@ -306,6 +328,7 @@ export function processRecordWithResetEvents(
 export function startFrameLoop(options: CanvasScanOptions): void {
   const raf = window.requestAnimationFrame.bind(window);
   const captureEvery = options.captureEvery ?? 1;
+  const debug = options.debug === true;
   setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
   const tick = () => {
@@ -335,6 +358,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       if (record.inactiveBoundaries === INACTIVE_BOUNDARIES_BEFORE_RETIREMENT) {
         records.delete(record);
         record.retired = true;
+        retiredCanvasIds.add(record.id);
         record.pendingLifecycleEvents.push({ type: 'retired', connected, activeRegistrySize: records.size });
       }
       for (const event of takeLifecycleEvents(record)) {
@@ -354,6 +378,8 @@ export function startFrameLoop(options: CanvasScanOptions): void {
 
     for (const [record, processed] of processedRecords) {
       latestReports.set(processed.report.canvasId, processed.report);
+      droppedCanvasIds.delete(record.id);
+      retiredCanvasIds.delete(record.id);
       const history = histories.get(record.id) ?? [];
       history.push(processed.report);
       if (history.length > 120) history.shift();
@@ -369,13 +395,14 @@ export function startFrameLoop(options: CanvasScanOptions): void {
           }
         }
         if (oldestCanvasId !== undefined) {
+          droppedCanvasIds.add(oldestCanvasId);
           histories.delete(oldestCanvasId);
           lastReportedWindows.delete(oldestCanvasId);
           latestReports.delete(oldestCanvasId);
           sourceLocations.delete(oldestCanvasId);
         }
       }
-      if (processed.shouldLog) console.debug('[canvas-scan]', processed.report);
+      if (debug && processed.shouldLog) console.debug('[canvas-scan]', processed.report);
       emitReport(processed.report, record.canvas, recordedStart === undefined
         ? { windowIndex, timestampMs: observedAtTimestampMs }
         : {
@@ -387,7 +414,7 @@ export function startFrameLoop(options: CanvasScanOptions): void {
     }
     setWindowCaptured((windowIndex + 1) % captureEvery === 0);
 
-    if (windowIndex % 120 === 0) {
+    if (debug && windowIndex % 120 === 0) {
       for (const [canvasId, report] of latestReports) {
         console.debug('[canvas-scan] summary', canvasId, report);
       }

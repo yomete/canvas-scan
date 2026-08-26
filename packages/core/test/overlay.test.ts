@@ -8,7 +8,7 @@ const { resolveSourceOutcome } = vi.hoisted(() => ({
 
 vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
-import { emitLifecycleEvent, emitReport, emitResetEvent, latestReports } from '../src/frame-loop';
+import { droppedCanvasIds, emitLifecycleEvent, emitReport, emitResetEvent, latestReports, retiredCanvasIds } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
 import { getLastExplanation, getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
 import type { ComparisonArtifactV1, DrawBatchReport, InvestigationSessionV1 } from '../src/types';
@@ -55,7 +55,7 @@ function makeReport(
     canvasApiSelfTimeMs: 0.5,
     signatureStatus: 'same',
     unknownReason: null,
-    sampled: false,
+    sampled: false, coveredWindowCount: 1,
     comparisonGap: 1,
     followsCanvasReset: false,
     methodEvidence: {},
@@ -103,7 +103,7 @@ function refreshOverlay(): void {
 function explanationRecord(id: string): CanvasRecord {
   return {
     canvas: makeCanvas(), contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
-    id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
+    id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0, carriedRasterOps: 0, carriedSelfTimeMs: 0, carriedWindows: 0,
     activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
     matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
     clipUnknown: false, resetPendingReason: null, modelUntrusted: false, resetVersion: 0, continuityLost: false, sourceResetVersions: new Map(),
@@ -208,12 +208,12 @@ describe('overlay toolbar', () => {
     expect(root.querySelectorAll('.toolbar')).toHaveLength(1);
     expect(root.querySelector('.inspect')).not.toBeNull();
     expect(root.querySelector('.counts')?.textContent).toBe(
-      '0 canvases · 0 review candidates',
+      '0 canvases · 0 canvases repeating',
     );
     expect(root.querySelector('.collapse')).not.toBeNull();
   });
 
-  it('updates counts and accents review candidates only when positive', () => {
+  it('updates counts and accents repeating canvases only when positive', () => {
     mountOverlay();
     refreshOverlay();
     const root = getShadowRoot();
@@ -226,14 +226,14 @@ describe('overlay toolbar', () => {
     );
     refreshOverlay();
     expect(root.querySelector('.counts')?.textContent).toBe(
-      '1 canvas · 0 review candidates',
+      '1 canvas · 0 canvases repeating',
     );
     expect(candidate.classList.contains('accent')).toBe(false);
 
     emitReport(makeReport(), makeCanvas(false));
     refreshOverlay();
     expect(root.querySelector('.counts')?.textContent).toBe(
-      '1 canvas · 1 review candidate',
+      '1 canvas · 1 canvas repeating',
     );
     expect(candidate.classList.contains('accent')).toBe(true);
     expect(root.querySelector('.collapsed-dot')?.classList).toContain('accent');
@@ -248,7 +248,7 @@ describe('overlay toolbar', () => {
     );
     refreshOverlay();
     expect(root.querySelector('.counts')?.textContent).toBe(
-      '2 canvases · 1 review candidate',
+      '2 canvases · 1 canvas repeating',
     );
   });
 
@@ -389,7 +389,8 @@ describe('overlay flyout', () => {
     const attributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-attributed"]')!.textContent!;
     expect(attributedSummary.indexOf('EffectCanvas')).toBeLessThan(attributedSummary.indexOf('Canvas ID: saved-attributed'));
     const unattributedSummary = root.querySelector<HTMLElement>('[data-session-canvas-id="saved-unattributed"]')!.textContent!;
-    expect(unattributedSummary.indexOf('Unattributed')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
+    expect(unattributedSummary).toContain('No owner found');
+    expect(unattributedSummary.indexOf('No owner found')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
   });
 
   it('uses plain finding copy and a neutral focus background', () => {
@@ -399,8 +400,17 @@ describe('overlay flyout', () => {
     const root = getShadowRoot();
     const card = root.querySelector<HTMLElement>('.finding-card')!;
     expect(card.textContent).toMatch(/1\s+Heavy frame · EffectCanvas/);
-    expect(card.textContent).not.toMatch(/confirmed problem|confirmed defect|review candidate/i);
-    expect(root.querySelector('.findings-list')?.textContent).not.toContain('review candidate');
+    // The plain copy the reader meets first stays plain. The claim boundary
+    // lives behind the collapsed disclosure, so it is excluded here and
+    // asserted on its own below.
+    const plain = card.cloneNode(true) as HTMLElement;
+    plain.querySelectorAll('.finding-boundary').forEach(node => node.remove());
+    expect(plain.textContent).not.toMatch(/confirmed problem|confirmed defect|review candidate/i);
+    const boundary = card.querySelector<HTMLDetailsElement>('.finding-boundary')!;
+    expect(boundary.open).toBe(false);
+    expect(boundary.textContent).toContain('Evidence level: candidate');
+    expect(boundary.textContent).toContain('does not establish');
+    expect(boundary.textContent).toContain('Next check:');
     const style = root.querySelector('style')?.textContent ?? '';
     const focusRule = style.match(/\.finding-card:focus-visible,[\s\S]*?\.canvas-summary:focus-visible \{[^}]*\}/)?.[0] ?? '';
     expect(focusRule).toContain('background: rgba(255, 255, 255, 0.18)');
@@ -419,9 +429,9 @@ describe('overlay flyout', () => {
     emitReport(makeReport({ canvasId: 'heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), heavy, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'repeated', canvasApiSelfTimeMs: 2, rasterOperationCount: 2 }), repeated, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 1, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     emitReport(makeReport({ canvasId: 'resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), resize, { windowIndex: 2, timestampMs: 20 });
-    emitResetEvent({ canvasId: 'resize', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 100, height: 50, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 2 }), backing, { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'backing', canvasApiSelfTimeMs: 3 }), backing, { windowIndex: 2, timestampMs: 20 });
     const session = stopRecording()!;
@@ -622,7 +632,7 @@ describe('overlay flyout', () => {
     for (let index = 0; index < 2001; index++) mark(`limit ${index}`);
     stopRecording(); refreshOverlay();
     const coverage = getShadowRoot().querySelector('.session-coverage')?.textContent ?? '';
-    expect(coverage).toContain('1 user marks dropped');
+    expect(coverage).toContain('1 user mark dropped');
     expect(coverage).not.toContain('droppedEntryCounts');
     expect(JSON.stringify(getLastSession())).toContain('"userMarks":1');
   });
@@ -632,7 +642,7 @@ describe('overlay flyout', () => {
     emitReport(makeReport({ canvasId: 'plain-copy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
     const copy = getShadowRoot().querySelector('.completed-session')!.cloneNode(true) as HTMLElement;
-    copy.querySelectorAll('.raw-evidence').forEach(node => node.remove());
+    copy.querySelectorAll('.raw-evidence, .finding-boundary').forEach(node => node.remove());
     const text = copy.textContent ?? '';
     expect(text).toContain('ms in Canvas2D');
     expect(text).not.toMatch(/caused|wasted|pixel-identical|avoidable|does not establish/i);
@@ -658,8 +668,8 @@ describe('overlay flyout', () => {
     const canvas = makeCanvas();
     startRecording();
     emitReport(makeReport({ canvasId: 'resize-seeded', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3, canvasApiSelfTimeMs: 2 }), canvas, { windowIndex: 101, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
-    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 102, timestampMs: 20, source: 'context-reset', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
+    emitResetEvent({ canvasId: 'resize-seeded', windowIndex: 102, timestampMs: 20, source: 'context-reset', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();
@@ -711,9 +721,9 @@ describe('overlay flyout', () => {
     const canvas = makeCanvas(false);
     startRecording();
     emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 101, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 101, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     emitReport(makeReport({ canvasId: 'detached-resize', signatureStatus: 'unknown', unknownReason: 'canvas-reset' }), canvas, { windowIndex: 102, timestampMs: 20 });
-    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 102, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'detached-resize', windowIndex: 102, timestampMs: 20, source: 'height-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 2, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     stopRecording();
     refreshOverlay();
     const root = getShadowRoot();
@@ -1649,6 +1659,8 @@ describe('overlay copy', () => {
       'canvas-state-unmodeled',
       'canvas-source-reset',
       'uncaptured-raster',
+      'sampling-gap',
+      'instrumentation-disabled',
       'gradient-mutated',
       'transform-unmodeled',
       'clip-unmodeled',
@@ -1717,6 +1729,8 @@ function describeReason(reason: string): string {
       'a source canvas was reset while this canvas was drawing it',
     'uncaptured-raster':
       'drawing happened in a frame canvas-scan did not capture',
+    'sampling-gap': 'frames in between were skipped by sampling',
+    'instrumentation-disabled': 'command capture was off for this frame',
     'gradient-mutated': 'a gradient changed while drawing',
     'transform-unmodeled': 'a transform canvas-scan cannot follow',
     'clip-unmodeled': 'a clipping shape canvas-scan cannot follow',
@@ -1782,7 +1796,7 @@ describe('overlay session comparison', () => {
 
   function recordIncompleteFinding(canvasId: string): void {
     startRecording();
-    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     const canvas = makeCanvas();
     canvas.width = 100; canvas.height = 50;
     emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 1, timestampMs: 10 });
@@ -2416,7 +2430,7 @@ describe('overlay saved-session trims and export', () => {
     expect(finding.type === 'heavy-canvas-work' && finding.gateExcessMs === 0.8).toBe(true);
   });
 
-  it('keeps StrictMode duplicate counts in the JSON and off the card', () => {
+  it('keeps adjacent identical window pair counts in the JSON and off the card', () => {
     mountOverlay();
     const canvas = makeCanvas();
     canvas.width = 100; canvas.height = 50;
@@ -2427,9 +2441,9 @@ describe('overlay saved-session trims and export', () => {
     stopRecording(); refreshOverlay();
     openCompletedFlyout();
     const card = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="strict-duplicates"]')!;
-    expect(card.textContent).not.toContain('StrictMode');
+    expect(card.textContent).not.toContain('adjacentIdenticalWindowPairs');
     const finding = getLastSession()!.findings.find(candidate => candidate.canvasId === 'strict-duplicates')!;
-    expect(finding.type === 'repeated-draw-work' && finding.strictModeStyleDuplicates === 2).toBe(true);
+    expect(finding.type === 'repeated-draw-work' && finding.adjacentIdenticalWindowPairs === 2).toBe(true);
   });
 
   it('downloads the session JSON under a deterministic filename', () => {
@@ -2454,7 +2468,9 @@ describe('overlay saved-session trims and export', () => {
       expect(anchor.download).toBe(`${sessionId}.json`);
       expect(anchor.href).toBe('blob:mock');
       expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock');
-      expect(root.querySelector('.session-copy-status')?.textContent).toBe('Session JSON downloaded');
+      // "started", not "downloaded": the overlay hands the file to the browser
+      // and cannot see whether the browser accepted or blocked it.
+      expect(root.querySelector('.session-copy-status')?.textContent).toBe('Session JSON download started');
     } finally {
       window.URL.createObjectURL = originalCreate;
       window.URL.revokeObjectURL = originalRevoke;
@@ -2487,7 +2503,9 @@ describe('overlay saved-session trims and export', () => {
     startRecording();
     emitReport(makeReport({ canvasId: 'with-finding' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
-    let text = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.textContent!;
+    const list = getShadowRoot().querySelector<HTMLElement>('.findings-list')!.cloneNode(true) as HTMLElement;
+    list.querySelectorAll('.finding-boundary').forEach(node => node.remove());
+    let text = list.textContent!;
     expect(text).not.toContain('No findings in this recording.');
     expect(text).not.toContain('review candidate');
     startRecording();
@@ -2523,7 +2541,7 @@ describe('overlay saved-session trims and export', () => {
       emitReport(makeReport({ canvasId: 'capped-resets', signatureStatus: 'unknown', unknownReason: 'canvas-reset', rasterOperationCount: 3 }), canvas, { windowIndex, timestampMs: windowIndex });
     }
     const sources = ['width-setter', 'height-setter', 'context-reset', 'width-setter', 'height-setter'] as const;
-    sources.forEach((source, index) => emitResetEvent({ canvasId: 'capped-resets', windowIndex: index < 3 ? 101 : 102, timestampMs: (index + 1) * 10, source, dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' }));
+    sources.forEach((source, index) => emitResetEvent({ canvasId: 'capped-resets', windowIndex: index < 3 ? 101 : 102, timestampMs: (index + 1) * 10, source, dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 3, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false }));
     stopRecording(); refreshOverlay();
     openCompletedFlyout();
     const text = getShadowRoot().querySelector<HTMLElement>('.repeated-finding[data-canvas-id="capped-resets"]')!.textContent!;
@@ -2550,5 +2568,278 @@ describe('overlay saved-session trims and export', () => {
     const text = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="association-cap"]')!.textContent!;
     expect(text).not.toContain('associated with');
     expect(JSON.stringify(getLastSession()).match(/mark one/g)).toHaveLength(1);
+  });
+});
+
+describe('overlay honesty about what the live views show', () => {
+  function openFlyout(): ShadowRoot {
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    return root;
+  }
+
+  it('marks a retired canvas rather than leaving its row looking live', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ canvasId: 'goes-quiet' }), canvas, { windowIndex: 1, timestampMs: 10 });
+    const root = openFlyout();
+    const row = () => root.querySelector<HTMLElement>('.row[data-canvas-id="goes-quiet"]')!;
+    expect(row().textContent).not.toContain('stopped drawing');
+    expect(row().classList).not.toContain('stale');
+
+    retiredCanvasIds.add('goes-quiet');
+    refreshOverlay();
+    // The row keeps its figures — they were really measured — but says the
+    // canvas stopped drawing, so a still row is not read as a live one.
+    expect(row().textContent).toContain('stopped drawing');
+    expect(row().classList).toContain('stale');
+    expect(row().title).toContain('Drawing again brings it back');
+
+    retiredCanvasIds.delete('goes-quiet');
+    refreshOverlay();
+    expect(row().textContent).not.toContain('stopped drawing');
+  });
+
+  it('says in the counts when the canvas ceiling is dropping canvases', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'tracked' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    refreshOverlay();
+    const counts = () => getShadowRoot().querySelector<HTMLElement>('.canvas-count')!;
+    expect(counts().textContent).toBe('1 canvas · ');
+
+    droppedCanvasIds.add('evicted-one');
+    droppedCanvasIds.add('evicted-two');
+    refreshOverlay();
+    // Without this the list reads as complete while canvases are missing.
+    expect(counts().textContent).toBe('1 canvas (+2 not tracked) · ');
+    expect(counts().title).toContain('at most 64 canvases');
+    droppedCanvasIds.clear();
+  });
+
+  it('counts a run of identical frames, not a lifetime total', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    for (const windowIndex of [1, 2, 3]) {
+      emitReport(makeReport({ canvasId: 'streak', rasterOperationCount: 4 }), canvas, { windowIndex, timestampMs: windowIndex * 10 });
+    }
+    refreshOverlay();
+    const label = () => getShadowRoot().querySelector<HTMLElement>('.outline[data-canvas-id="streak"] .label')!.textContent!;
+    expect(label()).toContain('again ×3');
+
+    // A changed frame ends the run. The label used to keep counting straight
+    // through the change it appears to be counting.
+    emitReport(makeReport({ canvasId: 'streak', signatureStatus: 'changed', rasterOperationCount: 4 }), canvas, { windowIndex: 4, timestampMs: 40 });
+    emitReport(makeReport({ canvasId: 'streak', rasterOperationCount: 4 }), canvas, { windowIndex: 5, timestampMs: 50 });
+    refreshOverlay();
+    expect(label()).toContain('again ×1');
+  });
+
+  it('reaches the claim boundary and the top methods from the finding card', () => {
+    mountOverlay();
+    startRecording();
+    const boundaryCanvas = makeCanvas();
+    boundaryCanvas.width = 100; boundaryCanvas.height = 50;
+    emitReport(makeReport({ canvasId: 'boundary', canvasApiSelfTimeMs: 9, rasterOperationCount: 3, methodEvidence: { fillRect: { count: 3, canvasApiSelfTimeMs: 9 } } }), boundaryCanvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openFlyout();
+    const boundary = root.querySelector<HTMLDetailsElement>('.finding-card[data-canvas-id="boundary"] .finding-boundary')!;
+    expect(boundary.open).toBe(false);
+    const text = boundary.textContent!;
+    const finding = getLastSession()!.findings[0];
+    expect(text).toContain(finding.claimBoundary.observation);
+    expect(text).toContain(finding.claimBoundary.nonEstablishedFacts);
+    expect(text).toContain(finding.nextCheck);
+    expect(text).toContain(`Evidence level: ${finding.evidenceLevel}`);
+    // The next check names the top measured methods, so they are reachable
+    // here rather than only in the exported JSON.
+    expect(text).toContain('Top measured methods');
+    expect(text).toContain('fillRect');
+  });
+
+  it('separates the slowest frame from the whole episode on a heavy card', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    canvas.width = 100; canvas.height = 50;
+    startRecording();
+    emitReport(makeReport({ canvasId: 'two-spans', canvasApiSelfTimeMs: 9, rasterOperationCount: 100 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'two-spans', canvasApiSelfTimeMs: 1, rasterOperationCount: 500 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+    const root = openFlyout();
+    const text = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="two-spans"]')!.textContent!;
+    // 9 ms belongs to one frame and 100 draw calls belong with it; 600 belongs
+    // to the episode. Neither number may be read as the other's.
+    expect(text).toContain('Slowest frame 9 ms, 100 draw calls');
+    expect(text).toContain('this episode 10 ms, 600 draw calls');
+  });
+
+  it('marks a truncated recording on the finding card, not only in the coverage line', () => {
+    mountOverlay();
+    startRecording();
+    for (let index = 0; index <= 2000; index++) mark(`mark-${index}`);
+    emitReport(makeReport({ canvasId: 'truncated', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const root = openFlyout();
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="truncated"] .finding-truncated')?.textContent)
+      .toContain('hit a collection limit');
+  });
+
+  it('reports the result of a popover copy either way', async () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ canvasId: 'copyable' }), canvas, { windowIndex: 1, timestampMs: 10 });
+    const root = openFlyout();
+    root.querySelector<HTMLButtonElement>('.row[data-canvas-id="copyable"]')!.click();
+    refreshOverlay();
+    const popover = root.querySelector<HTMLElement>('.popover')!;
+    // A named dialog, so a screen reader announces what opened.
+    expect(popover.getAttribute('role')).toBe('dialog');
+    expect(root.getElementById(popover.getAttribute('aria-labelledby')!)).not.toBeNull();
+    const status = () => popover.querySelector<HTMLElement>('.popover-copy-status')!;
+    expect(status().hidden).toBe(true);
+
+    const writeText = vi.fn(() => Promise.reject(new Error('denied')));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    popover.querySelector<HTMLButtonElement>('.copy')!.click();
+    await vi.waitFor(() => {
+      refreshOverlay();
+      expect(status().textContent).toBe('Copy failed');
+    });
+    expect(status().hidden).toBe(false);
+  });
+});
+
+describe('overlay reacts to the page without waiting for an unrelated re-render', () => {
+  function openFlyout(): ShadowRoot {
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    return root;
+  }
+
+  it('corrects a finding card when its canvas leaves the page', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    canvas.width = 100; canvas.height = 50;
+    document.body.append(canvas);
+    startRecording();
+    emitReport(makeReport({ canvasId: 'leaves', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    // A completed recording opens the flyout on its own; the card is on screen.
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    expect(root.querySelector<HTMLElement>('.flyout')!.hidden).toBe(false);
+    const card = () => root.querySelector<HTMLElement>('.finding-card[data-canvas-id="leaves"]')!;
+    expect(card().querySelector<HTMLElement>('.finding-unavailable')!.hidden).toBe(true);
+    expect(card().querySelector<HTMLElement>('.finding-actions')!.hidden).toBe(false);
+
+    // No flyout toggle, no click, nothing else: only the canvas leaving. The
+    // card used to keep offering actions against a canvas that is not there.
+    canvas.remove();
+    // Two ticks: the interval marks the overlay dirty and the commit it
+    // schedules runs on the next animation frame.
+    refreshOverlay(); refreshOverlay();
+    expect(card().querySelector<HTMLElement>('.finding-unavailable')!.hidden).toBe(false);
+    expect(card().querySelector<HTMLElement>('.finding-actions')!.hidden).toBe(true);
+    expect(card().querySelector<HTMLButtonElement>('.explanation-action')!.hidden).toBe(true);
+
+    document.body.append(canvas);
+    refreshOverlay(); refreshOverlay();
+    expect(card().querySelector<HTMLElement>('.finding-unavailable')!.hidden).toBe(true);
+  });
+
+  it('ranks findings by measured self-time across types', () => {
+    mountOverlay();
+    const light = makeCanvas();
+    light.width = 100; light.height = 50;
+    const heavy = makeCanvas();
+    heavy.width = 100; heavy.height = 50;
+    startRecording();
+    // A repeated-draw-work finding is derived after heavy-canvas-work, so if
+    // the list followed derivation order the milder one would come second.
+    emitReport(makeReport({ canvasId: 'mild', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), light, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: 'severe', canvasApiSelfTimeMs: 40, rasterOperationCount: 3 }), heavy, { windowIndex: 1, timestampMs: 10 });
+    const session = stopRecording()!;
+    const selfTimes = session.findings.map(finding => finding.canvasApiSelfTimeMs);
+    expect(selfTimes).toEqual([...selfTimes].sort((left, right) => right - left));
+    expect(session.findings[0].canvasId).toBe('severe');
+    refreshOverlay();
+    const root = openFlyout();
+    const first = root.querySelector<HTMLElement>('.finding-card')!;
+    expect(first.dataset.canvasId).toBe('severe');
+    expect(first.querySelector('.finding-toggle')!.textContent).toMatch(/^1\s/);
+  });
+
+  it('hides the live list overflow control when there is nothing to reveal', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'only-one' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    const root = openFlyout();
+    const more = root.querySelector<HTMLElement>('.more:not(.summary-more)');
+    // A hidden element must not be rendered. A CSS display rule used to
+    // override the hidden attribute and show "+0 more" at full width.
+    if (more) {
+      expect(more.hidden).toBe(false);
+    }
+    const style = root.querySelector('style')!.textContent!;
+    expect(style).toMatch(/\.more\[hidden\][^{]*\{\s*display:\s*none/);
+  });
+
+  it('keeps Escape inside the overlay and out of the host application', () => {
+    mountOverlay();
+    const canvas = makeCanvas();
+    emitReport(makeReport({ canvasId: 'escapable' }), canvas, { windowIndex: 1, timestampMs: 10 });
+    const root = openFlyout();
+    expect(root.querySelector<HTMLElement>('.flyout')!.hidden).toBe(false);
+
+    // Focus sits in the host application, so Escape belongs to it.
+    const hostInput = document.createElement('input');
+    document.body.append(hostInput);
+    hostInput.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')!.hidden).toBe(false);
+
+    // Focus inside the overlay, so Escape closes the flyout as before.
+    root.querySelector<HTMLButtonElement>('.row[data-canvas-id="escapable"]')!.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    refreshOverlay();
+    expect(root.querySelector<HTMLElement>('.flyout')!.hidden).toBe(true);
+    hostInput.remove();
+  });
+
+  it('says a run is open while the overlay is collapsed', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    startRecording();
+    refreshOverlay();
+    const dot = () => root.querySelector<HTMLElement>('.collapsed-dot')!;
+    expect(dot().classList).toContain('recording');
+    expect(dot().getAttribute('aria-label')).toContain('Expand canvas-scan to stop');
+    stopRecording();
+    refreshOverlay();
+    expect(dot().classList).not.toContain('recording');
+  });
+
+  it('keeps the dock reachable however far it is dragged', () => {
+    mountOverlay();
+    const root = getShadowRoot();
+    const toolbar = root.querySelector<HTMLElement>('.toolbar')!;
+    const dock = root.querySelector<HTMLElement>('.dock')!;
+    dock.getBoundingClientRect = () => ({ top: 100, left: 100, width: 200, height: 40, right: 300, bottom: 140, x: 100, y: 100, toJSON: () => ({}) }) as DOMRect;
+    toolbar.setPointerCapture = () => {};
+    toolbar.releasePointerCapture = () => {};
+
+    // jsdom has no PointerEvent; the handlers read only the mouse fields.
+    toolbar.dispatchEvent(new MouseEvent('pointerdown', { clientX: 0, clientY: 0, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('pointermove', { clientX: 99999, clientY: 99999, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    refreshOverlay();
+
+    // Some of the dock has to stay on screen. An unbounded drag left it
+    // unreachable until a reload.
+    const match = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(dock.style.transform);
+    expect(match).not.toBeNull();
+    const [, x, y] = match!;
+    expect(Number(x) + 100).toBeLessThanOrEqual(window.innerWidth);
+    expect(Number(y) + 100).toBeLessThanOrEqual(window.innerHeight);
   });
 });

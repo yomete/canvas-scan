@@ -50,6 +50,9 @@ function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
     },
     rasterOps: 2,
     selfTimeMs: 0.5,
+    carriedRasterOps: 0,
+    carriedSelfTimeMs: 0,
+    carriedWindows: 0,
     activeInWindow: true,
     prev: null,
     attribution: {
@@ -106,7 +109,7 @@ describe('processRecord', () => {
         signatureStatus: 'unknown',
         unknownReason: 'first-window',
         comparisonGap: null,
-        sampled: false,
+        sampled: false, coveredWindowCount: 1,
       },
       shouldLog: true,
     });
@@ -167,7 +170,7 @@ describe('processRecord', () => {
         source: 'width-setter', width: 320, height: 150,
         rasterOperationCount: 2, activeRasterOverlap: true,
         commandStatus: 'unknown', unknownReason: 'canvas-reset',
-        dimensionChange: 'changed',
+        dimensionChange: 'changed', flushedAtStop: false,
       }]);
 
       record.activeInWindow = true;
@@ -420,6 +423,7 @@ describe('processRecord', () => {
         'signatureStatus',
         'unknownReason',
         'sampled',
+        'coveredWindowCount',
         'comparisonGap',
         'followsCanvasReset',
         'methodEvidence',
@@ -743,7 +747,9 @@ describe('processRecord', () => {
             laterContext!.fillRect(20, 0, 10, 10);
           }
         });
-      freshFrameLoop.startFrameLoop({});
+      // The reentrant callback below rides on the debug log line, so this loop
+      // opts into it.
+      freshFrameLoop.startFrameLoop({ debug: true });
 
       earlierContext.fillRect(0, 0, 10, 10);
       laterContext.fillRect(0, 0, 10, 10);
@@ -790,7 +796,7 @@ describe('report subscribers', () => {
     canvasApiSelfTimeMs: 0.5,
     signatureStatus: 'same',
     unknownReason: null,
-    sampled: false,
+    sampled: false, coveredWindowCount: 1,
     comparisonGap: 1,
     followsCanvasReset: false,
     methodEvidence: {},
@@ -1462,8 +1468,11 @@ describe('report history', () => {
       const rasterOperationCounts = getHistory(record.id).map(
         report => report.rasterOperationCount,
       );
-      expect(rasterOperationCounts).toHaveLength(2);
-      expect(rasterOperationCounts[1]).toBe(rasterOperationCounts[0] + 2);
+      // Windows 1 to 4 draw 1, 2, 3, and 4 operations. At captureEvery 2 only
+      // windows 2 and 4 are reported, and each carries the skipped window
+      // before it: 1 + 2 and 3 + 4. Nothing measured is discarded.
+      expect(rasterOperationCounts).toEqual([3, 7]);
+      expect(getHistory(record.id).map(report => report.coveredWindowCount)).toEqual([2, 2]);
     } finally {
       records.delete(record);
       debug.mockRestore();

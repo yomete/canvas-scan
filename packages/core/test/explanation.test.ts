@@ -52,7 +52,7 @@ const report = (canvasId: string): DrawBatchReport => ({
   canvasApiSelfTimeMs: 1,
   signatureStatus: 'same',
   unknownReason: null,
-  sampled: false,
+  sampled: false, coveredWindowCount: 1,
   comparisonGap: 1,
   followsCanvasReset: false,
   methodEvidence: {},
@@ -60,7 +60,7 @@ const report = (canvasId: string): DrawBatchReport => ({
 
 const record = (id: string): CanvasRecord => ({
   canvas: { isConnected: true }, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
-  id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0,
+  id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0, carriedRasterOps: 0, carriedSelfTimeMs: 0, carriedWindows: 0,
   activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
   matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,
   clipUnknown: false, resetPendingReason: null, modelUntrusted: false, resetVersion: 0, continuityLost: false, sourceResetVersions: new Map(),
@@ -357,12 +357,16 @@ describe('explanation state', () => {
     startExplanation({ sessionId: source.sessionId, findingIndex: 0 });
     stopExplanation();
     const prior = getLastExplanation();
-    const nextSource = completeSource('next-source');
-    expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 99 })).toEqual({ status: 'unavailable', reason: 'finding-not-found' });
+    const currentSessionId = getLastSession()!.sessionId;
+    expect(startExplanation({ sessionId: currentSessionId, findingIndex: 99 })).toEqual({ status: 'unavailable', reason: 'finding-not-found' });
     expect(getLastExplanation()).toEqual(prior);
     const killed = vi.spyOn(wrapContext, 'isKilled').mockReturnValue(true);
-    expect(startExplanation({ sessionId: nextSource.sessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'instrumentation-disabled' });
+    expect(startExplanation({ sessionId: currentSessionId, findingIndex: 0 })).toEqual({ status: 'unavailable', reason: 'instrumentation-disabled' });
     killed.mockRestore();
+    // A new recording does discard it: its source session is gone, so the
+    // artifact would name a session nothing can produce any more.
+    completeSource('next-source');
+    expect(getLastExplanation()).toBeUndefined();
   });
 
   it('lets stopRecording finish an explanation and store both artifacts', () => {

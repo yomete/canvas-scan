@@ -167,7 +167,7 @@ lives in bippy. Two surprises worth remembering:
   that append their own canvas (react-konva, pixi — the core audience)
   resolve to a React-managed ancestor at best. Walk from the resolved host
   fiber to the nearest composite component and emit `attributionKind:
-  direct-host | jsx-owner | container-only | unattributed`. `sourceLocation`
+  react-host-no-owner | jsx-owner | container-only | unattributed`. `sourceLocation`
   is nullable and best-effort — not an M0 gate. Ship this as the core UX.
 - **Tier 2, heuristic: "this draw batch is temporally associated with that
   commit". Post-M0.** Correction (Rev 2): `onCommitFiberRoot` receives

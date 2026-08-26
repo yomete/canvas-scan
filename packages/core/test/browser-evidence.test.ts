@@ -98,6 +98,17 @@ describe('browser evidence', () => {
     expect(marks).toMatchObject([{ label: 'Hello mark' }, { label: 'a'.repeat(80) }]);
   });
 
+  it('turns a tab or newline in a label into a space rather than deleting it', () => {
+    install(); vi.spyOn(performance, 'now').mockReturnValue(12); startBrowserEvidence(0);
+    // Control characters used to be deleted before whitespace was collapsed,
+    // so the words either side were joined: 'step 1\tstep 2' became
+    // 'step 1step 2' with nothing saying the separator was lost.
+    markBrowserEvidence('step 1\tstep 2');
+    markBrowserEvidence('  a\t\tb \n c  ');
+    const marks = stopBrowserEvidence(20).entries.filter(entry => entry.kind === 'user-mark');
+    expect(marks).toMatchObject([{ label: 'step 1 step 2' }, { label: 'a b c' }]);
+  });
+
   it('copies every bounded long-frame script field', () => {
     install(); startBrowserEvidence(0);
     observers[1].entries.push({ startTime: 1, duration: 60, blockingDuration: 10, scripts: Array.from({ length: 21 }, (_, index) => ({ invoker: index === 0 ? 'BUTTON#private.primary[data-secret=value].onpointerdown' : index === 1 ? 'button#private.primary[data-secret=value].onpointerup' : index === 2 ? 'svg#private.icon[data-secret=value].onclick' : ` i${index}\u0000 `, invokerType: ' event-listener ', sourceURL: 'https://x.test/a.js?q=private#fragment', sourceFunctionName: '🙂'.repeat(201), executionStart: 2, duration: index, forcedStyleAndLayoutDuration: 3, pauseDuration: 4 })) });

@@ -77,6 +77,16 @@ class FakeContext {
     this.invocations.push({ method: 'reset', args: [] });
   }
 
+  getImageData(...args: unknown[]) {
+    this.invocations.push({ method: 'getImageData', args });
+    return { data: new Uint8ClampedArray(4) };
+  }
+
+  measureText(...args: unknown[]) {
+    this.invocations.push({ method: 'measureText', args });
+    return { width: 10 };
+  }
+
   boom() {
     throw new Error('boom');
   }
@@ -205,6 +215,35 @@ describe('canvas context wrapping', () => {
     context.clearRect(1, 2, 3, 4);
     expect(getMethodEvidence(record)).toEqual({ fillRect: { count: 1, canvasApiSelfTimeMs: 1.25 }, clearRect: { count: 1, canvasApiSelfTimeMs: 3.5 } });
     expect(record.selfTimeMs).toBe(4.75);
+    clock.mockRestore();
+  });
+
+  it('times getImageData and measureText without putting them in the signature', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    record.selfTimeMs = 0;
+    record.rasterOps = 0;
+    record.activeInWindow = false;
+    const before = record.sig.hash;
+    const clock = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0).mockReturnValueOnce(2)
+      .mockReturnValueOnce(10).mockReturnValueOnce(10.5);
+
+    context.getImageData(0, 0, 1, 1);
+    context.measureText('hello');
+
+    // Counted and timed, so the work is no longer invisible.
+    expect(getMethodEvidence(record)).toEqual({
+      getImageData: { count: 1, canvasApiSelfTimeMs: 2 },
+      measureText: { count: 1, canvasApiSelfTimeMs: 0.5 },
+    });
+    expect(record.selfTimeMs).toBe(2.5);
+    // The canvas is active, so the window is reported at all.
+    expect(record.activeInWindow).toBe(true);
+    // Neither draws, so neither is a raster operation and neither changes the
+    // command signature — two identical redraws around them still compare same.
+    expect(record.rasterOps).toBe(0);
+    expect(record.sig.hash).toBe(before);
     clock.mockRestore();
   });
 

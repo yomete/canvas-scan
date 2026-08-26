@@ -41,6 +41,12 @@ export interface CanvasRecord {
   sig: WindowSignature;
   rasterOps: number;
   selfTimeMs: number;
+  // Work measured in active windows that sampling did not report. Carried into
+  // the next reported window so a sampled recording still totals the whole of
+  // what was measured.
+  carriedRasterOps: number;
+  carriedSelfTimeMs: number;
+  carriedWindows: number;
   activeInWindow: boolean;
   prev: { hash: number; unknown: boolean; windowIndex: number } | null;
   attribution: {
@@ -114,6 +120,9 @@ const CAPTURED_METHODS = [
   'createRadialGradient',
   'createConicGradient',
 ];
+// Wrapped for count and Canvas2D API self-time only — see the loop that
+// installs them for why their arguments stay out of the signature.
+const TIMED_ONLY_METHODS = ['getImageData', 'measureText'];
 const GRADIENT_CREATORS = new Set([
   'createLinearGradient',
   'createRadialGradient',
@@ -988,6 +997,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
         sig: newWindowSignature(),
         rasterOps: 0,
         selfTimeMs: 0,
+        carriedRasterOps: 0,
+        carriedSelfTimeMs: 0,
+        carriedWindows: 0,
         activeInWindow: false,
         prev: null,
         attribution: null,
@@ -1342,6 +1354,41 @@ export function installCanvasPatch(targets?: PatchTargets): void {
           if (!selected || safeSelectedState) trackGradient(result, name, args);
           else trackBuild(result, newWindowSignature(), 'gradient');
         }
+      } catch (error) {
+        kill(error);
+      }
+      return result;
+    };
+    contextProto[name] = wrapped;
+  }
+
+  // Timed, but not part of the command signature. These calls do not draw and
+  // do not change what the next frame draws, so hashing their arguments would
+  // add nothing to a comparison and would make identical redraws compare as
+  // changed. What they do cost is main-thread time, and an application whose
+  // canvas cost is mostly readbacks or text measurement used to record a low
+  // self-time and no finding, with nothing saying the work was never seen.
+  for (const name of TIMED_ONLY_METHODS) {
+    const original = contextProto[name];
+    if (typeof original !== 'function') continue;
+
+    const wrapped = function (this: any, ...args: unknown[]) {
+      const record = recordByContext.get(this);
+      if (!record || killed) return original.apply(this, args);
+      if (record.retired) reactivateRecord(record);
+      const timed = windowCaptured;
+      const start = timed ? performance.now() : 0;
+      const result = original.apply(this, args);
+      if (timed) {
+        const duration = performance.now() - start;
+        record.selfTimeMs += duration;
+        if (methodEvidenceByRecord) addMethodEvidence(methodEvidenceByRecord, record, name, duration);
+      } else if (methodEvidenceByRecord) {
+        addMethodEvidence(methodEvidenceByRecord, record, name, null);
+      }
+      try {
+        if (record.activeInWindow) record.contextActivityInWindow = true;
+        else markRecordActive(record);
       } catch (error) {
         kill(error);
       }

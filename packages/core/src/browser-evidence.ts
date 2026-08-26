@@ -24,7 +24,7 @@ function read(object: unknown, key: string): unknown { try { return object && (t
 function finite(value: unknown): number | null { return typeof value === 'number' && Number.isFinite(value) ? value : null; }
 function clean(value: unknown, limit: number): string | null {
   if (typeof value !== 'string') return null;
-  const result = [...value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().replace(/\s+/g, ' ')].slice(0, limit).join('');
+  const result = [...value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().replace(/\s+/g, ' ')].slice(0, limit).join('');
   return result || null;
 }
 function cleanURL(value: unknown): string | null {

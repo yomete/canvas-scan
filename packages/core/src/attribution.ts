@@ -63,7 +63,7 @@ export function resolveAttribution(canvas: any): {
       if (fiber.stateNode === canvas) {
         return owner
           ? { nearestReactOwner: name, attributionKind: 'jsx-owner' }
-          : { nearestReactOwner: 'canvas', attributionKind: 'direct-host' };
+          : { nearestReactOwner: null, attributionKind: 'react-host-no-owner' };
       }
       return {
         nearestReactOwner: name,

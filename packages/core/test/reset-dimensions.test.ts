@@ -216,16 +216,16 @@ describe('reset dimension classification', () => {
       canvasApiSelfTimeMs: 1,
       signatureStatus: 'unknown',
       unknownReason: 'canvas-reset',
-      sampled: false,
+      sampled: false, coveredWindowCount: 1,
       comparisonGap: null,
       followsCanvasReset: true,
       methodEvidence: {},
     });
     startRecording();
     emitReport(report(1), {}, { windowIndex: 1, timestampMs: 10 });
-    emitResetEvent({ canvasId: 'tally', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'tally', windowIndex: 1, timestampMs: 10, source: 'width-setter', dimensionChange: 'unchanged', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     emitReport(report(2), {}, { windowIndex: 2, timestampMs: 20 });
-    emitResetEvent({ canvasId: 'tally', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'changed', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset' });
+    emitResetEvent({ canvasId: 'tally', windowIndex: 2, timestampMs: 20, source: 'height-setter', dimensionChange: 'changed', width: 240, height: 120, rasterOperationCount: 4, activeRasterOverlap: true, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     const session = stopRecording()!;
     const finding = session.findings.find(item => item.type === 'resize-churn');
     expect(finding?.dimensionChanges).toEqual({ changed: 1, unchanged: 1, unavailable: 0 });

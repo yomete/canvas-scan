@@ -1,5 +1,5 @@
 export type AttributionKind =
-  | 'direct-host'
+  | 'react-host-no-owner'
   | 'jsx-owner'
   | 'container-only'
   | 'unattributed';
@@ -21,6 +21,10 @@ export interface DrawBatchReport {
   signatureStatus: SignatureStatus;
   unknownReason: string | null;
   sampled: boolean;
+  // How many active windows the counts above cover. Always 1 at captureEvery 1.
+  // Above it, the windows sampling did not report are carried into this one and
+  // counted here.
+  coveredWindowCount: number;
   comparisonGap: number | null;
   followsCanvasReset: boolean;
   methodEvidence: Record<string, CanvasMethodEvidence>;
@@ -37,9 +41,17 @@ export interface RecordedTopMethod extends CanvasMethodEvidence {
 
 export interface CanvasScanOptions {
   captureEvery?: number;
+  // The overlay's flash threshold. It also sets the repeated-draw-work minimum
+  // when minRepeatedRasterOps is absent, which is the historical behaviour.
   minFlashRasterOps?: number;
+  // The minimum raster operations a `same` window must clear to count towards a
+  // repeated-draw-work finding. Set it to tune findings without touching the
+  // flash, or the flash without touching findings.
+  minRepeatedRasterOps?: number;
   overlay?: boolean;
   skipOwners?: readonly string[];
+  // Writes the frame loop's per-canvas console.debug lines. Off by default.
+  debug?: boolean;
 }
 
 export type RecordingStopReason = 'manual' | 'max-duration';
@@ -250,6 +262,11 @@ export interface RecordedResetEvent {
   activeRasterOverlap: boolean;
   commandStatus: SignatureStatus;
   unknownReason: string | null;
+  // True for a reset still queued when the recording stopped. Its windowIndex
+  // is one past the last window a frame actually closed, so it falls inside no
+  // draw episode and does not count towards the resize-churn distinct-window
+  // gate. The reset itself was observed; only its window is synthetic.
+  flushedAtStop: boolean;
 }
 
 export interface RecordedCanvasSummary {
@@ -322,7 +339,9 @@ export interface RepeatedDrawWorkFinding {
   rasterOperationCount: number;
   canvasApiSelfTimeMs: number;
   repeatedWindows: RecordedRepeatedWindow[];
-  strictModeStyleDuplicates: number;
+  // Back-to-back repeated windows that also drew the same number of raster
+  // operations. A label on the shape of the repetition, not a cause.
+  adjacentIdenticalWindowPairs: number;
   unknownCoverage: { unknownWindowCount: number; activeWindowCount: number };
   claimBoundary: { observation: string; explanation: string; nonEstablishedFacts: string };
   nextCheck: string;
@@ -368,6 +387,10 @@ export interface InvestigationSessionV1 {
   durationMs: number;
   stopReason: RecordingStopReason;
   canvasScanVersion: string;
+  // The sampling rate in force for the whole recording. Two sessions recorded
+  // at different rates do not describe the same span of windows, so a
+  // comparison checks this before pairing them.
+  captureEvery: number;
   browserFeatures: { monotonicTime: boolean; eventTiming: boolean; longAnimationFrames: boolean };
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
@@ -423,6 +446,10 @@ export interface ComparisonMeasure {
   delta: number | null;
   direction: 'increased' | 'decreased' | 'unchanged' | 'unknown';
   interpretation: 'structural' | 'observed-timing-pair';
+  // The span each side of the measure covers. Per-method measures are episode
+  // scoped for a heavy-canvas-work pairing and session scoped for the other
+  // three finding types, so the same measure id can cover either.
+  scope: 'session' | 'episode';
 }
 
 export interface ComparisonFindingRef {
@@ -446,6 +473,7 @@ export interface ComparisonArtifactV1 {
     | 'finding-type-mismatch'
     | 'unsupported-schema'
     | 'incomplete-evidence'
+    | 'sampling-mismatch'
   >;
   measures: ComparisonMeasure[];
   improvementEstablished: false;

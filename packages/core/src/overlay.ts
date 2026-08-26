@@ -1,7 +1,10 @@
 import {
   getHistory,
+  droppedCanvasIds,
   getLatestReport,
   latestReports,
+  MAX_TRACKED_CANVASES,
+  retiredCanvasIds,
   setSourceLocation,
   subscribeToReports,
 } from './frame-loop.js';
@@ -41,6 +44,9 @@ interface CanvasStats {
   latest: DrawBatchReport;
   owner: string | null;
   same: number;
+  // Consecutive `same` windows ending at the latest one. The flash label reads
+  // as a run, so it counts a run rather than the lifetime total.
+  sameStreak: number;
   selfTimeMs: number;
   unknown: number;
   unknownReasons: Map<string, number>;
@@ -102,6 +108,9 @@ let shownSession: InvestigationSessionV1 | null = null;
 let renderedSession: InvestigationSessionV1 | null = null;
 let expandedFindingId: string | null = null;
 let copySessionStatus = '';
+let copySessionRequest = 0;
+let copyPopoverStatus = '';
+let copyPopoverRequest = 0;
 let explanationSelection: { sessionId: string; findingIndex: number; key: string } | null = null;
 let explanationRecordingActive = false;
 let completedExplanation: ExplanationArtifactV1 | null = null;
@@ -121,9 +130,10 @@ let commitAnimationFrame: number | null = null;
 let dirty = false;
 let flyoutRevision = 0;
 let renderedFlyoutRevision = -1;
+let renderedLiveSignature = '';
 let unsubscribe: (() => void) | null = null;
 let unsubscribeRecording: (() => void) | null = null;
-let dragStart: { pointerX: number; pointerY: number; x: number; y: number } | null =
+let dragStart: { pointerX: number; pointerY: number; pointerId: number; x: number; y: number } | null =
   null;
 let dragX = 0;
 let dragY = 0;
@@ -205,6 +215,11 @@ button { font: inherit; }
   cursor: pointer;
 }
 .collapsed-dot.accent { background: #ef4444; }
+/* A run keeps going while the overlay is collapsed and Stop is out of reach,
+   so the dot pulses to say a recording is open. */
+.collapsed-dot.recording { background: #ef4444; animation: canvas-scan-recording 1.2s ease-in-out infinite; }
+@keyframes canvas-scan-recording { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.control.inert { opacity: 0.4; cursor: default; }
 .toolbar.collapsed {
   min-height: 0;
   padding: 1px;
@@ -230,7 +245,9 @@ button { font: inherit; }
   pointer-events: auto;
 }
 .flyout[hidden],
-.popover[hidden] { display: none; }
+.popover[hidden],
+.row[hidden],
+.more[hidden] { display: none; }
 .row,
 .more {
   display: flex;
@@ -247,6 +264,7 @@ button { font: inherit; }
 }
 .row:hover,
 .more:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
+.row.stale { opacity: 0.55; }
 .repeated-finding {
   width: 100%;
   margin: 4px 0;
@@ -268,6 +286,11 @@ button { font: inherit; }
 .comparison-action:focus-visible,
 .comparison-copy:focus-visible,
 .canvas-summary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
+.finding-boundary { margin: 4px 0 2px; }
+.finding-boundary > summary { cursor: pointer; color: rgba(255, 255, 255, 0.62); font-size: 11px; }
+.finding-boundary > summary:hover { color: #fff; }
+.finding-boundary[open] > summary { color: rgba(255, 255, 255, 0.86); }
+.finding-truncated { color: #fbbf24; }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
 .finding-line, .session-line { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
 .session-owner { color: #fff; }
@@ -411,6 +434,14 @@ const UNKNOWN_PHRASES = new Map([
     'uncaptured-raster',
     'drawing happened in a frame canvas-scan did not capture',
   ],
+  [
+    'sampling-gap',
+    'frames in between were skipped by sampling',
+  ],
+  [
+    'instrumentation-disabled',
+    'command capture was off for this frame',
+  ],
   ['gradient-mutated', 'a gradient changed while drawing'],
   ['transform-unmodeled', 'a transform canvas-scan cannot follow'],
   ['clip-unmodeled', 'a clipping shape canvas-scan cannot follow'],
@@ -450,16 +481,27 @@ function frames(count: number): string {
   return `${count} ${count === 1 ? 'frame' : 'frames'}`;
 }
 
+// One phrase for a canvas with no owning React component. The overlay used to
+// say "Not attributed" in one place, "Unattributed" in another, and show the
+// bare canvas ID in three more, which read as three different states.
+const NO_OWNER = 'No owner found';
+function ownerName(owner: string | null): string {
+  return owner ?? NO_OWNER;
+}
+function ownerWithId(owner: string | null, canvasId: string): string {
+  return owner ?? `${NO_OWNER} · ${canvasId}`;
+}
+
 function badgeText(kind: AttributionKind): string {
   if (kind === 'jsx-owner') return 'jsx';
-  if (kind === 'direct-host') return 'dh';
+  if (kind === 'react-host-no-owner') return 'no';
   if (kind === 'container-only') return 'co';
   return 'un';
 }
 
 const BADGE_TITLES: Record<AttributionKind, string> = {
   'jsx-owner': 'this canvas is written in the component’s JSX',
-  'direct-host': 'a canvas with no owning component above it',
+  'react-host-no-owner': 'React made this canvas, but no component above it owns it',
   'container-only':
     'a library made this canvas inside the component’s markup, so the owner is the nearest one above it',
   unattributed: 'canvas-scan could not find an owning React component',
@@ -642,7 +684,7 @@ function flashOutline(report: DrawBatchReport, canvas: Element, same: number): v
   const label = outline.querySelector('.label');
   if (label) {
     label.textContent =
-      `${report.nearestReactOwner ?? report.canvasId} · ` +
+      `${ownerWithId(report.nearestReactOwner, report.canvasId)} · ` +
       `sent the same draw commands again ×${same}`;
   }
 
@@ -763,10 +805,19 @@ function copyPopoverJson(canvasId: string): void {
     aggregates: getAggregate(canvasId),
     geometry: selectedGeometry ? { ...selectedGeometry } : null,
   });
+  const request = ++copyPopoverRequest;
+  const report = (status: string) => {
+    if (request !== copyPopoverRequest || selectedCanvasId !== canvasId) return;
+    copyPopoverStatus = status;
+    markDirty();
+  };
   try {
     const copied = navigator.clipboard?.writeText(payload);
-    void copied?.catch(() => {});
-  } catch {}
+    if (!copied) { report('Clipboard unavailable'); return; }
+    void copied.then(() => report('Canvas JSON copied'), () => report('Copy failed'));
+  } catch {
+    report('Copy failed');
+  }
 }
 
 function renderPopover(): void {
@@ -787,10 +838,11 @@ function renderPopover(): void {
     badge.textContent = badgeText(canvasStats.kind);
   }
   const owner = popover.querySelector<HTMLElement>('.popover-owner');
-  if (owner) owner.textContent = canvasStats.owner ?? canvasId;
+  if (owner) owner.textContent = ownerWithId(canvasStats.owner, canvasId);
   const status = popover.querySelector<HTMLElement>('.status');
   if (status) {
     status.textContent =
+      (retiredCanvasIds.has(canvasId) ? 'This canvas has stopped drawing.\n' : '') +
       `${frames(aggregate.windows)} seen\n` +
       `same ${aggregate.same} · changed ${aggregate.changed} · ` +
       `unclear ${aggregate.unknown}`;
@@ -843,6 +895,11 @@ function renderPopover(): void {
     source.textContent = `source: ${label.text}`;
     source.title = label.title;
   }
+  const copyStatus = popover.querySelector<HTMLElement>('.popover-copy-status');
+  if (copyStatus) {
+    copyStatus.hidden = copyPopoverStatus === '';
+    copyStatus.textContent = copyPopoverStatus;
+  }
   const geometry = popover.querySelector<HTMLElement>('.geometry');
   if (geometry) {
     geometry.textContent = !selectedGeometry ? 'geometry: unavailable' : selectedGeometry.unavailableReason
@@ -856,8 +913,17 @@ function openPopover(canvasId: string): void {
   if (!canvasStats) return;
   selectedCanvasId = canvasId;
   selectedGeometry = collectCanvasGeometry(canvases.get(canvasId));
+  copyPopoverStatus = '';
+  copyPopoverRequest++;
   flyoutOpen = false;
   flyoutRevision++;
+  // Opening from a flyout row hides the flyout while that row still holds
+  // focus, which drops focus to the document. Move it into the popover so the
+  // keyboard stays where the user is now working; Escape hands it back.
+  requestAnimationFrame(() => {
+    if (selectedCanvasId !== canvasId) return;
+    popover?.querySelector<HTMLButtonElement>('.close')?.focus();
+  });
 
   // Retry when the last answer was "unavailable": that is usually a sourcemap
   // that was not ready yet, and the user reopening the popover is a request to
@@ -924,9 +990,17 @@ function sessionCanvas(session: InvestigationSessionV1, canvasId: string) {
 }
 
 function findingSummary(finding: InvestigationFinding): string {
-  if (finding.type === 'heavy-canvas-work') return `Slowest frame ${finding.maximumWindow.canvasApiSelfTimeMs} ms · ${finding.rasterOperationCount} draw calls`;
+  // Both numbers are labelled with the span they cover. Read as one clause the
+  // old line said a single frame made the whole episode's draw calls.
+  if (finding.type === 'heavy-canvas-work') return `Slowest frame ${finding.maximumWindow.canvasApiSelfTimeMs} ms, ${finding.maximumWindow.rasterOperationCount} draw calls · this episode ${finding.canvasApiSelfTimeMs} ms, ${finding.rasterOperationCount} draw calls`;
   if (finding.type === 'repeated-draw-work') return `${finding.repeatedWindowCount} near-identical frames · ${finding.rasterOperationCount} draw calls · ${finding.canvasApiSelfTimeMs} ms`;
-  if (finding.type === 'resize-churn') return `${finding.activeResetCount} canvas resets · ${finding.dimensionChanges.unchanged} didn't change the size`;
+  // The unavailable tally is named rather than left out, so a reader
+  // subtracting the unchanged count does not read the rest as size changes.
+  if (finding.type === 'resize-churn') {
+    const { unchanged, unavailable } = finding.dimensionChanges;
+    const sizes = unavailable ? `${unchanged} didn't change the size · ${unavailable} size unknown` : `${unchanged} didn't change the size`;
+    return `${finding.activeResetCount} canvas resets · ${sizes}`;
+  }
   const worst = finding.affectedWindows.reduce((worst, window) => (window.actualToExpectedAreaRatio ?? 0) > (worst.actualToExpectedAreaRatio ?? 0) ? window : worst, finding.affectedWindows[0]);
   const ratio = worst?.actualToExpectedAreaRatio == null ? null : Math.round(worst.actualToExpectedAreaRatio * 10) / 10;
   return `${finding.affectedWindowCount} frames · backing store${ratio && ratio !== 1 ? ` up to ${ratio}× larger` : ' larger'} than displayed`;
@@ -1023,6 +1097,8 @@ function comparisonMeasureLabel(id: ComparisonMeasureId): string {
   return labels[id as Exclude<ComparisonMeasureId, `method:${string}:operation-count` | `method:${string}:self-time-ms`>];
 }
 
+const sessionLabel = (id: string) => id.replace(/^canvas-scan-/, '');
+
 function updateComparisonPanel(): void {
   const panel = flyout?.querySelector<HTMLElement>('.comparison-panel');
   if (!panel) return;
@@ -1042,13 +1118,27 @@ function updateComparisonPanel(): void {
   const artifact = completedComparison;
   if (!artifact) return;
   appendExplanationLine(panel, 'COMPARISON COMPLETE');
-  const sessionLabel = (id: string) => id.replace(/^canvas-scan-/, '');
   appendExplanationLine(panel, `Baseline: Finding ${artifact.baseline.findingIndex + 1} · ${artifact.baseline.findingType ? findingLabel(artifact.baseline.findingType) : 'Selected finding'} · session ${sessionLabel(artifact.baseline.sessionId)}`);
   appendExplanationLine(panel, `Candidate: Finding ${artifact.candidate.findingIndex + 1} · ${artifact.candidate.findingType ? findingLabel(artifact.candidate.findingType) : 'Selected finding'} · session ${sessionLabel(artifact.candidate.sessionId)}`);
   if (artifact.status === 'comparable') {
-    for (const measure of artifact.measures) {
+    // Counts and times do not carry the same weight and are no longer shown
+    // alike. A count is a structural fact about the two recordings; a time is
+    // two measurements taken on separate occasions, so a small move in it can
+    // be noise while a count of the same size is real.
+    const structural = artifact.measures.filter(measure => measure.interpretation === 'structural');
+    const timings = artifact.measures.filter(measure => measure.interpretation === 'observed-timing-pair');
+    const line = (measure: ComparisonMeasure) => {
       const delta = measure.delta === null ? '' : ` (${measure.delta > 0 ? '+' : ''}${measure.delta}${measure.unit === 'ms' ? ' ms' : ''})`;
-      appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`);
+      const scope = measure.scope === 'episode' ? 'Measured over the finding\'s draw episode.' : 'Measured over the whole recording.';
+      appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`, scope);
+    };
+    if (structural.length) {
+      appendExplanationLine(panel, 'WHAT CHANGED IN THE DRAWING');
+      for (const measure of structural) line(measure);
+    }
+    if (timings.length) {
+      appendExplanationLine(panel, 'TIMES MEASURED ON TWO SEPARATE OCCASIONS', 'Each side was measured in a different recording, so a small difference here can be ordinary variation rather than a change.');
+      for (const measure of timings) line(measure);
     }
   } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Couldn't compare: ${reason.replaceAll('-', ' ')}`);
   const copy = document.createElement('button');
@@ -1092,6 +1182,18 @@ function updateExplanationPanel(): void {
     const comparison = selectedComparison(artifact);
     appendExplanationLine(panel, 'EXPLANATION COMPLETE');
     appendExplanationLine(panel, `Finding ${artifact.source.findingIndex + 1} · ${findingLabel(artifact.source.findingType)}`);
+    // An explanation capture runs a recording of its own, so it leaves a second
+    // session behind. The panel keeps showing the session being investigated
+    // while getLastSession() has moved on to the new one, and Keep as baseline
+    // acts on the new one. Say so rather than letting the two disagree in
+    // silence.
+    if (artifact.followUp.sessionId !== artifact.source.sessionId) {
+      appendExplanationLine(
+        panel,
+        `Explaining also made a new recording (${sessionLabel(artifact.followUp.sessionId)}). The findings above stay from ${sessionLabel(artifact.source.sessionId)}; getLastSession() now returns the new one.`,
+        `source ${artifact.source.sessionId} · follow-up ${artifact.followUp.sessionId}`,
+      );
+    }
     const status = comparison?.status ?? 'unknown';
     if (status === 'changed' && artifact.firstDifference) {
       appendExplanationLine(panel, differenceVerdict(artifact.firstDifference), artifact.firstDifference.reason);
@@ -1101,10 +1203,26 @@ function updateExplanationPanel(): void {
       const reason = comparison?.unknownReason ?? artifact.firstGap?.reason ?? 'missing-reference';
       appendExplanationLine(panel, `Couldn't compare the frames — ${explanationUnknownCopy[reason]}.`, reason);
     }
-    const sample = artifact.stacks.find(candidate => candidate.frames.length > 0);
+    // The verdict above names the first difference, so the callsite shown with
+    // it must be the sample taken for that same command. Any sample with
+    // frames used to do, which could pair a first-difference verdict with a
+    // first-raster callsite and present the two as one answer.
+    const withFrames = artifact.stacks.filter(candidate => candidate.frames.length > 0);
+    const difference = artifact.firstDifference;
+    const matching = difference
+      ? withFrames.find(candidate => candidate.reason === 'first-difference' && candidate.commandOrdinal === difference.ordinal)
+      : undefined;
+    const sample = matching ?? withFrames[0];
     if (!sample) {
       appendExplanationLine(panel, 'No draw callsite captured.');
     } else {
+      if (difference && !matching) {
+        appendExplanationLine(
+          panel,
+          'No callsite was captured for the command that differed. The one below is from a different command in the same recording.',
+          `captured for ${sample.reason}, command ${sample.commandOrdinal}`,
+        );
+      }
       let appFrames = 0;
       let frameworkFrames = 0;
       for (const frame of sample.frames) {
@@ -1139,7 +1257,7 @@ function createFinding(
 ): HTMLElement {
   const key = findingKey(finding);
   const id = `canvas-scan-finding-${key.replaceAll(':', '-')}`;
-  const owner = sessionCanvas(session, finding.canvasId)?.nearestReactOwner ?? finding.canvasId;
+  const owner = ownerWithId(sessionCanvas(session, finding.canvasId)?.nearestReactOwner ?? null, finding.canvasId);
   const card = document.createElement('section');
   card.className = 'repeated-finding finding-card';
   card.dataset.canvasId = finding.canvasId;
@@ -1173,6 +1291,39 @@ function createFinding(
   unavailable.className = 'finding-line finding-unavailable';
   unavailable.textContent = 'Canvas not on the page.';
   evidence.append(unavailable);
+
+  // A recording that overflowed a cap describes the end of what the user did,
+  // not the start, and its findings are derived from what survived. That was
+  // only visible in the coverage line at the top of the panel, far from the
+  // card a reader acts on.
+  if (droppedEntries(session).length) {
+    const truncated = document.createElement('div');
+    truncated.className = 'finding-line finding-truncated';
+    truncated.textContent = 'This recording hit a collection limit. The oldest entries were dropped, so this finding is derived from the later part of the recording only.';
+    evidence.append(truncated);
+  }
+
+  // The card speaks plainly and the artifact carries the contract. The
+  // contract now has a way into the interface too: collapsed by default, so it
+  // costs a reader nothing, and one press away when they want to know what the
+  // evidence does and does not establish.
+  const boundary = document.createElement('details');
+  boundary.className = 'finding-boundary';
+  const boundarySummary = document.createElement('summary');
+  boundarySummary.textContent = 'What this shows, and what it does not';
+  boundary.append(boundarySummary);
+  appendLine(boundary, 'Evidence level', finding.evidenceLevel);
+  appendLine(boundary, 'Observed', finding.claimBoundary.observation);
+  appendLine(boundary, 'Reading', finding.claimBoundary.explanation);
+  appendLine(boundary, 'Not established', finding.claimBoundary.nonEstablishedFacts);
+  appendLine(boundary, 'Next check', finding.nextCheck);
+  if (finding.type === 'heavy-canvas-work' && finding.topMethods.length) {
+    // The next check names the top measured methods, so they are reachable
+    // from the same disclosure rather than only in the exported JSON.
+    appendLine(boundary, 'Top measured methods', finding.topMethods.slice(0, 5).map(method =>
+      `${method.method} ×${method.count}${method.canvasApiSelfTimeMs === null ? '' : ` (${method.canvasApiSelfTimeMs} ms)`}`).join(' · '));
+  }
+  evidence.append(boundary);
 
   const actions = document.createElement('div');
   actions.className = 'finding-actions';
@@ -1243,17 +1394,18 @@ function updateFinding(session: InvestigationSessionV1, finding: InvestigationFi
   if (comparisonAction) comparisonAction.hidden = !baseline || selectedBaseline || session.sessionId === baseline.session.sessionId || finding.type !== baseline.session.findings[baseline.findingIndex]?.type;
 }
 
-function coverageLabel(name: string): string {
-  return ({
-    canvasWindowReports: 'canvas frame reports',
-    canvasLifetimes: 'canvas lifetimes',
-    resetEvents: 'reset events',
-    lifecycleEvents: 'lifecycle events',
-    documentEvents: 'document events',
-    eventTiming: 'Event Timing entries',
-    userMarks: 'user marks',
-    longAnimationFrames: 'Long Animation Frame entries',
-  } as Record<string, string>)[name] ?? name;
+function coverageLabel(name: string, count: number): string {
+  const [one, many] = ({
+    canvasWindowReports: ['canvas frame report', 'canvas frame reports'],
+    canvasLifetimes: ['canvas lifetime', 'canvas lifetimes'],
+    resetEvents: ['reset event', 'reset events'],
+    lifecycleEvents: ['lifecycle event', 'lifecycle events'],
+    documentEvents: ['document event', 'document events'],
+    eventTiming: ['Event Timing entry', 'Event Timing entries'],
+    userMarks: ['user mark', 'user marks'],
+    longAnimationFrames: ['Long Animation Frame entry', 'Long Animation Frame entries'],
+  } as Record<string, [string, string]>)[name] ?? [name, name];
+  return count === 1 ? one : many;
 }
 
 function createSessionView(session: InvestigationSessionV1): HTMLElement {
@@ -1286,7 +1438,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   if (!session.browserFeatures.eventTiming) appendLine(coverage, '', 'Event Timing is unavailable in this browser.');
   if (!session.browserFeatures.longAnimationFrames) appendLine(coverage, '', 'Long Animation Frames are unavailable in this browser.');
   for (const [name, count] of droppedEntries(session)) {
-    appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name)} dropped`);
+    appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name, count)} dropped`);
   }
   coverage.hidden = coverage.childElementCount === 0;
   root.append(coverage);
@@ -1307,13 +1459,17 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
     summaries.append(summaryHeading);
     for (const [index, canvas] of session.canvases.entries()) {
       const line = document.createElement('div');
+      // No tab stop. These rows are a record of what the recording measured,
+      // deliberately separate from live inspection — hovering one must not
+      // locate a canvas and clicking one must not open the popover. A tab stop
+      // on a row that does nothing when pressed is worse than no tab stop, and
+      // the live list below offers the same canvases as real controls.
       line.className = 'session-line canvas-summary';
-      line.tabIndex = 0;
       line.dataset.summaryIndex = String(index);
       line.dataset.sessionCanvasId = canvas.canvasId;
       const owner = document.createElement('div');
       owner.className = 'session-owner';
-      owner.textContent = `${canvas.nearestReactOwner ?? 'Unattributed'} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
+      owner.textContent = `${ownerName(canvas.nearestReactOwner)} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
       const identifier = document.createElement('div');
       identifier.className = 'session-identifier';
       identifier.textContent = `Canvas ID: ${canvas.canvasId}`;
@@ -1352,12 +1508,23 @@ function updateSessionView(session: InvestigationSessionV1): void {
   const copyStatus = root.querySelector<HTMLElement>('.session-copy-status');
   if (copyStatus) copyStatus.textContent = copySessionStatus;
   const summaries = [...root.querySelectorAll<HTMLElement>('.canvas-summary')];
-  for (const [index, summary] of summaries.entries()) summary.hidden = !showAllSessionCanvases && index >= 8;
+  for (const [index, summary] of summaries.entries()) {
+    summary.hidden = !showAllSessionCanvases && index >= 8;
+  }
   const more = root.querySelector<HTMLButtonElement>('.summary-more');
+  const hiddenSummaries = Math.max(0, summaries.length - 8);
   if (more) {
-    const hidden = Math.max(0, summaries.length - 8);
-    more.hidden = showAllSessionCanvases || hidden === 0;
-    more.textContent = `+${hidden} more`;
+    if (showAllSessionCanvases || hiddenSummaries === 0) {
+      // Removed rather than hidden, and focus goes to the rows it revealed —
+      // the same behaviour the live list's control already had.
+      const wasActive = root.getRootNode() instanceof ShadowRoot &&
+        (root.getRootNode() as ShadowRoot).activeElement === more;
+      more.remove();
+      if (wasActive) summaries[8]?.focus();
+    } else {
+      more.hidden = false;
+      more.textContent = `+${hiddenSummaries} more`;
+    }
   }
   for (const [index, finding] of session.findings.entries()) updateFinding(session, finding, index);
   updateExplanationPanel();
@@ -1451,7 +1618,7 @@ function renderFlyout(): void {
     badge.textContent = badgeText(canvasStats.kind);
     badge.title = badgeTitle(canvasStats.kind);
     const text = row.querySelector<HTMLElement>('.row-text')!;
-    const owner = canvasStats.owner ?? 'Not attributed';
+    const owner = ownerName(canvasStats.owner);
     let content =
       `Owner: ${owner} · Canvas ID: ${canvasId} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
     // The row ellipsizes, so the title carries the whole sentence.
@@ -1470,6 +1637,15 @@ function renderFlyout(): void {
       title +=
         ` It spent ${aggregate.meanSelfTimeMs.toFixed(1)} ms per frame in ` +
         'canvas calls.';
+    }
+    // A retired canvas keeps its row and its last figures, but says it stopped
+    // drawing. Without this the list mixes canvases that are drawing now with
+    // canvases canvas-scan is no longer following, and they look the same.
+    const retired = retiredCanvasIds.has(canvasId);
+    row.classList.toggle('stale', retired);
+    if (retired) {
+      content += ' · stopped drawing';
+      title += ' It has stopped drawing and canvas-scan is no longer following it. Drawing again brings it back.';
     }
     text.textContent = content;
     row.title = title;
@@ -1530,19 +1706,33 @@ function refresh(): void {
     }
   }
   if (!canvasCount || !candidateCount || !countsButton || !toolbar) return;
+  // Two different counts, so two different labels. With a completed recording
+  // this is the number of findings; without one it is the number of canvases
+  // seen redrawing the same commands live. Calling both "review candidates"
+  // made a live count of 0 read as "nothing to look at" while canvases flashed.
   let totalCandidates = shownSession?.findings.length ?? 0;
   if (!shownSession) for (const canvasStats of stats.values()) {
     if (canvasStats.candidate) totalCandidates++;
   }
-  canvasCount.textContent = `${stats.size} ${stats.size === 1 ? 'canvas' : 'canvases'} · `;
-  candidateCount.textContent =
-    `${totalCandidates} review ` +
-    `${totalCandidates === 1 ? 'candidate' : 'candidates'}`;
+  canvasCount.textContent = `${stats.size} ${stats.size === 1 ? 'canvas' : 'canvases'}${droppedCanvasIds.size ? ` (+${droppedCanvasIds.size} not tracked)` : ''} · `;
+  canvasCount.title = droppedCanvasIds.size
+    ? `canvas-scan follows at most ${MAX_TRACKED_CANVASES} canvases at once. ${droppedCanvasIds.size} left the list and return as soon as they draw again.`
+    : '';
+  candidateCount.textContent = shownSession
+    ? `${totalCandidates} review ${totalCandidates === 1 ? 'candidate' : 'candidates'}`
+    : `${totalCandidates} ${totalCandidates === 1 ? 'canvas' : 'canvases'} repeating`;
   candidateCount.classList.toggle('accent', totalCandidates > 0);
   toolbar.classList.toggle('collapsed', collapsed);
-  toolbar
-    .querySelector('.collapsed-dot')
-    ?.classList.toggle('accent', totalCandidates > 0);
+  const collapsedDot = toolbar.querySelector<HTMLElement>('.collapsed-dot');
+  const runOpen = getRecordingState() === 'recording';
+  collapsedDot?.classList.toggle('accent', totalCandidates > 0);
+  // Collapsing hides Stop. The dot says a run is still open and expanding
+  // brings Stop back, so the run is never invisible and unstoppable.
+  collapsedDot?.classList.toggle('recording', runOpen);
+  if (collapsedDot) {
+    collapsedDot.title = runOpen ? 'Recording — expand to stop' : 'Expand canvas-scan';
+    collapsedDot.setAttribute('aria-label', runOpen ? 'Recording in progress. Expand canvas-scan to stop.' : 'Expand canvas-scan');
+  }
   countsButton.setAttribute('aria-expanded', String(flyoutOpen));
   inspectButton?.classList.toggle('active', inspectMode);
   inspectButton?.setAttribute('aria-pressed', String(inspectMode));
@@ -1551,6 +1741,22 @@ function refresh(): void {
   for (const { canvasId, report, same } of pendingFlashes.splice(0)) {
     const canvas = canvases.get(canvasId);
     if (canvas instanceof Element) flashOutline(report, canvas, same);
+  }
+  // A canvas leaving the page, or retiring, changes what the flyout should
+  // show, and neither goes through a code path that bumps the revision. The
+  // flyout is only re-rendered on a revision change, so a finding card would
+  // keep offering actions against a canvas that is no longer there until some
+  // unrelated interaction forced a re-render. Watch the state itself instead.
+  const liveSignature = [
+    ...(shownSession?.findings ?? []).map(finding => {
+      const live = canvases.get(finding.canvasId);
+      return `${finding.canvasId}:${live instanceof Element && live.isConnected ? 1 : 0}`;
+    }),
+    ...[...stats.keys()].map(canvasId => `${canvasId}:${retiredCanvasIds.has(canvasId) ? 'r' : 'a'}`),
+  ].join('|');
+  if (liveSignature !== renderedLiveSignature) {
+    renderedLiveSignature = liveSignature;
+    flyoutRevision++;
   }
   updateInspectOutlines();
   for (const canvasId of fadingFlashes) {
@@ -1577,6 +1783,9 @@ function renderRecordingState(): void {
     stopRoot.activeElement === stopRecordingButton;
   stopRecordingButton.disabled = !recording && !stopFocused;
   stopRecordingButton.setAttribute('aria-disabled', String(!recording));
+  // Kept focusable so the focus is not dropped, but it looks the way it is
+  // announced: inert, not pressable.
+  stopRecordingButton.classList.toggle('inert', !recording && stopFocused);
   recordButton.classList.toggle('active', recording);
   recordButton.setAttribute('aria-pressed', String(recording));
   if (state === 'complete' && shownSession) flyoutOpen = true;
@@ -1614,6 +1823,15 @@ function toggleInspectMode(): void {
   markDirty();
 }
 
+// True while the focused element is the overlay host or lives inside its
+// shadow root. The document's activeElement is the host itself for anything
+// inside the shadow tree.
+function overlayHasFocus(): boolean {
+  if (!host) return false;
+  if (host.shadowRoot?.activeElement) return true;
+  return typeof document !== 'undefined' && document.activeElement === host;
+}
+
 function handleKeydown(event: KeyboardEvent): void {
   const root = host?.shadowRoot;
   const controls = [...(root?.querySelectorAll<HTMLButtonElement>('.finding-toggle') ?? [])];
@@ -1624,6 +1842,13 @@ function handleKeydown(event: KeyboardEvent): void {
   }
   if (index !== -1 && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); const id = controls[index].dataset.findingId ?? null; expandedFindingId = expandedFindingId === id ? null : id; flyoutRevision++; markDirty(); return; }
   if (event.key === 'Escape') {
+    // Escape belongs to whatever the user is working in. The overlay takes it
+    // only while focus is inside the overlay, so a dialog or menu in the host
+    // application keeps its own dismissal. Inspect mode is the exception: it
+    // paints over the page and takes focus nowhere, so its own exit stays
+    // reachable from anywhere.
+    if (!overlayHasFocus() && !inspectMode) return;
+    if (!overlayHasFocus()) { exitInspectMode(); return; }
     if (selectedCanvasId !== null) {
       closePopover();
       if (inspectMode) inspectMode = false;
@@ -1645,14 +1870,44 @@ function updateDockTransform(): void {
     dragX === 0 && dragY === 0 ? '' : `translate(${dragX}px, ${dragY}px)`;
 }
 
+// Enough of the dock has to stay on screen to grab it again. Without this a
+// drag past the edge leaves the overlay unreachable until a reload.
+const MINIMUM_VISIBLE_DOCK_PX = 48;
+
+function clampDrag(x: number, y: number): { x: number; y: number } {
+  if (!dock || typeof window === 'undefined') return { x, y };
+  const box = dock.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  if (!box.width || !box.height || !viewportWidth || !viewportHeight) return { x, y };
+  // The box already includes the current translate, so work out where the
+  // untranslated dock sits and clamp the offset against that.
+  const restLeft = box.left - dragX;
+  const restTop = box.top - dragY;
+  const visible = Math.min(MINIMUM_VISIBLE_DOCK_PX, box.width, box.height);
+  return {
+    x: Math.min(Math.max(x, visible - box.width - restLeft), viewportWidth - visible - restLeft),
+    y: Math.min(Math.max(y, visible - box.height - restTop), viewportHeight - visible - restTop),
+  };
+}
+
 function handlePointerMove(event: PointerEvent): void {
   if (!dragStart) return;
-  dragX = dragStart.x + event.clientX - dragStart.pointerX;
-  dragY = dragStart.y + event.clientY - dragStart.pointerY;
+  const clamped = clampDrag(
+    dragStart.x + event.clientX - dragStart.pointerX,
+    dragStart.y + event.clientY - dragStart.pointerY,
+  );
+  dragX = clamped.x;
+  dragY = clamped.y;
   markDirty();
 }
 
 function handlePointerUp(): void {
+  if (dragStart && toolbar) {
+    // A release outside the window is still delivered to the captured element,
+    // so the dock stops following the pointer.
+    try { toolbar?.releasePointerCapture(dragStart.pointerId); } catch { /* already released */ }
+  }
   dragStart = null;
   document.removeEventListener('pointermove', handlePointerMove);
   document.removeEventListener('pointerup', handlePointerUp);
@@ -1663,9 +1918,11 @@ function handleToolbarPointerDown(event: PointerEvent): void {
   dragStart = {
     pointerX: event.clientX,
     pointerY: event.clientY,
+    pointerId: event.pointerId,
     x: dragX,
     y: dragY,
   };
+  try { toolbar?.setPointerCapture(event.pointerId); } catch { /* capture is optional */ }
   document.addEventListener('pointermove', handlePointerMove);
   document.addEventListener('pointerup', handlePointerUp);
 }
@@ -1797,7 +2054,15 @@ function handleFlyoutClick(event: MouseEvent): void {
     return;
   }
   if (action?.dataset.action === 'copy-session' && shownSession) {
-    const copied = (status: string) => { copySessionStatus = status; flyoutRevision++; markDirty(); };
+    // Guarded the way the explanation and comparison copies are. A slow
+    // clipboard resolving after a new recording started would otherwise write
+    // its result into the panel showing that new recording.
+    const sessionId = shownSession.sessionId;
+    const request = ++copySessionRequest;
+    const copied = (status: string) => {
+      if (request !== copySessionRequest || shownSession?.sessionId !== sessionId) return;
+      copySessionStatus = status; flyoutRevision++; markDirty();
+    };
     try {
       if (!navigator.clipboard?.writeText) copied('Copy failed');
       else void navigator.clipboard.writeText(JSON.stringify(shownSession)).then(() => copied('Session JSON copied')).catch(() => copied('Copy failed'));
@@ -1805,14 +2070,23 @@ function handleFlyoutClick(event: MouseEvent): void {
     return;
   }
   if (action?.dataset.action === 'download-session' && shownSession) {
-    const blob = new Blob([JSON.stringify(shownSession)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${shownSession.sessionId}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    copySessionStatus = 'Session JSON downloaded';
+    // A blocked or failed download used to report success anyway. Only the
+    // steps that actually ran are reported.
+    copySessionRequest++;
+    let url: string | undefined;
+    try {
+      const blob = new Blob([JSON.stringify(shownSession)], { type: 'application/json' });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${shownSession.sessionId}.json`;
+      anchor.click();
+      copySessionStatus = 'Session JSON download started';
+    } catch {
+      copySessionStatus = 'Download failed';
+    } finally {
+      if (url !== undefined) URL.revokeObjectURL(url);
+    }
     flyoutRevision++;
     markDirty();
     return;
@@ -1859,6 +2133,7 @@ function handleReport(report: DrawBatchReport, canvas: unknown): void {
     latest: report,
     owner: report.nearestReactOwner,
     same: 0,
+    sameStreak: 0,
     selfTimeMs: 0,
     unknown: 0,
     unknownReasons: new Map(),
@@ -1869,6 +2144,7 @@ function handleReport(report: DrawBatchReport, canvas: unknown): void {
   canvasStats.owner = report.nearestReactOwner;
   canvasStats.windows++;
   canvasStats[report.signatureStatus]++;
+  canvasStats.sameStreak = report.signatureStatus === 'same' ? canvasStats.sameStreak + 1 : 0;
   canvasStats.selfTimeMs += report.canvasApiSelfTimeMs;
   if (report.unknownReason) {
     canvasStats.unknownReasons.set(
@@ -1889,7 +2165,7 @@ function handleReport(report: DrawBatchReport, canvas: unknown): void {
     pendingFlashes.push({
       canvasId: report.canvasId,
       report,
-      same: canvasStats.same,
+      same: canvasStats.sameStreak,
     });
   }
   markDirty();
@@ -2028,6 +2304,11 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   popover = document.createElement('div');
   popover.className = 'popover';
   popover.hidden = true;
+  // A named dialog rather than an anonymous div, so a screen reader announces
+  // what opened and which canvas it is about. Not modal: the page underneath
+  // stays usable while the popover is open.
+  popover.setAttribute('role', 'dialog');
+  popover.setAttribute('aria-labelledby', 'canvas-scan-popover-title');
   popover.addEventListener('click', handlePopoverClick);
 
   const popoverHeader = document.createElement('div');
@@ -2036,6 +2317,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   popoverBadge.className = 'badge popover-badge';
   const popoverOwner = document.createElement('span');
   popoverOwner.className = 'popover-owner';
+  popoverOwner.id = 'canvas-scan-popover-title';
   const close = document.createElement('button');
   close.className = 'control close';
   close.type = 'button';
@@ -2062,7 +2344,12 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   copy.className = 'control copy';
   copy.type = 'button';
   copy.textContent = 'copy json';
-  popoverBody.append(copy);
+  // The other three copy actions each report their result. This one now does
+  // too, so a failed copy stops looking like a successful one.
+  const copyStatus = document.createElement('div');
+  copyStatus.className = 'popover-line popover-copy-status';
+  copyStatus.setAttribute('aria-live', 'polite');
+  popoverBody.append(copy, copyStatus);
   popover.append(popoverHeader, popoverBody);
 
   dock.append(flyout, popover, toolbar);
@@ -2112,7 +2399,10 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   });
   renderRecordingState();
   refreshInterval = window.setInterval(() => {
-    if (inspectMode || outlines.size > 0) dirty = true;
+    // While a panel is open its contents depend on page state nothing reports:
+    // a canvas can leave the document or retire with no event to hang a
+    // re-render on. Commit on the tick so those views correct themselves.
+    if (inspectMode || outlines.size > 0 || flyoutOpen || selectedCanvasId !== null) dirty = true;
     if (dirty) scheduleCommit();
   }, 250);
   survivalInterval = window.setInterval(() => {

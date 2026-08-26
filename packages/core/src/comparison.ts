@@ -86,6 +86,10 @@ function validCanvas(value: UnknownRecord | undefined): value is UnknownRecord {
     && !!commandStatuses && commandStatuses.same as number + (commandStatuses.changed as number) + (commandStatuses.unknown as number) === value.activeWindowCount && !!methods(value.methodEvidence);
 }
 
+function sampling(value: UnknownRecord): number {
+  return count(value.captureEvery) && (value.captureEvery as number) >= 1 ? value.captureEvery as number : 1;
+}
+
 function validSession(value: UnknownRecord): boolean {
   const dropped = record(value.droppedEntryCounts);
   return text(value.sessionId) && date(value.endedAt) && text(value.canvasScanVersion) && Array.isArray(value.findings) && Array.isArray(value.canvases)
@@ -129,9 +133,9 @@ function validFinding(finding: UnknownRecord, session: UnknownRecord): boolean {
 }
 
 function rounded(value: number, unit: MeasureUnit): number { return unit === 'count' ? value : Math.round(value * 1000) / 1000; }
-function measure(id: ComparisonMeasureId, unit: MeasureUnit, baseline: number | null, candidate: number | null): ComparisonMeasure {
+function measure(id: ComparisonMeasureId, unit: MeasureUnit, baseline: number | null, candidate: number | null, scope: ComparisonMeasure['scope'] = 'session'): ComparisonMeasure {
   const delta = baseline === null || candidate === null ? null : rounded(candidate - baseline, unit);
-  return { id, unit, baseline, candidate, delta, direction: delta === null ? 'unknown' : delta > 0 ? 'increased' : delta < 0 ? 'decreased' : 'unchanged', interpretation: unit === 'ms' ? 'observed-timing-pair' : 'structural' };
+  return { id, unit, baseline, candidate, delta, direction: delta === null ? 'unknown' : delta > 0 ? 'increased' : delta < 0 ? 'decreased' : 'unchanged', interpretation: unit === 'ms' ? 'observed-timing-pair' : 'structural', scope };
 }
 
 function skippedGaps(finding: UnknownRecord): number { return (finding.repeatedWindows as unknown[]).reduce<number>((total, item) => total + Math.max(0, (record(item)!.comparisonGap as number) - 1), 0); }
@@ -143,8 +147,8 @@ function unknown(finding: UnknownRecord, summary: UnknownRecord): number {
 }
 
 function findingMeasures(baseline: UnknownRecord, candidate: UnknownRecord): ComparisonMeasure[] {
-  if (baseline.type === 'heavy-canvas-work') return [measure('heavy-episode-operation-count', 'count', baseline.rasterOperationCount as number, candidate.rasterOperationCount as number), measure('heavy-episode-self-time-ms', 'ms', baseline.canvasApiSelfTimeMs as number, candidate.canvasApiSelfTimeMs as number)];
-  if (baseline.type === 'repeated-draw-work') return [measure('repeated-window-count', 'count', baseline.repeatedWindowCount as number, candidate.repeatedWindowCount as number), measure('repeated-raster-operation-count', 'count', baseline.rasterOperationCount as number, candidate.rasterOperationCount as number), measure('comparison-gap-count', 'count', skippedGaps(baseline), skippedGaps(candidate))];
+  if (baseline.type === 'heavy-canvas-work') return [measure('heavy-episode-operation-count', 'count', baseline.rasterOperationCount as number, candidate.rasterOperationCount as number, 'episode'), measure('heavy-episode-self-time-ms', 'ms', baseline.canvasApiSelfTimeMs as number, candidate.canvasApiSelfTimeMs as number, 'episode')];
+  if (baseline.type === 'repeated-draw-work') return [measure('repeated-window-count', 'count', baseline.repeatedWindowCount as number, candidate.repeatedWindowCount as number, 'episode'), measure('repeated-raster-operation-count', 'count', baseline.rasterOperationCount as number, candidate.rasterOperationCount as number, 'episode'), measure('comparison-gap-count', 'count', skippedGaps(baseline), skippedGaps(candidate), 'episode')];
   if (baseline.type === 'resize-churn') { const left = record(baseline.commandStatuses)!; const right = record(candidate.commandStatuses)!; return [measure('active-reset-count', 'count', baseline.activeResetCount as number, candidate.activeResetCount as number), measure('observed-reset-count', 'count', baseline.observedResetCount as number, candidate.observedResetCount as number), measure('affected-episode-count', 'count', new Set(baseline.affectedEpisodeIds as string[]).size, new Set(candidate.affectedEpisodeIds as string[]).size), measure('same-command-window-count', 'count', left.same as number, right.same as number), measure('changed-command-window-count', 'count', left.changed as number, right.changed as number)]; }
   return [measure('affected-backing-window-count', 'count', baseline.affectedWindowCount as number, candidate.affectedWindowCount as number), measure('maximum-backing-area-ratio', 'ratio', maximumRatio(baseline), maximumRatio(candidate))];
 }
@@ -157,12 +161,20 @@ export function compareSessions(baseline: InvestigationSessionV1, candidate: Inv
   const left = selected(leftSession, selectedPairing.baselineFindingIndex); const right = selected(rightSession, selectedPairing.candidateFindingIndex);
   if (!left || !right) return incomparable(baseline, candidate, selectedPairing, 'finding-not-found');
   if (left.type !== right.type) return incomparable(baseline, candidate, selectedPairing, 'finding-type-mismatch');
+  // Two recordings sampled at different rates report different spans of
+  // windows, so their totals are not on one scale. A session written before
+  // captureEvery was recorded has no value here and is read as unsampled.
+  if (sampling(leftSession) !== sampling(rightSession)) return incomparable(baseline, candidate, selectedPairing, 'sampling-mismatch');
   const leftCanvas = canvas(leftSession, left); const rightCanvas = canvas(rightSession, right);
   if (!validSession(leftSession) || !validSession(rightSession) || !validCanvas(leftCanvas) || !validCanvas(rightCanvas) || !validFinding(left, leftSession) || !validFinding(right, rightSession)) return incomparable(baseline, candidate, selectedPairing, 'incomplete-evidence');
   const leftMethods = methods(left.type === 'heavy-canvas-work' ? left.topMethods : leftCanvas.methodEvidence); const rightMethods = methods(right.type === 'heavy-canvas-work' ? right.topMethods : rightCanvas.methodEvidence);
   if (!leftMethods || !rightMethods) return incomparable(baseline, candidate, selectedPairing, 'incomplete-evidence');
   const result: ComparisonMeasure[] = [measure('active-window-count', 'count', leftCanvas.activeWindowCount as number, rightCanvas.activeWindowCount as number), measure('raster-operation-count', 'count', leftCanvas.rasterOperationCount as number, rightCanvas.rasterOperationCount as number), measure('canvas-api-self-time-ms', 'ms', leftCanvas.canvasApiSelfTimeMs as number, rightCanvas.canvasApiSelfTimeMs as number), measure('maximum-window-self-time-ms', 'ms', leftCanvas.maxWindowSelfTimeMs as number, rightCanvas.maxWindowSelfTimeMs as number)];
-  for (const name of [...new Set([...leftMethods.keys(), ...rightMethods.keys()])].sort()) { const leftMethod = leftMethods.get(name); const rightMethod = rightMethods.get(name); result.push(measure(`method:${name}:operation-count`, 'count', leftMethod?.count ?? 0, rightMethod?.count ?? 0), measure(`method:${name}:self-time-ms`, 'ms', leftMethod ? leftMethod.time : 0, rightMethod ? rightMethod.time : 0)); }
-  result.push(measure('unknown-command-window-count', 'count', unknown(left, leftCanvas), unknown(right, rightCanvas)), ...findingMeasures(left, right));
+  // Per-method evidence comes from the finding's episode for heavy-canvas-work
+  // and from the whole session for the other three types, so each measure says
+  // which span it covers rather than reading alike for both.
+  const methodScope = left.type === 'heavy-canvas-work' ? 'episode' : 'session';
+  for (const name of [...new Set([...leftMethods.keys(), ...rightMethods.keys()])].sort()) { const leftMethod = leftMethods.get(name); const rightMethod = rightMethods.get(name); result.push(measure(`method:${name}:operation-count`, 'count', leftMethod?.count ?? 0, rightMethod?.count ?? 0, methodScope), measure(`method:${name}:self-time-ms`, 'ms', leftMethod ? leftMethod.time : 0, rightMethod ? rightMethod.time : 0, methodScope)); }
+  result.push(measure('unknown-command-window-count', 'count', unknown(left, leftCanvas), unknown(right, rightCanvas), left.type === 'repeated-draw-work' ? 'episode' : 'session'), ...findingMeasures(left, right));
   return { schemaVersion: 1, ...metadata(baseline, candidate, selectedPairing), pairingMethod: 'user-selected', baseline: ref(baseline, selectedPairing.baselineFindingIndex), candidate: ref(candidate, selectedPairing.candidateFindingIndex), status: 'comparable', incomparableReasons: [], measures: result, improvementEstablished: false };
 }

@@ -11,7 +11,9 @@ const viteEntries = [
   'src/main.ts',
   'src/main.js',
   'src/index.tsx',
+  'src/index.jsx',
   'src/index.ts',
+  'src/index.js',
 ];
 
 export function detectFramework(dir) {
@@ -291,7 +293,19 @@ export function run(args) {
   console.log(plan.instructions);
 
   if (write) {
-    console.log(applyInit(plan, dir).message);
+    // `none` and `manual` return the reason or the instructions we just
+    // printed, so only the messages the plan did not already show are logged.
+    const printed = [plan.action.kind === 'none' ? plan.action.reason : null, plan.instructions];
+    let result;
+    try {
+      result = applyInit(plan, dir);
+    } catch (error) {
+      console.error(`Could not write: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+    if (!printed.includes(result.message)) {
+      console.log(result.message);
+    }
   }
 
   return 0;
