@@ -1884,10 +1884,13 @@ function clampDrag(x: number, y: number): { x: number; y: number } {
   // untranslated dock sits and clamp the offset against that.
   const restLeft = box.left - dragX;
   const restTop = box.top - dragY;
-  const visible = Math.min(MINIMUM_VISIBLE_DOCK_PX, box.width, box.height);
+  // Each axis is clamped against its own dimension. Taking the smaller of the
+  // two would let a short dock give away horizontal margin it does not need.
+  const visibleX = Math.min(MINIMUM_VISIBLE_DOCK_PX, box.width);
+  const visibleY = Math.min(MINIMUM_VISIBLE_DOCK_PX, box.height);
   return {
-    x: Math.min(Math.max(x, visible - box.width - restLeft), viewportWidth - visible - restLeft),
-    y: Math.min(Math.max(y, visible - box.height - restTop), viewportHeight - visible - restTop),
+    x: Math.min(Math.max(x, visibleX - box.width - restLeft), viewportWidth - visibleX - restLeft),
+    y: Math.min(Math.max(y, visibleY - box.height - restTop), viewportHeight - visibleY - restTop),
   };
 }
 

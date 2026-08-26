@@ -2843,3 +2843,46 @@ describe('overlay reacts to the page without waiting for an unrelated re-render'
     expect(Number(y) + 100).toBeLessThanOrEqual(window.innerHeight);
   });
 });
+
+describe('overlay baseline after an explanation', () => {
+  it('keeps the session being investigated, not the explanation follow-up', () => {
+    // An explanation runs a recording of its own, so getLastSession() moves to
+    // a follow-up session while the panel still shows the one being
+    // investigated. Keep as baseline must act on what the user is reading.
+    mountOverlay();
+    // A canvas with a tracked record, so the explanation action is offered.
+    const { canvas, record } = explanationCanvas('baseline-after-explanation');
+    canvas.width = 100; canvas.height = 50;
+    records.add(record);
+    startRecording();
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    stopRecording(); refreshOverlay();
+    const investigated = getLastSession()!.sessionId;
+
+    const root = getShadowRoot();
+    if (root.querySelector<HTMLElement>('.flyout')!.hidden) root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const explain = root.querySelector<HTMLButtonElement>('.explanation-action')!;
+    expect(explain.hidden).toBe(false);
+    explain.click();
+    refreshOverlay();
+    emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 3, timestampMs: 30 });
+    stopRecording(); refreshOverlay();
+
+    const followUp = getLastSession()!.sessionId;
+    expect(followUp).not.toBe(investigated);
+
+    const keep = root.querySelector<HTMLButtonElement>('.baseline-action')!;
+    // The control carries the session it was rendered for, and that is the one
+    // the click handler checks against before keeping anything.
+    expect(keep.dataset.sessionId).toBe(investigated);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    keep.click();
+    const kept = stringify.mock.calls
+      .map(call => call[0] as InvestigationSessionV1)
+      .find(value => Array.isArray(value?.findings) && typeof value?.sessionId === 'string');
+    stringify.mockRestore();
+    expect(kept?.sessionId).toBe(investigated);
+  });
+});
