@@ -20,6 +20,23 @@ jobs:
       - run: pnpm --filter canvas-scan run test
       - run: pnpm --filter demo run build
 
+  # The unit suite cannot see the overlay running. These checks drive the real
+  # thing in headless Chrome, which is where the frame loop, the commit loop,
+  # canvas retirement, and the sampled path actually exist.
+  browser:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter demo run build
+      - run: node scripts/browser-tests.mjs
+
   pack:
     needs: test
     runs-on: ubuntu-latest

@@ -43,6 +43,18 @@ Run checks from cheapest to most expensive:
 
 Do not run the full browser lab after each local checker change. Freeze the source first.
 
+Step 5 has a standing suite: `pnpm run test:browser` builds the demo and drives
+the real overlay in headless Chrome. Use it whenever a change touches the
+overlay, the frame loop, the commit loop, or the sampled path — the unit suite
+cannot see any of those running.
+
+Two of the forty-seven findings in the 2026-08-26 triage sweep were wrong
+because they were written from reading the source: findings were already ranked
+by self-time, and Keep as baseline already kept the session under
+investigation. Both are asserted in that suite now. Prefer running a claim over
+reading for it, and when a finding says a behaviour is broken, reproduce it
+before changing anything.
+
 ## Batch Review Findings
 
 - Tell each judge to inspect the complete diff and return all P1 and P2 findings in one terminal report.

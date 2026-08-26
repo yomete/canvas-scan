@@ -4,6 +4,7 @@
   "packageManager": "pnpm@11.13.1",
   "scripts": {
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r --if-present run test"
+    "test": "pnpm -r --if-present run test",
+    "test:browser": "pnpm --filter demo run build && node scripts/browser-tests.mjs"
   }
 }
