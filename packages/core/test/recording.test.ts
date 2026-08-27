@@ -17,7 +17,7 @@ const makeReport = (canvasId = 'canvas-a', status: DrawBatchReport['signatureSta
 });
 const publish = (report: DrawBatchReport, index: number) => emitReport(report, {}, { windowIndex: getCurrentWindowIndex() + index, timestampMs: index * 100 });
 const makeLoopRecord = (): CanvasRecord => ({
-  canvas: {}, contentDirty: false, contentSig: { hash: 0x811c9dc5, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+  canvas: {}, creationSite: null, contentDirty: false, contentSig: { hash: 0x811c9dc5, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
   id: 'recording-range', serial: 1, sig: { hash: 0x1234, unknown: false, opCount: 3, unknownReason: null }, rasterOps: 2, selfTimeMs: 0.5,
   carriedRasterOps: 0, carriedSelfTimeMs: 0, carriedWindows: 0,
   activeInWindow: true, prev: null, attribution: { nearestReactOwner: 'Fake', attributionKind: 'jsx-owner' }, lastStatus: null, props: new Map(),

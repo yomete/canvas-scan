@@ -102,7 +102,7 @@ function refreshOverlay(): void {
 
 function explanationRecord(id: string): CanvasRecord {
   return {
-    canvas: makeCanvas(), contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
+    canvas: makeCanvas(), creationSite: null, contentDirty: false, contentSig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, contentVersion: 0,
     id, serial: 1, sig: { hash: 0, unknown: false, opCount: 0, unknownReason: null }, rasterOps: 0, selfTimeMs: 0, carriedRasterOps: 0, carriedSelfTimeMs: 0, carriedWindows: 0,
     activeInWindow: false, prev: null, attribution: { nearestReactOwner: null, attributionKind: 'unattributed' }, lastStatus: null, props: new Map(),
     matrix: [1, 0, 0, 1, 0, 0], matrixUnknown: false, matrixHash: 0, pathHash: 0, pathUnknown: false, clipHash: 0,

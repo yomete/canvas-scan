@@ -1,4 +1,5 @@
 import { getBuildSignature, trackBuild } from './build-registry.js';
+import { captureCreationSite } from './draw-callsite.js';
 import {
   captureHeadState,
   captureNormalizedCommand,
@@ -17,6 +18,7 @@ import type {
   CanvasResetSource,
   ResetDimensionChange,
   SignatureStatus,
+  SourceLocation,
 } from './types.js';
 import type { WindowSignature } from './signature.js';
 
@@ -33,6 +35,10 @@ type ResetReason = 'canvas-reset' | 'canvas-attribute-reset';
 
 export interface CanvasRecord {
   canvas: any;
+  // Where the application first asked this canvas for a 2D context. It is the
+  // only ownership evidence an imperatively created canvas has, so it is taken
+  // once, here, rather than looked up later when the stack is long gone.
+  creationSite: SourceLocation | null;
   contentDirty: boolean;
   contentSig: WindowSignature;
   contentVersion: number;
@@ -989,6 +995,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const serial = nextCanvasSerial++;
       const record: CanvasRecord = {
         canvas: this,
+        creationSite: captureCreationSite(canvasProto.getContext),
         contentDirty: false,
         contentSig: newWindowSignature(),
         contentVersion: 0,

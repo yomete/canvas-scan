@@ -215,7 +215,10 @@ export function processRecord(
       canvasId: record.id,
       nearestReactOwner: record.attribution.nearestReactOwner,
       attributionKind: record.attribution.attributionKind,
-      sourceLocation: sourceLocations.get(record.id) ?? null,
+      // A resolved React owner stack wins when there is one. Otherwise the
+      // creation site stands: for a canvas React never made, it is the only
+      // place in the source the reader can be sent to.
+      sourceLocation: sourceLocations.get(record.id) ?? record.creationSite,
       rasterOperationCount: record.rasterOps + record.carriedRasterOps,
       canvasApiSelfTimeMs: Number((record.selfTimeMs + record.carriedSelfTimeMs).toFixed(3)),
       coveredWindowCount: 1 + record.carriedWindows,

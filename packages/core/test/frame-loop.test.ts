@@ -32,6 +32,7 @@ let nextSerial = 0;
 function makeRecord(overrides: Partial<CanvasRecord> = {}): CanvasRecord {
   return {
     canvas: {},
+    creationSite: null,
     contentDirty: false,
     contentSig: {
       hash: 0x811c9dc5,
@@ -430,6 +431,14 @@ describe('processRecord', () => {
       ].sort(),
     );
     expect(processed?.report.sourceLocation).toBeNull();
+  });
+
+  // A canvas React never made has no owner stack to resolve, so the creation
+  // site is the only place in the source the report can name.
+  it('falls back to the creation site when no owner stack resolved', () => {
+    const site = { file: 'https://app.test/main.js', line: 42, column: 7 };
+    const record = makeRecord({ creationSite: site });
+    expect(processRecord(record, 1, 1)?.report.sourceLocation).toEqual(site);
   });
 
   it('tags windows that carry a reset barrier and leaves clean windows untagged', () => {

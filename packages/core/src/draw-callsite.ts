@@ -6,6 +6,7 @@ export const MAX_STACK_SAMPLES = 8;
 export const MAX_FRAMES_PER_STACK = 20;
 export const MAX_SOURCE_MAP_LOOKUPS = 8;
 export const MAX_SOURCE_MAP_RESPONSE_BYTES = 2097152;
+export const MAX_CREATION_SITE_STACKS = 256;
 
 type Reason = ExplanationStackSample['reason'];
 type UnresolvedReason = ExplanationStackFrame['unresolvedReason'];
@@ -53,6 +54,12 @@ const nativeCaptureStackTrace = captureStackTraceDescriptor && 'value' in captur
   : null;
 let stackAllocations = 0;
 let sourceMapLookups = 0;
+// Counted apart from stackAllocations on purpose. That counter guards a
+// promise — canvas-scan allocates no stack unless you ask for an explanation —
+// and creation sites are a standing cost paid once per canvas whether you ask
+// or not. Folding the two together would let this cost hide behind that
+// promise.
+let creationSiteStacks = 0;
 
 function parsedHttpUrl(value: string, base: string): URL | null {
   try {
@@ -269,6 +276,31 @@ export function captureDrawCallsite(capture: Capture, target: CommandWindowIdent
     capture.stacks.push(sample);
   }
 }
+// One bounded stack, taken where canvas-scan first sees a canvas.
+//
+// A canvas made imperatively carries no React fiber, so the owner lookup has
+// nothing to answer with — 124 of the 128 canvases on excalidraw.com were in
+// that state. The place the application created it is still a real place, and
+// it is the thing a reader actually wants: not who owns this canvas, but where
+// do I go to change it.
+//
+// The boundary is what makes this usable in a bundle. Without it, the top
+// frames are canvas-scan's own wrapper, and in a minified build the file-name
+// filter cannot see that — every frame is canvas-scan.iife.js.
+export function captureCreationSite(boundary?: (...args: unknown[]) => unknown): { file: string; line: number; column: number } | null {
+  // Twice the canvas lifetime cap, so every canvas that can reach a session
+  // gets one and a page that makes thousands still stops paying.
+  if (creationSiteStacks >= MAX_CREATION_SITE_STACKS) return null;
+  creationSiteStacks++;
+  const automatic = automaticStack(boundary);
+  if (!automatic.rawStack) return null;
+  const parsed = parseStack(automatic.rawStack, { includeInElement: false });
+  const kept = automatic.bounded ? parsed : parsed.filter(item => !internalFrame(item));
+  const frame = kept.find(item => typeof item.fileName === 'string' && item.fileName.length > 0 && typeof item.lineNumber === 'number');
+  if (!frame?.fileName || frame.lineNumber === undefined) return null;
+  return { file: frame.fileName, line: frame.lineNumber, column: frame.columnNumber ?? 0 };
+}
+
 export function resolveDrawCallsiteBoundary(capture: Capture, identity: CommandWindowIdentity, windowIndex: number): void {
   capture.resolvedWindows.set(identity, windowIndex);
   for (const [sample, target] of capture.targets) if (target === identity) { sample.windowIndex = windowIndex; capture.targets.delete(sample); }
@@ -303,5 +335,5 @@ export function disableDrawCallsiteCapture(capture: Capture): void {
   dropPendingSamples(capture);
 }
 export async function settleDrawCallsiteCaptureForTests(capture: Capture): Promise<void> { await Promise.all([...capture.lookups.values()].map(lookup => lookup.work)); }
-export function getDrawCallsiteTestCounts() { return { stackAllocations, sourceMapLookups }; }
-export function resetDrawCallsiteForTests(): void { stackAllocations = 0; sourceMapLookups = 0; }
+export function getDrawCallsiteTestCounts() { return { stackAllocations, sourceMapLookups, creationSiteStacks }; }
+export function resetDrawCallsiteForTests(): void { stackAllocations = 0; sourceMapLookups = 0; creationSiteStacks = 0; }

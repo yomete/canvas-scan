@@ -278,7 +278,7 @@ describe('draw callsite capture', () => {
     disableDrawCallsiteCapture(capture);
     captureDrawCallsite(capture, {}, 0, ['first-raster'], stack('draw (http://example.test/app.js:1:0)'));
     expect(finishDrawCallsiteCapture(capture)).toMatchObject({ stacks: [], droppedEntryCounts: { stackSamples: 0 } });
-    expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 0, sourceMapLookups: 0 });
+    expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 0, sourceMapLookups: 0, creationSiteStacks: 0 });
   });
 
   it('uses the selected wrapper as the stack boundary and keeps application function names', () => {

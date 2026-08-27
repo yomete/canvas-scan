@@ -437,6 +437,21 @@ describe('canvas context wrapping', () => {
     expect(getCommandEntryAllocationCount()).toBe(0);
   });
 
+  // Found on excalidraw.com: 124 of 128 canvases were created imperatively, so
+  // React knew nothing about them and the tool had no place in the source to
+  // send the reader. The creation site is that place, and it has to be taken
+  // where the canvas is first seen — by the time anyone asks, the stack is gone.
+  it('remembers where a canvas was first asked for a 2D context', () => {
+    resetDrawCallsiteForTests();
+    const canvas = new FakeCanvas();
+    canvas.getContext('2d');
+    const site = getRecord(canvas)!.creationSite;
+    expect(site).not.toBeNull();
+    expect(site!.file).toContain('wrap.test');
+    expect(site!.line).toBeGreaterThan(0);
+    expect(getDrawCallsiteTestCounts().creationSiteStacks).toBe(1);
+  });
+
   it('offers stack capture only for a successful selected raster call', () => {
     resetDrawCallsiteForTests();
     const selectedCanvas = new FakeCanvas();
@@ -445,7 +460,10 @@ describe('canvas context wrapping', () => {
     const decoyContext = new FakeCanvas().getContext('2d')!;
     decoyContext.fillRect(0, 0, 1, 1);
     selectedContext.fillRect(0, 0, 1, 1);
-    expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 0, sourceMapLookups: 0 });
+    // The promise this guards: no explanation asked for, no explanation stack
+    // allocated. The two creation sites are the standing cost of the two
+    // canvases, counted separately so it cannot hide here.
+    expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 0, sourceMapLookups: 0, creationSiteStacks: 2 });
 
     const capture = createCommandCapture()!;
     const callsites = createDrawCallsiteCapture({ locationHref: 'http://example.test/', fetch: vi.fn() as unknown as typeof fetch });
@@ -467,7 +485,7 @@ describe('canvas context wrapping', () => {
       expect(getDrawCallsiteTestCounts().stackAllocations).toBe(0);
       selectedContext.throwOnFillRect = null;
       expect(selectedContext.fillRect(3, 3, 1, 1)).toBe(fillRectResult);
-      expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 1, sourceMapLookups: 0 });
+      expect(getDrawCallsiteTestCounts()).toEqual({ stackAllocations: 1, sourceMapLookups: 0, creationSiteStacks: 2 });
     } finally {
       selectedContext.throwOnFillRect = null;
       unsubscribe();
