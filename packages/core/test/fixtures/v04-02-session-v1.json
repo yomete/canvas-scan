@@ -5,7 +5,7 @@
   "endedAt": "2026-08-04T10:00:01.000Z",
   "durationMs": 1000,
   "stopReason": "manual",
-  "canvasScanVersion": "0.6.2",
+  "canvasScanVersion": "0.7.0",
   "captureEvery": 1,
   "browserFeatures": { "monotonicTime": true, "eventTiming": false, "longAnimationFrames": false },
   "canvases": [
