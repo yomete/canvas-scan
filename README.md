@@ -122,6 +122,22 @@ Above `captureEvery: 1`, canvas-scan reports one window in every *n*. The window
 
 The session records the rate it was made at as `captureEvery`. `compareSessions` refuses a pair recorded at different rates with `sampling-mismatch`, because their totals are not on one scale.
 
+### What the comparison can and cannot answer
+
+The comparison answers one question: did this frame draw the same thing as the last one? It answers it by comparing a frame's Canvas2D commands with the previous frame's. That works when a canvas is stable between frames, and it cannot work when the previous frame is gone.
+
+| Application design | The comparison |
+| --- | --- |
+| One canvas, redrawn wholesale each frame | Answers. This is the case it was built for. |
+| A library managing its own layers and redraw scheduling | Mostly answers. |
+| Per-element or per-tile cache canvases, resized and composited with `drawImage` | Often cannot answer. |
+
+A canvas whose size is reassigned has no previous frame to compare against, and neither has a canvas drawn from a source that was reassigned. canvas-scan reports those frames as `unknown`, with the reason, rather than guessing.
+
+The measured figures are unaffected. Canvas2D API self-time, raster counts, method evidence, canvas resets, and backing-store ratios are all still measured on every frame. Three of the four finding types do not use the comparison at all. Only repeated-draw-work rests on it, and it rests only on the frames the comparison could answer for.
+
+Two real applications, recorded on the same day, show both ends. A charting application drawing into one stable canvas came back with 1 unknown window out of 1378. Excalidraw, which caches every element on its own canvas, came back with 224 unknown out of 342. Both answers are correct. When most frames come back `unknown`, the overlay says so on the coverage line rather than leaving it to be discovered.
+
 ## Investigate a URL
 
 Run one guided investigation against a page you do not control:

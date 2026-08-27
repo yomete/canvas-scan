@@ -489,6 +489,9 @@ function frames(count: number): string {
 // say "Not attributed" in one place, "Unattributed" in another, and show the
 // bare canvas ID in three more, which read as three different states.
 const NO_OWNER = 'No owner found';
+// Half the frames unanswerable is the point where the comparison stops being
+// the thing a reader should lean on, so it is the point where the tool says so.
+const UNKNOWN_COVERAGE_SHARE = 0.5;
 // A minified symbol is evidence, not a name. It is shown as what it is, so a
 // reader can search the bundle for it and never mistakes it for something to
 // look up in their own source.
@@ -1487,6 +1490,20 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   // real and it still appears in the summaries, but nothing derived per window
   // — episodes, findings, the comparison — can mention it. Say so rather than
   // let a reader assume the summary list and the findings cover the same set.
+  // The comparison answers one question — did this frame draw the same thing as
+  // the last one — and on some applications it cannot. A page that resizes cache
+  // canvases and composites them with drawImage invalidates the previous frame's
+  // signature constantly: excalidraw.com came back 224 unknown out of 342. Every
+  // one of those answers is correct. Saying so once, here, is the difference
+  // between a boundary the reader is told about and one they discover.
+  const statuses = session.canvases.reduce((total, canvas) => ({
+    answered: total.answered + canvas.commandStatuses.same + canvas.commandStatuses.changed,
+    unknown: total.unknown + canvas.commandStatuses.unknown,
+  }), { answered: 0, unknown: 0 });
+  const windows = statuses.answered + statuses.unknown;
+  if (windows > 0 && statuses.unknown / windows >= UNKNOWN_COVERAGE_SHARE) {
+    appendLine(coverage, 'Coverage', `The comparison could not answer for ${statuses.unknown} of ${windows} frames. That is usually the application's design rather than a fault: a canvas that is resized, or redrawn from a source that was, has no previous frame to be compared against. Repeated-drawing findings rest on the frames it could answer for.`);
+  }
   const summaryOnly = session.canvases.filter(canvas => canvas.windowDetailDropped).length;
   if (summaryOnly > 0) {
     appendLine(coverage, 'Coverage', `${summaryOnly} ${summaryOnly === 1 ? 'canvas is' : 'canvases are'} kept as a summary only. The recording reached its canvas limit, so their frame detail was dropped and no finding covers them.`);

@@ -393,6 +393,35 @@ describe('overlay flyout', () => {
     expect(unattributedSummary.indexOf('No owner found')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
   });
 
+  // Found on excalidraw.com: 224 of 342 windows came back unknown, every answer
+  // correct, because the application resizes cache canvases and composites them.
+  // The reader has to be told that once, rather than discover it.
+  it('says so when the comparison could not answer for most frames', () => {
+    mountOverlay();
+    startRecording();
+    for (let index = 0; index < 6; index++) {
+      emitReport(makeReport({ canvasId: 'churn', signatureStatus: 'unknown', unknownReason: 'canvas-reset', canvasApiSelfTimeMs: 2 }), makeCanvas(), { windowIndex: index, timestampMs: index * 10 });
+    }
+    emitReport(makeReport({ canvasId: 'churn', signatureStatus: 'same', canvasApiSelfTimeMs: 2 }), makeCanvas(), { windowIndex: 6, timestampMs: 70 });
+    stopRecording();
+    refreshOverlay();
+    const coverage = getShadowRoot().querySelector<HTMLElement>('.session-coverage')!.textContent!;
+    expect(coverage).toContain('could not answer for');
+    expect(coverage).toContain("the application's design rather than a fault");
+  });
+
+  it('stays quiet when the comparison answered for most frames', () => {
+    mountOverlay();
+    startRecording();
+    for (let index = 0; index < 6; index++) {
+      emitReport(makeReport({ canvasId: 'steady', signatureStatus: 'same', canvasApiSelfTimeMs: 2 }), makeCanvas(), { windowIndex: index, timestampMs: index * 10 });
+    }
+    stopRecording();
+    refreshOverlay();
+    const coverage = getShadowRoot().querySelector<HTMLElement>('.session-coverage')!.textContent!;
+    expect(coverage).not.toContain('could not answer for');
+  });
+
   // Found on excalidraw.com: a production build renamed every component, and a
   // finding headed `mRe` looked exactly like one that had worked. The symbol
   // stays — it is searchable in the bundle — but it never stands where a
