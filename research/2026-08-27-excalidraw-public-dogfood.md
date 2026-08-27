@@ -78,6 +78,8 @@ convenience, the API is the tool, and one must not cost the other.
 
 ## Defect 2 — `repeated-draw-work` has no floor worth the name
 
+Filed as [SIDPROJ-202](https://linear.app/yde/issue/SIDPROJ-202).
+
 The other three finding types have real gates: heavy work needs 8 ms in an
 episode, resize churn needs two distinct qualifying windows, backing-store
 mismatch needs two affected windows. `repeated-draw-work` needs **one** repeated
@@ -98,6 +100,8 @@ one; or keeping the findings and ranking them below anything with measurable
 time, so the list stays honest without leading with nothing.
 
 ## Defect 3 — the canvas lifetime cap is far too low for cache-canvas applications
+
+Filed as [SIDPROJ-203](https://linear.app/yde/issue/SIDPROJ-203).
 
 Excalidraw renders elements to per-element cache canvases. In 18 seconds it
 created **228** of them. The recording cap `MAX_CANVASES` is 128, and hitting it
