@@ -159,8 +159,13 @@ export async function launch(url, { initScript } = {}) {
     async close() {
       socket.close();
       chrome.kill();
-      await sleep(200);
-      rmSync(profile, { recursive: true, force: true });
+      await sleep(300);
+      // Best effort. Chrome can still hold files in its profile for a moment
+      // after the kill, and a leftover temporary directory must never be the
+      // thing that fails a test run.
+      try {
+        rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch { /* the operating system will clean the temporary directory */ }
     },
   };
 }

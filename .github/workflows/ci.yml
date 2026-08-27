@@ -34,6 +34,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The injection check installs the IIFE bundle at document-start, so the
+      # package has to be built, not only the demo.
+      - run: pnpm --filter canvas-scan run build
       - run: pnpm --filter demo run build
       - run: node scripts/browser-tests.mjs
 
