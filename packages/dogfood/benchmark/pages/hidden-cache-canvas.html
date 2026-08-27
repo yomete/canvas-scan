@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Task: hidden-cache-canvas</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; padding: 16px; }
+  canvas { border: 1px solid #ccc; display: block; }
+  p { max-width: 60ch; color: #444; }
+</style>
+<h1>Visible</h1>
+<p>Drag the pointer across the canvas for ten seconds.</p>
+<canvas id="visible" width="900" height="500"></canvas>
+<script>
+  const visible = document.getElementById('visible');
+  const ctx = visible.getContext('2d');
+  // Never appended to the document. It is still a canvas, and it is where the
+  // work happens.
+  const cache = document.createElement('canvas');
+  cache.width = 900;
+  cache.height = 500;
+  const cacheCtx = cache.getContext('2d');
+  let offset = 0;
+  function repaintCache() {
+    cacheCtx.clearRect(0, 0, 900, 500);
+    for (let index = 0; index < 800; index++) {
+      const x = (index % 40) * 22 + 4;
+      const y = Math.floor(index / 40) * 25 + 4;
+      cacheCtx.fillStyle = `hsl(${(index * 9 + offset) % 360} 65% 55%)`;
+      cacheCtx.beginPath();
+      cacheCtx.arc(x + 8, y + 8, 8, 0, Math.PI * 2);
+      cacheCtx.fill();
+    }
+  }
+  repaintCache();
+  ctx.drawImage(cache, 0, 0);
+  visible.addEventListener('pointermove', () => {
+    offset += 3;
+    repaintCache();
+    ctx.clearRect(0, 0, 900, 500);
+    // One cheap call on the canvas the reader is looking at.
+    ctx.drawImage(cache, 0, 0);
+  });
+</script>

@@ -23,6 +23,12 @@ slow interaction, and answer these questions:
 The product succeeds when it reduces the time from “this canvas app feels
 slow” to a correct next check.
 
+`docs/north-star-benchmark.md` measures that sentence, and it is the only thing
+that may claim the product outcome. A green build, a passing test suite, a
+shipped feature, a low overhead figure, and a corpus result are all gates on the
+way there. None of them is the outcome, and the scorer refuses each of them as a
+claim source.
+
 ## Core ritual
 
 1. Add the early canvas-scan script or import.

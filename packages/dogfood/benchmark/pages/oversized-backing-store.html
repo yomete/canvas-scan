@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Task: oversized-backing-store</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; padding: 16px; }
+  /* The element is displayed small. Its backing store is not. */
+  canvas { border: 1px solid #ccc; display: block; width: 320px; height: 240px; }
+  p { max-width: 60ch; color: #444; }
+</style>
+<h1>Panel</h1>
+<p>Press Redraw ten times, then resize the browser window once.</p>
+<canvas id="panel" width="4000" height="3000"></canvas>
+<button id="redraw">Redraw</button>
+<script>
+  const canvas = document.getElementById('panel');
+  const ctx = canvas.getContext('2d');
+  let seed = 1;
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let band = 0; band < 24; band++) {
+      seed = (seed * 48271) % 2147483647;
+      ctx.fillStyle = `hsl(${seed % 360} 60% 55%)`;
+      ctx.fillRect(0, band * 125, 4000, 120);
+    }
+  }
+  draw();
+  document.getElementById('redraw').addEventListener('click', draw);
+  window.addEventListener('resize', draw);
+</script>

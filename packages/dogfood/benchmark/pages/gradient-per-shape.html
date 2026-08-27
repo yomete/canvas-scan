@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Task: gradient-per-shape</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; padding: 16px; }
+  canvas { border: 1px solid #ccc; display: block; }
+  p { max-width: 60ch; color: #444; }
+</style>
+<h1>Tiles</h1>
+<p>Press Animate and let it run for ten seconds.</p>
+<canvas id="tiles" width="900" height="500"></canvas>
+<button id="animate">Animate</button>
+<script>
+  const canvas = document.getElementById('tiles');
+  const ctx = canvas.getContext('2d');
+  let phase = 0;
+  let running = false;
+  function frame() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < 300; index++) {
+      const x = (index % 25) * 36 + 4;
+      const y = Math.floor(index / 25) * 40 + 4;
+      // The gradient is identical for every tile and every frame, and it is
+      // built 300 times a frame all the same.
+      const paint = ctx.createLinearGradient(0, 0, 0, 36);
+      paint.addColorStop(0, '#5aa9e6');
+      paint.addColorStop(0.5, '#7fc8f8');
+      paint.addColorStop(1, '#2e6f9e');
+      ctx.fillStyle = paint;
+      ctx.fillRect(x, y + Math.sin((index + phase) / 12) * 3, 32, 34);
+    }
+    phase += 2;
+    if (running) requestAnimationFrame(frame);
+  }
+  frame();
+  document.getElementById('animate').addEventListener('click', () => {
+    if (running) return;
+    running = true;
+    requestAnimationFrame(frame);
+  });
+</script>

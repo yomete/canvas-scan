@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "issue": "SIDPROJ-107",
+  "note": "The sealed answer key. Every answer here was authored from the fixture source, where the defect was seeded deliberately. No answer was read from a canvas-scan session, finding, explanation, or comparison — if it had been, the benchmark would be marking canvas-scan against itself. A participant never opens this file, and a facilitator opens it only after a run is submitted.",
+  "derivedFrom": "fixture-source",
+  "keys": {
+    "scene-overdraw": {
+      "canvas": "scene",
+      "cause": "redraws-unchanged-scene",
+      "seededIn": "pages/scene-overdraw.html — the pointermove handler calls drawScene() on every event, and drawScene() paints the same 400 shapes whatever the pointer did.",
+      "canvasAliases": [
+        "scene",
+        "#scene",
+        "the scene canvas"
+      ]
+    },
+    "resize-churn": {
+      "canvas": "chart",
+      "cause": "resets-canvas-every-frame",
+      "seededIn": "pages/resize-churn.html — the frame loop assigns canvas.width before every draw, which clears the backing store and reallocates it at the size it already was.",
+      "canvasAliases": [
+        "chart",
+        "#chart",
+        "the chart canvas"
+      ]
+    },
+    "oversized-backing-store": {
+      "canvas": "panel",
+      "cause": "backing-store-oversized",
+      "seededIn": "pages/oversized-backing-store.html — the backing store is fixed at 4000x3000 while the element is displayed at 320x240, so every fill covers 156 times the pixels it needs to.",
+      "canvasAliases": [
+        "panel",
+        "#panel",
+        "the panel canvas"
+      ]
+    },
+    "gradient-per-shape": {
+      "canvas": "tiles",
+      "cause": "builds-paint-style-in-loop",
+      "seededIn": "pages/gradient-per-shape.html — createLinearGradient and three addColorStop calls run inside the per-tile loop, so 300 identical gradients are built per frame.",
+      "canvasAliases": [
+        "tiles",
+        "#tiles",
+        "the tiles canvas"
+      ]
+    },
+    "pixel-readback": {
+      "canvas": "picker",
+      "cause": "reads-pixels-back",
+      "seededIn": "pages/pixel-readback.html — the pointermove handler calls getImageData(x, y, 1, 1) after drawing, which forces the pending drawing to finish before it can return.",
+      "canvasAliases": [
+        "picker",
+        "#picker",
+        "the picker canvas"
+      ]
+    },
+    "hidden-cache-canvas": {
+      "canvas": "cache",
+      "cause": "draws-offscreen-work-each-frame",
+      "seededIn": "pages/hidden-cache-canvas.html — the visible canvas issues one drawImage per frame, and its source is a detached cache canvas that repaints all 800 of its shapes first.",
+      "canvasAliases": [
+        "cache",
+        "the cache canvas",
+        "offscreen",
+        "offscreen canvas",
+        "the hidden canvas",
+        "detached canvas",
+        "the canvas that is not in the document"
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Task: resize-churn</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; padding: 16px; }
+  canvas { border: 1px solid #ccc; display: block; }
+  p { max-width: 60ch; color: #444; }
+</style>
+<h1>Chart</h1>
+<p>Watch the animation for ten seconds, then drag the slider from end to end twice.</p>
+<canvas id="chart" width="900" height="400"></canvas>
+<label>Hue <input id="hue" type="range" min="0" max="360" value="200"></label>
+<script>
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const hue = document.getElementById('hue');
+  let phase = 0;
+  function frame() {
+    // Reassigning width resets the backing store, to the size it already had.
+    canvas.width = 900;
+    ctx.fillStyle = `hsl(${hue.value} 60% 55%)`;
+    ctx.beginPath();
+    ctx.moveTo(0, 200);
+    for (let x = 0; x < 900; x += 3) ctx.lineTo(x, 200 + Math.sin((x + phase) / 40) * 120);
+    ctx.lineTo(900, 400);
+    ctx.lineTo(0, 400);
+    ctx.fill();
+    phase += 4;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>

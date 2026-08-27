@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "issue": "SIDPROJ-107",
+  "note": "The six controlled tasks of the north-star benchmark. This file is safe to show a participant: it holds the symptom and the interaction, and no answer. The answer key is benchmark/answers.json, which a participant never opens.",
+  "arms": ["control", "canvas-scan"],
+  "causeTags": [
+    "redraws-unchanged-scene",
+    "resets-canvas-every-frame",
+    "backing-store-oversized",
+    "builds-paint-style-in-loop",
+    "reads-pixels-back",
+    "draws-offscreen-work-each-frame",
+    "too-many-shapes",
+    "text-measurement-in-loop"
+  ],
+  "tasks": [
+    {
+      "id": "scene-overdraw",
+      "title": "A scene that redraws itself for nothing",
+      "page": "scene-overdraw.html",
+      "design": "one stable canvas redrawn wholesale",
+      "symptom": "Moving the pointer over the scene feels sluggish, and nothing on screen is changing.",
+      "interaction": "Move the pointer slowly back and forth across the scene for ten seconds.",
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "resize-churn",
+      "title": "A canvas resized to the size it already is",
+      "page": "resize-churn.html",
+      "design": "one canvas whose backing store is reassigned per frame",
+      "symptom": "The animation stutters, and it gets worse the longer it runs.",
+      "interaction": "Watch the animation for ten seconds, then drag the slider from end to end twice.",
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "oversized-backing-store",
+      "title": "A small chart with a very large backing store",
+      "page": "oversized-backing-store.html",
+      "design": "one canvas whose backing store far exceeds its displayed size",
+      "symptom": "A chart that occupies a corner of the page costs as much as a full-screen one.",
+      "interaction": "Press Redraw ten times, then resize the browser window once.",
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "gradient-per-shape",
+      "title": "A paint style rebuilt for every shape",
+      "page": "gradient-per-shape.html",
+      "design": "one canvas drawing many shapes per frame",
+      "symptom": "Drawing three hundred tiles is far slower than drawing three hundred rectangles should be.",
+      "interaction": "Press Animate and let it run for ten seconds.",
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "pixel-readback",
+      "title": "A colour picker that reads the canvas back every frame",
+      "page": "pixel-readback.html",
+      "design": "one canvas read back through getImageData while drawing",
+      "symptom": "The picker is smooth until the pointer enters the canvas, then the whole page stalls.",
+      "interaction": "Move the pointer across the canvas for ten seconds.",
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "hidden-cache-canvas",
+      "title": "The expensive canvas is not the one on screen",
+      "page": "hidden-cache-canvas.html",
+      "design": "a cheap visible canvas composited from an expensive cache canvas",
+      "symptom": "The visible canvas draws one image per frame, and the page is still slow.",
+      "interaction": "Drag the pointer across the visible canvas for ten seconds.",
+      "timeoutSeconds": 900
+    }
+  ]
+}

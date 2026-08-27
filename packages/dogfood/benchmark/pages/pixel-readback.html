@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Task: pixel-readback</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; padding: 16px; }
+  canvas { border: 1px solid #ccc; display: block; }
+  p { max-width: 60ch; color: #444; }
+  #swatch { width: 60px; height: 24px; border: 1px solid #333; display: inline-block; vertical-align: middle; }
+</style>
+<h1>Picker</h1>
+<p>Move the pointer across the canvas for ten seconds.</p>
+<canvas id="picker" width="900" height="400"></canvas>
+<p>Colour under the pointer: <span id="swatch"></span> <span id="value">—</span></p>
+<script>
+  const canvas = document.getElementById('picker');
+  const ctx = canvas.getContext('2d');
+  const swatch = document.getElementById('swatch');
+  const value = document.getElementById('value');
+  function paint() {
+    for (let x = 0; x < 900; x += 6) {
+      ctx.fillStyle = `hsl(${(x / 900) * 360} 70% 55%)`;
+      ctx.fillRect(x, 0, 6, 400);
+    }
+  }
+  paint();
+  canvas.addEventListener('pointermove', event => {
+    const box = canvas.getBoundingClientRect();
+    paint();
+    // Reading one pixel back makes the browser finish everything queued above
+    // before it can answer.
+    const pixel = ctx.getImageData(event.clientX - box.left, event.clientY - box.top, 1, 1).data;
+    const colour = `rgb(${pixel[0]} ${pixel[1]} ${pixel[2]})`;
+    swatch.style.background = colour;
+    value.textContent = colour;
+  });
+</script>

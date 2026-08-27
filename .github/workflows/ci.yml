@@ -22,6 +22,10 @@ jobs:
       # The agent handoff is plain data with its own reader. No browser is
       # involved, so it runs with the unit suite rather than behind Chrome.
       - run: pnpm --filter dogfood run handoff:test
+      # The north-star benchmark protocol: the manifest, the sealed answer key,
+      # and the scorer. No browser and no participant, and it is what must hold
+      # before six people are asked for two hours each.
+      - run: pnpm --filter dogfood run benchmark:test
 
   # The unit suite cannot see the overlay running. These checks drive the real
   # thing in headless Chrome, which is where the frame loop, the commit loop,
@@ -60,6 +64,11 @@ jobs:
       # millisecond enters a baseline — and it can never report faster,
       # slower, fixed or improved from one pair of recordings.
       - run: pnpm --filter dogfood run corpus:baseline:test
+      # The six benchmark fixtures, driven in real Chrome. A seeded defect that
+      # stops happening would waste six people's afternoon, and nothing else
+      # would catch it: the scorer only checks that the answer key is
+      # well-formed, not that the page still behaves the way it describes.
+      - run: pnpm --filter dogfood run benchmark:fixtures:test
 
   pack:
     needs: test
