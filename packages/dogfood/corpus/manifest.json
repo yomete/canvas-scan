@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "issue": "SIDPROJ-111",
+  "externalValidity": "external-only",
+  "note": "The corpus tests external usefulness only. Controlled fixtures in packages/dogfood remain the source of product truth. A corpus result never defines correct canvas-scan behaviour, and the corpus never blocks a release on its own.",
+  "entries": [
+    {
+      "id": "chartjs",
+      "title": "Chart.js — immediate-mode charting",
+      "repository": "https://github.com/chartjs/Chart.js",
+      "commit": "9c5cf9fac7ec04a71b516e2aff3f7d76876be369",
+      "ref": "v4.5.1",
+      "design": "one stable canvas redrawn wholesale",
+      "setup": [
+        ["npm", ["ci", "--no-audit", "--no-fund"]],
+        ["npm", ["run", "build"]]
+      ],
+      "buildArtifact": "dist/chart.umd.js",
+      "page": "chartjs.html",
+      "interaction": "chartjs.mjs",
+      "interactionDescription": "Hover the plot area for six seconds while the chart animates, then resize the canvas twice.",
+      "expectedSupport": {
+        "canvasCount": { "minimum": 1 },
+        "commandStatuses": { "sameOrChangedShareAtLeast": 0.5 },
+        "findingTypes": ["heavy-canvas-work", "repeated-draw-work"]
+      },
+      "stopConditions": [
+        "the repository does not check out at the pinned commit",
+        "the build does not produce dist/chart.umd.js",
+        "no canvas is present after the page settles",
+        "the guided run reports a note"
+      ],
+      "evidenceBudget": { "setupSeconds": 600, "runSeconds": 120 }
+    },
+    {
+      "id": "konva",
+      "title": "Konva — retained scene graph",
+      "repository": "https://github.com/konvajs/konva",
+      "commit": "005356e261367c2485c70149ffc0570e16ee64f4",
+      "ref": "10.3.2",
+      "design": "a library that manages its own layers and redraw scheduling",
+      "setup": [
+        ["npm", ["install", "--no-audit", "--no-fund"]],
+        ["npm", ["run", "build"]]
+      ],
+      "buildArtifact": "konva.min.js",
+      "page": "konva.html",
+      "interaction": "konva.mjs",
+      "interactionDescription": "Drag one shape across a layer of two hundred for six seconds, then toggle layer visibility twice.",
+      "expectedSupport": {
+        "canvasCount": { "minimum": 1 },
+        "commandStatuses": { "sameOrChangedShareAtLeast": 0.3 },
+        "findingTypes": ["heavy-canvas-work", "repeated-draw-work"]
+      },
+      "stopConditions": [
+        "the repository does not check out at the pinned commit",
+        "the build does not produce konva.min.js",
+        "no canvas is present after the page settles",
+        "the guided run reports a note"
+      ],
+      "evidenceBudget": { "setupSeconds": 900, "runSeconds": 120 }
+    },
+    {
+      "id": "excalidraw",
+      "title": "Excalidraw — per-element cache canvases",
+      "repository": "https://github.com/excalidraw/excalidraw",
+      "commit": "a2ec2889babf7d2295469c6d90ebe77fae57df84",
+      "ref": "v0.18.1",
+      "design": "hundreds of short-lived per-element cache canvases",
+      "setup": [
+        ["yarn", ["install", "--frozen-lockfile"]],
+        ["yarn", ["build:app:docker"]]
+      ],
+      "buildArtifact": "excalidraw-app/build/index.html",
+      "page": null,
+      "interaction": "excalidraw.mjs",
+      "interactionDescription": "Draw twenty shapes by dragging, select all, drag the scene three times, then zoom six steps.",
+      "expectedSupport": {
+        "canvasCount": { "minimum": 1 },
+        "commandStatuses": { "sameOrChangedShareAtLeast": 0.1 },
+        "findingTypes": ["repeated-draw-work"]
+      },
+      "stopConditions": [
+        "the repository does not check out at the pinned commit",
+        "the build does not produce excalidraw-app/build/index.html",
+        "no canvas is present after the page settles",
+        "the guided run reports a note"
+      ],
+      "evidenceBudget": { "setupSeconds": 1800, "runSeconds": 120 }
+    }
+  ]
+}

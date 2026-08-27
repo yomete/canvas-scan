@@ -122,11 +122,47 @@ Above `captureEvery: 1`, canvas-scan reports one window in every *n*. The window
 
 The session records the rate it was made at as `captureEvery`. `compareSessions` refuses a pair recorded at different rates with `sampling-mismatch`, because their totals are not on one scale.
 
+## Investigate a URL
+
+Run one guided investigation against a page you do not control:
+
+```bash
+node packages/dogfood/investigate-url.mjs --url=https://example.com
+```
+
+The command opens Chrome on that URL with canvas-scan installed before the first application script. Drive the overlay yourself: record, explain, keep a baseline, record a candidate, compare. Close the browser window when you finish. The command writes every artifact you produced, and a report of what it observed, to a directory it names on exit.
+
+The command accepts one `http` or `https` URL. It refuses any other scheme, and it refuses two targets. Add `--out=DIR` to choose the directory. Add `--timeout=MINUTES` to change the one-hour limit.
+
+Chrome runs from a throwaway profile that the command deletes afterwards, so your own browser profile does not change. The command records every request that leaves the target's origin, and the report names them. It measures no GPU time, diagnoses no CPU, and sends nothing anywhere.
+
+Build the bundle first with `pnpm --filter canvas-scan run build`.
+
+### The agent handoff
+
+The command also writes `handoff.json` and `handoff.jsonl`. Both hold the same versioned records, so a coding agent can read one investigation without parsing overlay text or carrying state from a conversation. Use `--handoff=json`, `--handoff=jsonl`, or `--handoff=none` to choose.
+
+JSONL uses one record per line. Each record has one of seven kinds: `metadata`, `stage`, `finding`, `explanation`, `comparison`, `limit`, and `result`. The last record is always the terminal `result`, so a reader can tell a finished run from a truncated file.
+
+Every finding carries its evidence level, its claim boundary, its next check, and how many of its frames the tool could not compare. Every dropped observation gets its own `limit` record. A run that did not finish names each incomplete stage in the `result` record.
+
+The reader refuses an unknown record kind, an extra or missing field, a missing terminal record, and a result that disagrees with its own stages. It also refuses any record that names a remote address other than the target, because the handoff is local and fetches no prompt, rule file, or score.
+
+Read one back with:
+
+```bash
+node packages/dogfood/read-handoff.mjs path/to/handoff.jsonl
+```
+
 ## The artifacts
 
 `InvestigationSessionV1`, `ExplanationArtifactV1`, and `ComparisonArtifactV1` are versioned plain JSON: session metadata, browser features, canvases, windows, reset and lifecycle events, episodes, browser evidence entries, findings, collection limits, and dropped-entry counts. Every finding carries a `claimBoundary` stating what the evidence cannot prove and a `nextCheck` naming the next useful step.
 
-**Privacy.** Artifacts never contain page text, input values, pixels, raw argument values, application URLs, or live objects. Explanation commands are normalized to typed tokens. The tool makes no network requests of its own, with one exception: resolving a draw callsite during an explanation fetches your app's own source maps, bounded in count and size. Nothing is sent anywhere.
+**Privacy.** Artifacts never contain page text, input values, pixels, raw argument values, application URLs, or live objects. Explanation commands are normalized to typed tokens.
+
+**canvas-scan sends no investigation data anywhere, by default or otherwise.** It performs no telemetry, upload, scoring, crash reporting, supply-chain check, remote-rule fetch, or update check. It makes one kind of network request of its own: resolving a draw callsite during an explanation fetches your app's own source maps, bounded in count and size. That request cannot leave your app's origin — the resolver refuses a cross-origin resource before the fetch, and refuses a redirect that leaves the origin.
+
+The claim is checked rather than asserted. `packages/dogfood/network-silence.mjs` defines one request-classification contract with three owners: the target navigation, the target's own application traffic, and canvas-scan's same-origin source maps. Anything else fails. `pnpm --filter dogfood run network-silence:test` runs the complete guided workflow with external network access cut off once the application has loaded, classifies every request the run made, and watches the command's own process for a socket leaving the machine.
 
 ## Overhead
 

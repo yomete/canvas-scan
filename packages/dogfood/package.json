@@ -51,7 +51,16 @@
     "release:v0.4:check": "node release-v04.mjs --check-evidence",
     "bench:v0.5:chrome": "node bench-v05-chrome.mjs",
     "bench:v0.5:test": "node --test bench-v05-chrome.test.mjs release-v05.test.mjs",
-    "release:v0.5": "node release-v05.mjs"
+    "release:v0.5": "node release-v05.mjs",
+    "investigate": "node investigate-url.mjs",
+    "investigate:test": "node --test investigate-url.test.mjs",
+    "handoff:read": "node read-handoff.mjs",
+    "handoff:test": "node --test agent-handoff.test.mjs",
+    "network-silence:test": "node --test network-silence.test.mjs",
+    "corpus": "node corpus-run.mjs",
+    "corpus:test": "node --test corpus-check.test.mjs corpus-run.test.mjs",
+    "corpus:baseline": "node corpus-baseline.mjs",
+    "corpus:baseline:test": "node --test corpus-baseline.test.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Konva corpus entry</title>
+<style>body { margin: 0; font: 14px system-ui, sans-serif; } #stage { width: 900px; height: 500px; }</style>
+<div id="stage"></div>
+<!-- The library is the pinned build, copied from the checkout by corpus-run. -->
+<script src="./library.js"></script>
+<script>
+  const stage = new Konva.Stage({ container: 'stage', width: 900, height: 500 });
+  const layer = new Konva.Layer();
+  stage.add(layer);
+  const shapes = [];
+  for (let index = 0; index < 200; index++) {
+    const shape = new Konva.Rect({
+      x: (index % 20) * 44 + 8, y: Math.floor(index / 20) * 48 + 8,
+      width: 36, height: 36, cornerRadius: 6,
+      fill: `hsl(${(index * 7) % 360} 70% 55%)`, stroke: '#222', strokeWidth: 1,
+    });
+    layer.add(shape);
+    shapes.push(shape);
+  }
+  const dragged = new Konva.Circle({ x: 450, y: 250, radius: 30, fill: '#111', draggable: true });
+  layer.add(dragged);
+  layer.draw();
+  window.__CORPUS__ = { stage, layer, shapes, dragged };
+</script>

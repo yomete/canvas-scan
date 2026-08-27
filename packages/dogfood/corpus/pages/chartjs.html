@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chart.js corpus entry</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+  #plot { width: 900px; height: 460px; }
+</style>
+<!-- The library is the pinned build, copied from the checkout by corpus-run. -->
+<div><canvas id="plot"></canvas></div>
+<script src="./library.js"></script>
+<script>
+  const points = count => Array.from({ length: count }, (_, index) => ({ x: index, y: Math.sin(index / 7) * 40 + Math.cos(index / 3) * 20 }));
+  const chart = new Chart(document.getElementById('plot'), {
+    type: 'line',
+    data: {
+      datasets: Array.from({ length: 6 }, (_, series) => ({
+        label: `series ${series + 1}`,
+        data: points(400).map(point => ({ x: point.x, y: point.y + series * 12 })),
+        borderWidth: 1,
+        pointRadius: 0,
+      })),
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      parsing: false,
+      scales: { x: { type: 'linear' } },
+      interaction: { mode: 'index', intersect: false },
+    },
+  });
+  window.__CORPUS__ = { chart, canvas: document.getElementById('plot') };
+</script>

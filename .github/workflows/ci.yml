@@ -19,6 +19,9 @@ jobs:
       - run: pnpm -r run typecheck
       - run: pnpm --filter canvas-scan run test
       - run: pnpm --filter demo run build
+      # The agent handoff is plain data with its own reader. No browser is
+      # involved, so it runs with the unit suite rather than behind Chrome.
+      - run: pnpm --filter dogfood run handoff:test
 
   # The unit suite cannot see the overlay running. These checks drive the real
   # thing in headless Chrome, which is where the frame loop, the commit loop,
@@ -39,6 +42,24 @@ jobs:
       - run: pnpm --filter canvas-scan run build
       - run: pnpm --filter demo run build
       - run: node scripts/browser-tests.mjs
+      # The guided-investigation command is the one path a user drives by hand,
+      # so nothing else can prove it works. The fixture drives the whole ritual
+      # through the overlay's own controls against the demo app.
+      - run: pnpm --filter dogfood run investigate:test
+      # "canvas-scan sends nothing anywhere" is a claim, so it is checked:
+      # the complete workflow runs with external access cut off, every
+      # request it makes is classified, and the command's own process is
+      # watched for a socket leaving the machine.
+      - run: pnpm --filter dogfood run network-silence:test
+      # The corpus manifest, its checker, and the runner's pipeline against a
+      # repository made for the test. The three real applications are not run
+      # here: the corpus is advisory and must never fail a release because
+      # somebody else's build broke.
+      - run: pnpm --filter dogfood run corpus:test
+      # The advisory baseline comparison. It compares structure only — no
+      # millisecond enters a baseline — and it can never report faster,
+      # slower, fixed or improved from one pair of recordings.
+      - run: pnpm --filter dogfood run corpus:baseline:test
 
   pack:
     needs: test
