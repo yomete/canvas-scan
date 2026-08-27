@@ -13,6 +13,7 @@ import {
   ESM_RUNTIME_EXPORTS,
   TYPE_EXPORTS,
 } from './pack-manifest.mjs';
+import { evidencePath } from './evidence-dir.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = path.join(repoRoot, 'packages/core');
@@ -25,9 +26,9 @@ const temporaryRoot = fs.mkdtempSync(
 const summaries = [];
 let packDetails = {};
 let publicSurfaceProbe = null;
-const summaryPaths = ['/private/tmp/sidproj-70-pack-summary.json', '/private/tmp/sidproj-56-pack-summary.json'];
+const summaryPaths = [evidencePath('sidproj-70-pack-summary.json'), evidencePath('sidproj-56-pack-summary.json')];
 const summaryPath = summaryPaths[0];
-const manualReleasePath = '/private/tmp/sidproj-56-manual-release-test.json';
+const manualReleasePath = evidencePath('sidproj-56-manual-release-test.json');
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 function run(command, args, cwd) {
@@ -253,6 +254,7 @@ async function verifyManualRelease(tarball) {
     `--tarball-sha256=${sha256(fs.readFileSync(tarball))}`,
     `--iife-sha256=${packDetails.iifeSha256}`,
     `--git-sha=${gitSha}`,
+    `--artifact=${manualReleasePath}`,
   ], repoRoot);
   packDetails.manualReleaseTestSha256 = sha256(fs.readFileSync(manualReleasePath));
 }

@@ -4,12 +4,15 @@ import { once } from 'node:events';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { evidencePath } from '../../scripts/evidence-dir.mjs';
 
-const artifactPath = '/private/tmp/sidproj-56-manual-release-test.json';
 const args = Object.fromEntries(process.argv.slice(2).map((arg) => {
   const index = arg.indexOf('=');
   return [arg.slice(2, index), arg.slice(index + 1)];
 }));
+// The caller passes --artifact so the two processes cannot disagree about
+// where the evidence went. Standalone runs fall back to the same resolver.
+const artifactPath = args.artifact ? path.resolve(args.artifact) : evidencePath('sidproj-56-manual-release-test.json');
 const fixture = path.resolve(args.fixture ?? '');
 const tarball = path.resolve(args.tarball ?? '');
 const expectedTarballSha256 = args['tarball-sha256'];
