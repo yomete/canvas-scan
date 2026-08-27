@@ -15,6 +15,7 @@ vi.mock('bippy/source', async importOriginal => {
 import {
   addSkippedOwners,
   findOwnerFiberForCanvas,
+  looksMinified,
   resolveAttribution,
 } from '../src/attribution';
 import {
@@ -308,6 +309,87 @@ it('honors additional skip names registered at runtime', () => {
 
   expect(resolveAttribution(container.querySelector('#wrapped-c')!)).toEqual({
     nearestReactOwner: 'UserOwner',
+    attributionKind: 'jsx-owner',
+  });
+
+  root.unmount();
+});
+
+// ---------------------------------------------------------------- minified builds
+//
+// Found by the public dogfood run against excalidraw.com: 124 of 128 canvases
+// had no owner, and the four that resolved gave `mRe`, `fRe` and `ERe`. A
+// finding headed "Repeated drawing · mRe" tells a reader nothing, and it looks
+// exactly like a finding that worked.
+
+it.each([
+  ['mRe', true],
+  ['fRe', true],
+  ['ERe', true],
+  ['a', true],
+  ['UI', true],
+  ['abcd', true],
+  ['App', false],
+  ['Box', false],
+  ['Nav', false],
+  ['Chart', false],
+  ['LineChartInner', false],
+])('treats %s as minified: %s', (name, expected) => {
+  expect(looksMinified(name)).toBe(expected);
+});
+
+it('reports a minified owner as evidence, not as a name', () => {
+  // A production bundle keeps the function renamed and still needs a
+  // capitalised binding for JSX.
+  const Minified = function mRe() {
+    return <canvas data-testid="min" />;
+  };
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<Minified />));
+
+  expect(resolveAttribution(container.querySelector('[data-testid="min"]')!)).toEqual({
+    // The symbol is kept. A reader can search the bundle for it.
+    nearestReactOwner: 'mRe',
+    // It is not a name, so nothing may head a finding with it.
+    attributionKind: 'minified-owner',
+  });
+
+  root.unmount();
+});
+
+it('prefers a readable owner above a minified one', () => {
+  const Inner = function mRe() {
+    return <canvas data-testid="mixed" />;
+  };
+  function DashboardChart() {
+    return <Inner />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<DashboardChart />));
+
+  expect(resolveAttribution(container.querySelector('[data-testid="mixed"]')!)).toEqual({
+    nearestReactOwner: 'DashboardChart',
+    attributionKind: 'jsx-owner',
+  });
+
+  root.unmount();
+});
+
+it('does not demote a short real component name', () => {
+  function App() {
+    return <canvas data-testid="app-c" />;
+  }
+
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  flushSync(() => root.render(<App />));
+
+  expect(resolveAttribution(container.querySelector('[data-testid="app-c"]')!)).toEqual({
+    nearestReactOwner: 'App',
     attributionKind: 'jsx-owner',
   });
 

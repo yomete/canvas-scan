@@ -489,10 +489,16 @@ function frames(count: number): string {
 // say "Not attributed" in one place, "Unattributed" in another, and show the
 // bare canvas ID in three more, which read as three different states.
 const NO_OWNER = 'No owner found';
-function ownerName(owner: string | null): string {
+// A minified symbol is evidence, not a name. It is shown as what it is, so a
+// reader can search the bundle for it and never mistakes it for something to
+// look up in their own source.
+const MINIFIED_OWNER = 'Minified owner';
+function ownerName(owner: string | null, kind: AttributionKind): string {
+  if (kind === 'minified-owner') return owner ? `${MINIFIED_OWNER} · ${owner}` : MINIFIED_OWNER;
   return owner ?? NO_OWNER;
 }
-function ownerWithId(owner: string | null, canvasId: string): string {
+function ownerWithId(owner: string | null, kind: AttributionKind, canvasId: string): string {
+  if (kind === 'minified-owner') return `${ownerName(owner, kind)} · ${canvasId}`;
   return owner ?? `${NO_OWNER} · ${canvasId}`;
 }
 
@@ -500,6 +506,7 @@ function badgeText(kind: AttributionKind): string {
   if (kind === 'jsx-owner') return 'jsx';
   if (kind === 'react-host-no-owner') return 'no';
   if (kind === 'container-only') return 'co';
+  if (kind === 'minified-owner') return 'min';
   return 'un';
 }
 
@@ -508,6 +515,8 @@ const BADGE_TITLES: Record<AttributionKind, string> = {
   'react-host-no-owner': 'React made this canvas, but no component above it owns it',
   'container-only':
     'a library made this canvas inside the component’s markup, so the owner is the nearest one above it',
+  'minified-owner':
+    'a component owns this canvas, and the build renamed it — the symbol is here to search the bundle for, not a name in your source',
   unattributed: 'canvas-scan could not find an owning React component',
 };
 
@@ -688,7 +697,7 @@ function flashOutline(report: DrawBatchReport, canvas: Element, same: number): v
   const label = outline.querySelector('.label');
   if (label) {
     label.textContent =
-      `${ownerWithId(report.nearestReactOwner, report.canvasId)} · ` +
+      `${ownerWithId(report.nearestReactOwner, report.attributionKind, report.canvasId)} · ` +
       `sent the same draw commands again ×${same}`;
   }
 
@@ -842,7 +851,7 @@ function renderPopover(): void {
     badge.textContent = badgeText(canvasStats.kind);
   }
   const owner = popover.querySelector<HTMLElement>('.popover-owner');
-  if (owner) owner.textContent = ownerWithId(canvasStats.owner, canvasId);
+  if (owner) owner.textContent = ownerWithId(canvasStats.owner, canvasStats.kind, canvasId);
   const status = popover.querySelector<HTMLElement>('.status');
   if (status) {
     status.textContent =
@@ -1261,7 +1270,8 @@ function createFinding(
 ): HTMLElement {
   const key = findingKey(finding);
   const id = `canvas-scan-finding-${key.replaceAll(':', '-')}`;
-  const owner = ownerWithId(sessionCanvas(session, finding.canvasId)?.nearestReactOwner ?? null, finding.canvasId);
+  const findingCanvas = sessionCanvas(session, finding.canvasId);
+  const owner = ownerWithId(findingCanvas?.nearestReactOwner ?? null, findingCanvas?.attributionKind ?? 'unattributed', finding.canvasId);
   const card = document.createElement('section');
   card.className = 'repeated-finding finding-card';
   card.dataset.canvasId = finding.canvasId;
@@ -1481,7 +1491,7 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
       line.dataset.sessionCanvasId = canvas.canvasId;
       const owner = document.createElement('div');
       owner.className = 'session-owner';
-      owner.textContent = `${ownerName(canvas.nearestReactOwner)} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
+      owner.textContent = `${ownerName(canvas.nearestReactOwner, canvas.attributionKind)} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
       const identifier = document.createElement('div');
       identifier.className = 'session-identifier';
       identifier.textContent = `Canvas ID: ${canvas.canvasId}`;
@@ -1657,7 +1667,7 @@ function renderFlyout(): void {
     badge.textContent = badgeText(canvasStats.kind);
     badge.title = badgeTitle(canvasStats.kind);
     const text = row.querySelector<HTMLElement>('.row-text')!;
-    const owner = ownerName(canvasStats.owner);
+    const owner = ownerName(canvasStats.owner, canvasStats.kind);
     let content =
       `Owner: ${owner} · Canvas ID: ${canvasId} · same in ${aggregate.same} of ${frames(aggregate.windows)}`;
     // The row ellipsizes, so the title carries the whole sentence.

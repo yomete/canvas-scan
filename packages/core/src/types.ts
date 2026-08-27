@@ -2,6 +2,10 @@ export type AttributionKind =
   | 'react-host-no-owner'
   | 'jsx-owner'
   | 'container-only'
+  // A component owns this canvas, and the bundle renamed it. The symbol is
+  // still carried on nearestReactOwner as evidence, because a reader can search
+  // a bundle for it. It is not a name, so nothing may head a finding with it.
+  | 'minified-owner'
   | 'unattributed';
 export type SignatureStatus = 'same' | 'changed' | 'unknown';
 

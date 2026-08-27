@@ -393,6 +393,35 @@ describe('overlay flyout', () => {
     expect(unattributedSummary.indexOf('No owner found')).toBeLessThan(unattributedSummary.indexOf('Canvas ID: saved-unattributed'));
   });
 
+  // Found on excalidraw.com: a production build renamed every component, and a
+  // finding headed `mRe` looked exactly like one that had worked. The symbol
+  // stays — it is searchable in the bundle — but it never stands where a
+  // component name stands.
+  it('never heads a summary with a bare minified symbol', () => {
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'minified', nearestReactOwner: 'mRe', attributionKind: 'minified-owner', canvasApiSelfTimeMs: 9 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const summary = getShadowRoot().querySelector<HTMLElement>('[data-session-canvas-id="minified"]')!.textContent!;
+    expect(summary).toContain('Minified owner · mRe');
+    expect(summary.startsWith('mRe')).toBe(false);
+    expect(summary.indexOf('Minified owner')).toBeLessThan(summary.indexOf('Canvas ID: minified'));
+  });
+
+  it('badges a minified owner as its own state, and says why', () => {
+    mountOverlay();
+    emitReport(makeReport({ canvasId: 'live-minified', nearestReactOwner: 'fRe', attributionKind: 'minified-owner' }), makeCanvas(false), { windowIndex: 1, timestampMs: 10 });
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const row = root.querySelector<HTMLButtonElement>('.row[data-canvas-id="live-minified"]')!;
+    expect(row.querySelector('.badge')?.textContent).toBe('min');
+    expect(row.querySelector('.badge')?.getAttribute('title')).toContain('the build renamed it');
+    expect(row.querySelector<HTMLElement>('.row-text')!.textContent).toContain('Owner: Minified owner · fRe');
+  });
+
   it('uses plain finding copy and a neutral focus background', () => {
     mountOverlay(); startRecording();
     emitReport(makeReport({ canvasId: 'candidate-copy', canvasApiSelfTimeMs: 9 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
