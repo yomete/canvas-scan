@@ -637,6 +637,20 @@ describe('overlay flyout', () => {
     expect(JSON.stringify(getLastSession())).toContain('"userMarks":1');
   });
 
+  it('names the canvases kept as a summary only on the coverage line', () => {
+    mountOverlay(); startRecording();
+    for (let index = 1; index <= 129; index++) {
+      emitReport(makeReport({ canvasId: `summary-only-${index}` }), makeCanvas(), { windowIndex: index, timestampMs: index * 10 });
+    }
+    stopRecording(); refreshOverlay();
+    const coverage = getShadowRoot().querySelector('.session-coverage')?.textContent ?? '';
+    // The summary list and the findings no longer cover the same set of
+    // canvases, and a reader has to be told rather than left to assume.
+    expect(coverage).toContain('1 canvas is kept as a summary only');
+    expect(coverage).toContain('no finding covers them');
+    expect(getLastSession()!.canvases.filter(canvas => canvas.windowDetailDropped)).toHaveLength(1);
+  });
+
   it('keeps completed-session plain copy within the approved claim boundary', () => {
     mountOverlay(); startRecording();
     emitReport(makeReport({ canvasId: 'plain-copy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });

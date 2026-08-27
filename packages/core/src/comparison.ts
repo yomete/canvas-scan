@@ -94,7 +94,12 @@ function validSession(value: UnknownRecord): boolean {
   const dropped = record(value.droppedEntryCounts);
   return text(value.sessionId) && date(value.endedAt) && text(value.canvasScanVersion) && Array.isArray(value.findings) && Array.isArray(value.canvases)
     && !!dropped && count(dropped.canvasWindowReports) && count(dropped.canvasLifetimes) && count(dropped.resetEvents)
-    && dropped.canvasWindowReports === 0 && dropped.canvasLifetimes === 0;
+    && dropped.canvasWindowReports === 0 && dropped.canvasLifetimes === 0
+    // A canvas the lifetime cap evicted keeps its totals and loses its frames.
+    // That is still a truncated recording. It was refused when eviction forgot
+    // the canvas outright, and it stays refused now that eviction keeps a
+    // summary — what the comparison needs is the frames.
+    && (value.canvases as unknown[]).every(item => record(item)?.windowDetailDropped !== true);
 }
 
 function validHeavy(finding: UnknownRecord): boolean {

@@ -6,6 +6,7 @@ import { captureBoundary, captureCommand, createCommandCapture, disableCommandCa
 import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, shouldCaptureFirstDifference, shouldCaptureFirstRaster } from './draw-callsite.js';
 import { subscribeToSelectedCommands } from './wrap-context.js';
 import type {
+  AttributionKind,
   CanvasMethodEvidence,
   CanvasScanOptions,
   HeavyCanvasWorkFinding,
@@ -79,8 +80,13 @@ let windows: RecordedCanvasWindow[] = [];
 let resetEvents: RecordedResetEvent[] = [];
 let lifecycleEvents: RecordedCanvasLifecycleEvent[] = [];
 let canvasIds: string[] = [];
-let droppedWindows = 0;
+// Canvases the MAX_CANVASES cap evicted, folded down to the totals a
+// finding is derived from. Keyed by canvas id, so a canvas that draws
+// again after eviction merges rather than appearing twice.
+type EvictedCanvasTotals = Omit<RecordedCanvasSummary, 'canvasId' | 'evidenceLevel' | 'windowDetailDropped'>;
+let evictedCanvasTotals = new Map<string, EvictedCanvasTotals>();
 let droppedCanvases = 0;
+let droppedWindows = 0;
 let droppedResetEvents = 0;
 let droppedLifecycleEvents = 0;
 let sequence = 0;
@@ -237,11 +243,45 @@ function removeCanvasIfEmpty(canvasId: string): void {
   recordsForRecordingSession.delete(canvasId);
 }
 
+// Applications that treat canvases as cache entries — one per element, per
+// tile, per layer — reach MAX_CANVASES in seconds. Excalidraw created 228 in
+// 18 seconds, and evicting the oldest used to take its windows, resets and
+// lifecycle events with it: 43% of that recording, gone, with findings then
+// derived from what survived. The windows are the bulk of the memory, so the
+// totals they add up to are kept and only the per-window detail is dropped.
+// The session then still says something true about every canvas it saw.
+function foldWindowsIntoTotals(canvasId: string): boolean {
+  const retained = windows.filter(window => window.canvasId === canvasId);
+  // No window means no summary to keep. The canvas is forgotten as before, and
+  // the count below says so — a summary of nothing would be an empty promise.
+  if (retained.length === 0) return false;
+  const totals = evictedCanvasTotals.get(canvasId) ?? {
+    nearestReactOwner: null, attributionKind: 'unattributed' as AttributionKind, sourceLocation: null,
+    activeWindowCount: 0, rasterOperationCount: 0, canvasApiSelfTimeMs: 0, maxWindowSelfTimeMs: 0,
+    methodEvidence: {} as Record<string, CanvasMethodEvidence>,
+    commandStatuses: { same: 0, changed: 0, unknown: 0 },
+  };
+  for (const window of retained) {
+    totals.commandStatuses[window.signatureStatus]++;
+    totals.activeWindowCount++;
+    totals.rasterOperationCount += window.rasterOperationCount;
+    totals.canvasApiSelfTimeMs += window.canvasApiSelfTimeMs;
+    totals.maxWindowSelfTimeMs = Math.max(totals.maxWindowSelfTimeMs, window.canvasApiSelfTimeMs);
+    addEvidence(totals.methodEvidence, window.methodEvidence);
+  }
+  const latest = retained[retained.length - 1];
+  totals.nearestReactOwner = latest.nearestReactOwner;
+  totals.attributionKind = latest.attributionKind;
+  totals.sourceLocation = latest.sourceLocation ? { ...latest.sourceLocation } : null;
+  evictedCanvasTotals.set(canvasId, totals);
+  return true;
+}
+
 function retainCanvas(canvasId: string): void {
   if (canvasIds.includes(canvasId)) return;
   if (canvasIds.length === MAX_CANVASES) {
+    if (!foldWindowsIntoTotals(canvasIds[0])) droppedCanvases++;
     removeCanvas(canvasIds[0]);
-    droppedCanvases++;
   }
   canvasIds.push(canvasId);
 }
@@ -280,14 +320,19 @@ function captureLifecycleEvent(event: RecordedCanvasLifecycleEvent): void {
 }
 
 function summaries(): RecordedCanvasSummary[] {
-  return canvasIds.filter(canvasId => windows.some(window => window.canvasId === canvasId)).map(canvasId => {
+  // An evicted canvas keeps its entry here even though no window of it
+  // survives. A canvas that was evicted and then drew again appears once, with
+  // the two halves added together.
+  const reported = [...new Set([...evictedCanvasTotals.keys(), ...canvasIds.filter(canvasId => windows.some(window => window.canvasId === canvasId))])];
+  return reported.map(canvasId => {
     const retained = windows.filter(window => window.canvasId === canvasId);
+    const evicted = evictedCanvasTotals.get(canvasId);
     const latest = retained[retained.length - 1];
-    const commandStatuses = { same: 0, changed: 0, unknown: 0 };
-    let rasterOperationCount = 0;
-    let canvasApiSelfTimeMs = 0;
-    let maxWindowSelfTimeMs = 0;
-    const methodEvidence: Record<string, CanvasMethodEvidence> = {};
+    const commandStatuses = { ...(evicted?.commandStatuses ?? { same: 0, changed: 0, unknown: 0 }) };
+    let rasterOperationCount = evicted?.rasterOperationCount ?? 0;
+    let canvasApiSelfTimeMs = evicted?.canvasApiSelfTimeMs ?? 0;
+    let maxWindowSelfTimeMs = evicted?.maxWindowSelfTimeMs ?? 0;
+    const methodEvidence: Record<string, CanvasMethodEvidence> = copyEvidence(evicted?.methodEvidence ?? {});
     for (const window of retained) {
       commandStatuses[window.signatureStatus]++;
       rasterOperationCount += window.rasterOperationCount;
@@ -295,15 +340,20 @@ function summaries(): RecordedCanvasSummary[] {
       maxWindowSelfTimeMs = Math.max(maxWindowSelfTimeMs, window.canvasApiSelfTimeMs);
       addEvidence(methodEvidence, window.methodEvidence);
     }
+    // The newest window wins the attribution, and the evicted half supplies it
+    // only when no window survives. Chosen by which half exists, not by which
+    // value is nullish — an unattributed canvas has a real null owner.
+    const attributedFrom = latest ?? evicted!;
     return {
       canvasId,
-      nearestReactOwner: latest.nearestReactOwner,
-      attributionKind: latest.attributionKind,
-      sourceLocation: latest.sourceLocation ? { ...latest.sourceLocation } : null,
-      activeWindowCount: retained.length,
+      nearestReactOwner: attributedFrom.nearestReactOwner,
+      attributionKind: attributedFrom.attributionKind,
+      sourceLocation: attributedFrom.sourceLocation ? { ...attributedFrom.sourceLocation } : null,
+      activeWindowCount: (evicted?.activeWindowCount ?? 0) + retained.length,
       rasterOperationCount,
       canvasApiSelfTimeMs: rounded(canvasApiSelfTimeMs), maxWindowSelfTimeMs: rounded(maxWindowSelfTimeMs), evidenceLevel: 'measured' as const, methodEvidence: roundedEvidence(methodEvidence),
       commandStatuses,
+      windowDetailDropped: evicted !== undefined,
     };
   }).sort((left, right) => right.canvasApiSelfTimeMs - left.canvasApiSelfTimeMs || right.maxWindowSelfTimeMs - left.maxWindowSelfTimeMs || right.rasterOperationCount - left.rasterOperationCount || left.canvasId.localeCompare(right.canvasId));
 }
@@ -505,6 +555,10 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
     stopReason, canvasScanVersion: '0.6.2', captureEvery, browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
+    // canvasLifetimes now counts only the canvases eviction could keep
+    // nothing about — the ones with no window to summarize. A canvas that had
+    // windows keeps its totals, and canvasWindowReports counts the frames it
+    // lost.
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
   recordsForCompletedSession = recordsForRecordingSession;
@@ -571,6 +625,7 @@ function startRecordingWithDuration(durationMs: number): void {
   lifecycleEvents = [];
   canvasIds = [];
   droppedWindows = 0;
+  evictedCanvasTotals = new Map();
   droppedCanvases = 0;
   droppedResetEvents = 0;
   droppedLifecycleEvents = 0;
@@ -730,6 +785,7 @@ export function resetRecordingForTests(): void {
   browserDropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
   canvasIds = [];
   droppedWindows = 0;
+  evictedCanvasTotals = new Map();
   droppedCanvases = 0;
   droppedResetEvents = 0;
   droppedLifecycleEvents = 0;

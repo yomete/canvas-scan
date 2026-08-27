@@ -420,12 +420,47 @@ describe('recording', () => {
     expect(session.canvases.find(canvas => canvas.canvasId === 'aged-out')?.activeWindowCount).toBe(1);
   });
 
-  it('evicts whole canvas lifetimes and treats re-entry as new', () => {
+  it('keeps the summary of an evicted canvas and drops only its windows', () => {
     startRecording(); for (let index = 1; index <= 129; index++) publish(makeReport(`canvas-${index}`), index);
     publish(makeReport('canvas-0'), 130); const session = stopRecording()!;
-    expect(session.canvases).toHaveLength(128); expect(session.canvases[0].canvasId).toBe('canvas-0');
+    // Two evictions, and both canvases still say something true about
+    // themselves. Before this they were forgotten, taking 43% of a real
+    // Excalidraw recording with them.
+    expect(session.canvases).toHaveLength(130);
+    expect(session.canvases.filter(canvas => canvas.windowDetailDropped).map(canvas => canvas.canvasId).sort()).toEqual(['canvas-1', 'canvas-2']);
+    expect(session.canvases.find(canvas => canvas.canvasId === 'canvas-1')).toMatchObject({ activeWindowCount: 1, rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, maxWindowSelfTimeMs: 0.5, commandStatuses: { same: 1, changed: 0, unknown: 0 } });
+    // The windows themselves are gone, so nothing derived per window mentions
+    // those canvases and the dropped count says how many frames went.
+    expect(session.windows.some(window => window.canvasId === 'canvas-1' || window.canvasId === 'canvas-2')).toBe(false);
     expect(session.windows.every(window => session.canvases.some(canvas => canvas.canvasId === window.canvasId))).toBe(true);
-    expect(session.droppedEntryCounts.canvasLifetimes).toBe(2);
+    expect(session.findings.some(finding => finding.canvasId === 'canvas-1' || finding.canvasId === 'canvas-2')).toBe(false);
+    expect(session.droppedEntryCounts).toMatchObject({ canvasWindowReports: 2, canvasLifetimes: 0 });
+  });
+
+  it('counts an evicted canvas with no window to summarize as a dropped lifetime', () => {
+    startRecording();
+    const windowIndex = getCurrentWindowIndex() + 1;
+    // Reset events only: there is no window to fold into totals, so a summary
+    // would be a promise with nothing behind it. The lifetime is dropped, and
+    // counted, exactly as it was before summaries were retained.
+    for (let index = 0; index <= 128; index++) emitResetEvent({ canvasId: `reset-only-${index}`, windowIndex, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: index, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
+    const session = stopRecording()!;
+    expect(session.canvases.some(canvas => canvas.canvasId === 'reset-only-0')).toBe(false);
+    expect(session.droppedEntryCounts).toMatchObject({ canvasLifetimes: 1, resetEvents: 1 });
+  });
+
+  it('merges an evicted canvas with the windows it draws after eviction', () => {
+    startRecording();
+    publish(makeReport('returning'), 1);
+    for (let index = 2; index <= 129; index++) publish(makeReport(`filler-${index}`), index);
+    publish(makeReport('returning'), 130);
+    const session = stopRecording()!;
+    const returning = session.canvases.find(canvas => canvas.canvasId === 'returning')!;
+    // One entry, not two: the evicted half and the live half are added
+    // together, and the entry still says its frame detail is incomplete.
+    expect(session.canvases.filter(canvas => canvas.canvasId === 'returning')).toHaveLength(1);
+    expect(returning).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 2, canvasApiSelfTimeMs: 1, windowDetailDropped: true });
+    expect(session.windows.filter(window => window.canvasId === 'returning')).toHaveLength(1);
   });
 
   it('returns deep copies, JSON-only values, and JSON round trips', () => {

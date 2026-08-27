@@ -248,7 +248,11 @@ describe('explanation state', () => {
     const source = stopRecording()!;
     const retainedIndex = source.findings.findIndex(finding => finding.canvasId === retained.id);
 
-    expect(source.canvases.some(canvas => canvas.canvasId === canvasRecords[0].id)).toBe(false);
+    // The evicted canvas keeps a summary, marked as summary-only, but nothing
+    // derived per window may mention it — there are no windows left to derive
+    // from, so an explanation could never be started against it.
+    expect(source.canvases.find(canvas => canvas.canvasId === canvasRecords[0].id)).toMatchObject({ windowDetailDropped: true });
+    expect(source.windows.some(window => window.canvasId === canvasRecords[0].id)).toBe(false);
     expect(source.findings.some(finding => finding.canvasId === canvasRecords[0].id)).toBe(false);
     expect(retainedIndex).toBeGreaterThanOrEqual(0);
     records.delete(retained); retained.retired = true;

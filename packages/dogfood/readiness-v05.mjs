@@ -29,7 +29,7 @@ const stable = value => `${JSON.stringify(value, null, 2)}\n`;
 const READINESS_CONTRACT = {
   keys: {
     session: ['schemaVersion', 'sessionId', 'startedAt', 'endedAt', 'durationMs', 'stopReason', 'canvasScanVersion', 'browserFeatures', 'canvases', 'windows', 'resetEvents', 'lifecycleEvents', 'episodes', 'browserEntries', 'episodeAssociations', 'findings', 'collectionLimits', 'droppedEntryCounts'],
-    canvas: ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'evidenceLevel', 'methodEvidence', 'commandStatuses'],
+    canvas: ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'activeWindowCount', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'maxWindowSelfTimeMs', 'evidenceLevel', 'methodEvidence', 'commandStatuses', 'windowDetailDropped'],
     window: ['canvasId', 'nearestReactOwner', 'attributionKind', 'sourceLocation', 'rasterOperationCount', 'canvasApiSelfTimeMs', 'signatureStatus', 'unknownReason', 'sampled', 'comparisonGap', 'methodEvidence', 'windowIndex', 'timestampMs', 'startedAtTimestampMs', 'endedAtTimestampMs', 'geometry'],
     methodEvidence: ['clearRect', 'fillRect', 'fillStyle'],
     method: ['count', 'canvasApiSelfTimeMs'],

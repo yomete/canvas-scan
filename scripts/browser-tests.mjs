@@ -141,6 +141,50 @@ check('findings are ranked by measured self-time across types', 'index', `
   };
 `);
 
+// ---------------------------------------------------------------- the quiet tail
+check('findings with no measured time collapse behind a count', 'index', `
+  // A real application that is already fast produces findings that are true
+  // and cost nothing. They stay in the artifact and keep their rank; they just
+  // stop padding the list. This draws two rectangles a frame on a light canvas
+  // — enough raster operations to repeat, not enough to measure — alongside
+  // the heavy canvas, so the list has both a top and a tail.
+  const quiet = document.createElement('canvas');
+  quiet.width = 200; quiet.height = 100;
+  document.body.append(quiet);
+  const light = quiet.getContext('2d');
+  const ctx = heavyCanvas();
+  shadow.querySelector('.record').click();
+  await wait(200);
+  for (let f = 0; f < 8; f++) {
+    light.fillRect(4, 4, 6, 6);
+    light.fillRect(20, 4, 6, 6);
+    burnFrame(ctx);
+    await wait(30);
+  }
+  shadow.querySelector('.stop-recording').click();
+  await wait(700);
+  await openFlyout();
+  const session = api.getLastSession();
+  const group = shadow.querySelector('.finding-quiet');
+  const rankedCards = [...shadow.querySelectorAll('.findings-list > .finding-card')];
+  const quietCards = [...(group?.querySelectorAll('.finding-card') ?? [])];
+  quiet.remove();
+  return {
+    findingsInArtifact: session.findings.length,
+    zeroInArtifact: session.findings.filter(f => f.canvasApiSelfTimeMs === 0).length,
+    measuredInArtifact: session.findings.filter(f => f.canvasApiSelfTimeMs > 0).length,
+    groupPresent: !!group,
+    groupClosed: group ? !group.open : null,
+    groupSummary: group?.querySelector('summary')?.textContent ?? null,
+    rankedCardCount: rankedCards.length,
+    quietCardCount: quietCards.length,
+    // Every card is still numbered by its place in the ranking, so a number
+    // read off the interface still finds the same finding in the JSON.
+    cardNumbers: [...rankedCards, ...quietCards].map(c => Number(c.dataset.findingIndex)),
+    quietCardsAreAllZero: quietCards.every(c => session.findings[Number(c.dataset.findingIndex)]?.canvasApiSelfTimeMs === 0),
+  };
+`);
+
 // ---------------------------------------------------------------- the commit loop
 check('a finding card reacts when its canvas leaves the page', 'index', `
   await recordHeavy();
@@ -317,6 +361,23 @@ const EXPECTATIONS = {
     [r.measureTextCount >= 500, `measureText count was ${r.measureTextCount}`],
     [r.rasterOperationCount === 0, `neither call draws, so raster should be 0, was ${r.rasterOperationCount}`],
     [r.selfTimeAboveZero === true, 'no self-time was measured'],
+  ],
+  'findings with no measured time collapse behind a count': r => [
+    // Without both halves the check proves nothing: an all-measured run never
+    // builds the group, and an all-empty run never proves the top survives.
+    [r.measuredInArtifact > 0, 'the workload produced no measured finding, so there was no ranked list to preserve'],
+    [r.zeroInArtifact > 0, 'the workload produced no zero-time finding, so the collapse was never exercised'],
+    [r.groupPresent === true, 'the zero-time findings were not collapsed'],
+    [r.groupClosed === true, 'the group should start closed'],
+    [r.groupSummary === `${r.zeroInArtifact} more findings with no measured time`
+      || r.groupSummary === `${r.zeroInArtifact} more finding with no measured time`,
+      `the count is wrong: ${r.groupSummary} for ${r.zeroInArtifact} zero-time findings`],
+    [r.rankedCardCount === r.measuredInArtifact, `${r.rankedCardCount} cards above the group, ${r.measuredInArtifact} measured findings`],
+    [r.quietCardCount === r.zeroInArtifact, `${r.quietCardCount} cards inside the group, ${r.zeroInArtifact} zero-time findings`],
+    [r.quietCardsAreAllZero === true, 'a finding with measured time was collapsed'],
+    [r.cardNumbers.join(',') === r.cardNumbers.map((_, i) => i).join(','),
+      `card numbering no longer matches the artifact order: ${r.cardNumbers.join(',')}`],
+    [r.findingsInArtifact === r.rankedCardCount + r.quietCardCount, 'a finding was dropped from the list'],
   ],
   'a heavy card labels both spans and reaches the top methods': r => [
     [r.heavyFound === true, 'no heavy-canvas-work finding was produced'],

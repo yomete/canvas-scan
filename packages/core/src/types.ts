@@ -281,6 +281,11 @@ export interface RecordedCanvasSummary {
   evidenceLevel: 'measured';
   methodEvidence: Record<string, CanvasMethodEvidence>;
   commandStatuses: { same: number; changed: number; unknown: number };
+  // True when the canvas lifetime cap evicted this canvas. The totals above
+  // are still measured and cover every window that was recorded for it, but
+  // its per-window detail, resets and lifecycle events are no longer in the
+  // session, so nothing derived per-window mentions it.
+  windowDetailDropped: boolean;
 }
 
 export interface RecordedEpisodeCanvasSummary {

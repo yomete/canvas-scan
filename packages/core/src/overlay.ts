@@ -290,6 +290,10 @@ button { font: inherit; }
 .finding-boundary > summary { cursor: pointer; color: rgba(255, 255, 255, 0.62); font-size: 11px; }
 .finding-boundary > summary:hover { color: #fff; }
 .finding-boundary[open] > summary { color: rgba(255, 255, 255, 0.86); }
+.finding-quiet { margin-top: 6px; }
+.finding-quiet > summary { cursor: pointer; color: rgba(255, 255, 255, 0.62); font: 11px/16px ui-monospace, monospace; }
+.finding-quiet > summary:hover { color: #fff; }
+.finding-quiet[open] > summary { color: rgba(255, 255, 255, 0.86); margin-bottom: 4px; }
 .finding-truncated { color: #fbbf24; }
 .finding-heading, .session-heading { color: #fff; font: 12px/16px ui-monospace, monospace; }
 .finding-line, .session-line { margin-top: 2px; font: 11px/16px ui-monospace, monospace; }
@@ -1440,6 +1444,14 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   for (const [name, count] of droppedEntries(session)) {
     appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name, count)} dropped`);
   }
+  // A canvas the lifetime cap evicted is a state of its own: its totals are
+  // real and it still appears in the summaries, but nothing derived per window
+  // — episodes, findings, the comparison — can mention it. Say so rather than
+  // let a reader assume the summary list and the findings cover the same set.
+  const summaryOnly = session.canvases.filter(canvas => canvas.windowDetailDropped).length;
+  if (summaryOnly > 0) {
+    appendLine(coverage, 'Coverage', `${summaryOnly} ${summaryOnly === 1 ? 'canvas is' : 'canvases are'} kept as a summary only. The recording reached its canvas limit, so their frame detail was dropped and no finding covers them.`);
+  }
   coverage.hidden = coverage.childElementCount === 0;
   root.append(coverage);
 
@@ -1492,7 +1504,34 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   findingsHeading.textContent = 'FINDINGS';
   findings.append(findingsHeading);
   if (session.findings.length === 0) appendLine(findings, '', 'No findings in this recording.');
-  for (const [index, finding] of session.findings.entries()) findings.append(createFinding(session, finding, index));
+  // A finding with no measured Canvas2D time is still true, so it is kept and
+  // still numbered where the ranking put it. It is just not allowed to pad the
+  // list a reader scrolls to be sure they have seen everything. On a fast
+  // application these are most of the list; on a slow one they are the tail.
+  const ranked: Array<{ finding: InvestigationFinding; index: number }> = [];
+  const quiet: Array<{ finding: InvestigationFinding; index: number }> = [];
+  for (const [index, finding] of session.findings.entries()) {
+    (finding.canvasApiSelfTimeMs > 0 ? ranked : quiet).push({ finding, index });
+  }
+  for (const { finding, index } of ranked) findings.append(createFinding(session, finding, index));
+  if (quiet.length) {
+    const group = document.createElement('details');
+    group.className = 'finding-quiet';
+    const summary = document.createElement('summary');
+    // "more" only reads correctly when there is something above to be more
+    // than. When every finding is empty, say that instead of implying a list
+    // that is not there.
+    summary.textContent = ranked.length === 0
+      ? `${quiet.length} finding${quiet.length === 1 ? '' : 's'}, none with measured time`
+      : `${quiet.length} more finding${quiet.length === 1 ? '' : 's'} with no measured time`;
+    group.append(summary);
+    // Clicking an inspect outline expands the matching card and focuses its
+    // control. That control is not reachable inside a closed disclosure, so
+    // the group opens whenever it holds the expanded card.
+    group.open = quiet.some(({ finding }) => findingKey(finding) === expandedFindingId);
+    for (const { finding, index } of quiet) group.append(createFinding(session, finding, index));
+    findings.append(group);
+  }
   root.append(findings);
   const explanation = document.createElement('div');
   explanation.className = 'explanation-panel';
