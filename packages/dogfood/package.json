@@ -62,7 +62,8 @@
     "corpus:baseline": "node corpus-baseline.mjs",
     "corpus:baseline:test": "node --test corpus-baseline.test.mjs",
     "benchmark:test": "node --test benchmark-score.test.mjs",
-    "benchmark:fixtures:test": "node --test benchmark-fixtures.test.mjs"
+    "benchmark:fixtures:test": "node --test benchmark-fixtures.test.mjs",
+    "minified-attribution:test": "node --test minified-attribution.test.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.50.0"

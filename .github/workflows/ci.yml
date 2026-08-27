@@ -69,6 +69,10 @@ jobs:
       # would catch it: the scorer only checks that the answer key is
       # well-formed, not that the page still behaves the way it describes.
       - run: pnpm --filter dogfood run benchmark:fixtures:test
+      # Attribution against a real minified bundle with a real source map. Both
+      # halves of the excalidraw defect are invisible to the unit suite: they
+      # need a bundler, a source map, and a browser that will fetch it.
+      - run: pnpm --filter dogfood run minified-attribution:test
 
   pack:
     needs: test

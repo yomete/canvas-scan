@@ -1,5 +1,7 @@
 import { getOwnerStack } from 'bippy/source';
 import { findOwnerFiberForCanvas } from './attribution.js';
+import { mapCreationSite } from './draw-callsite.js';
+import { getRecord } from './wrap-context.js';
 import type { SourceLocation } from './types.js';
 
 const sourceLocations = new WeakMap<
@@ -15,7 +17,11 @@ export type SourceOutcome =
 async function resolveUncached(canvas: object): Promise<SourceOutcome> {
   try {
     const owner = findOwnerFiberForCanvas(canvas);
-    if (!owner) return { kind: 'unavailable' };
+    // No fiber anywhere above it: React never made this canvas, so there is no
+    // owner stack to walk. The place the application asked for its context is
+    // the only evidence there is, and mapping it through the application's own
+    // source map is what turns app.min.js:1:48213 into a line somebody wrote.
+    if (!owner) return creationSiteOutcome(canvas);
 
     const stack = await getOwnerStack(owner);
     const frame = stack.find(
@@ -39,6 +45,15 @@ async function resolveUncached(canvas: object): Promise<SourceOutcome> {
   } catch {
     return { kind: 'error' };
   }
+}
+
+async function creationSiteOutcome(canvas: object): Promise<SourceOutcome> {
+  const site = getRecord(canvas)?.creationSite;
+  if (!site) return { kind: 'unavailable' };
+  const mapped = await mapCreationSite(site);
+  // An unmapped site is still a real place. Reporting the generated one beats
+  // reporting nothing, and it is never dressed up as the developer's source.
+  return { kind: 'found', location: mapped ?? site };
 }
 
 export async function resolveSourceOutcome(

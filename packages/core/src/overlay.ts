@@ -938,35 +938,46 @@ function openPopover(canvasId: string): void {
     popover?.querySelector<HTMLButtonElement>('.close')?.focus();
   });
 
-  // Retry when the last answer was "unavailable": that is usually a sourcemap
-  // that was not ready yet, and the user reopening the popover is a request to
-  // ask again. A resolved location is kept.
-  const known = sourceStates.get(canvasId);
-  if (!known || (known.status === 'resolved' && known.location === null)) {
-    sourceErrors.delete(canvasId);
-    sourceStates.set(canvasId, { status: 'resolving' });
-    const canvas = canvases.get(canvasId);
-    const generation = mountGeneration;
-    void resolveSourceOutcome(canvas).then((outcome) => {
-      if (!host || mountGeneration !== generation) return;
-      // Retention can evict this canvas while the lookup is in flight. Writing
-      // a source state back for a canvas the overlay has already pruned would
-      // create an entry nothing prunes again.
-      if (!stats.has(canvasId)) return;
-      if (outcome.kind === 'error') {
-        sourceStates.delete(canvasId);
-        sourceErrors.add(canvasId);
-        markDirty();
-        return;
-      }
-      const location = outcome.kind === 'found' ? outcome.location : null;
-      sourceErrors.delete(canvasId);
-      sourceStates.set(canvasId, { location, status: 'resolved' });
-      setSourceLocation(canvasId, location);
-      markDirty();
-    });
-  }
+  requestSource(canvasId);
   markDirty();
+}
+
+// Asks for one canvas's source location, once. Retries only when the last
+// answer was "unavailable": that is usually a sourcemap that was not ready yet.
+// A resolved location is kept.
+//
+// This is the only thing that fetches a source map outside an explanation, and
+// it never runs on its own — a person opened a popover, or a recording they
+// started produced a finding.
+function requestSource(canvasId: string): void {
+  const known = sourceStates.get(canvasId);
+  if (known && !(known.status === 'resolved' && known.location === null)) return;
+  sourceErrors.delete(canvasId);
+  sourceStates.set(canvasId, { status: 'resolving' });
+  const canvas = canvases.get(canvasId);
+  const generation = mountGeneration;
+  void resolveSourceOutcome(canvas).then((outcome) => {
+    if (!host || mountGeneration !== generation) return;
+    // Retention can evict this canvas while the lookup is in flight. Writing
+    // a source state back for a canvas the overlay has already pruned would
+    // create an entry nothing prunes again.
+    if (!stats.has(canvasId)) return;
+    if (outcome.kind === 'error') {
+      sourceStates.delete(canvasId);
+      sourceErrors.add(canvasId);
+      markDirty();
+      return;
+    }
+    const location = outcome.kind === 'found' ? outcome.location : null;
+    sourceErrors.delete(canvasId);
+    sourceStates.set(canvasId, { location, status: 'resolved' });
+    setSourceLocation(canvasId, location);
+    // The card that names where this canvas was drawn from is already on
+    // screen, and rebuilding the panel would take the reader's focus with it.
+    // updateFinding refreshes the line in place instead.
+    flyoutRevision++;
+    markDirty();
+  });
 }
 
 function findingLabel(type: InvestigationFinding['type']): string {
@@ -1019,8 +1030,19 @@ function findingSummary(finding: InvestigationFinding): string {
   return `${finding.affectedWindowCount} frames · backing store${ratio && ratio !== 1 ? ` up to ${ratio}× larger` : ' larger'} than displayed`;
 }
 
+function setDrawnFrom(line: HTMLElement, session: InvestigationSessionV1, finding: InvestigationFinding): void {
+  const text = findingDrawnFrom(session, finding);
+  line.textContent = text ?? '';
+  line.hidden = text === null;
+}
+
 function findingDrawnFrom(session: InvestigationSessionV1, finding: InvestigationFinding): string | null {
-  const location = sessionCanvas(session, finding.canvasId)?.sourceLocation;
+  // The artifact carries the raw creation site, taken with no network at all.
+  // A mapped location, once one exists, is the same place said in the reader's
+  // own source, so it wins here. The artifact is left as it was recorded.
+  const resolved = sourceStates.get(finding.canvasId);
+  const location = (resolved?.status === 'resolved' ? resolved.location : null)
+    ?? sessionCanvas(session, finding.canvasId)?.sourceLocation;
   if (!location) return null;
   const basename = location.file.split(/[\\/]/).pop() || location.file;
   return `Drawn from ${basename}:${location.line}`;
@@ -1292,8 +1314,13 @@ function createFinding(
   evidence.className = 'finding-evidence';
   evidence.id = `${id}-evidence`;
   appendLine(evidence, '', findingSummary(finding));
-  const drawnFrom = findingDrawnFrom(session, finding);
-  if (drawnFrom) appendLine(evidence, '', drawnFrom);
+  // Always created, because the location can arrive after the card does: the
+  // creation site is known with no network, and its mapping through the
+  // application's source map is not.
+  const drawnFrom = document.createElement('div');
+  drawnFrom.className = 'finding-line finding-drawn-from';
+  setDrawnFrom(drawnFrom, session, finding);
+  evidence.append(drawnFrom);
 
   if (lifecycleEndsRetired(session, finding.canvasId)) {
     const retired = document.createElement('div');
@@ -1385,6 +1412,8 @@ function updateFinding(session: InvestigationSessionV1, finding: InvestigationFi
   const evidence = card.querySelector<HTMLElement>('.finding-evidence');
   if (control) control.setAttribute('aria-expanded', String(expanded));
   if (evidence) evidence.hidden = !expanded;
+  const drawnFrom = card.querySelector<HTMLElement>('.finding-drawn-from');
+  if (drawnFrom) setDrawnFrom(drawnFrom, session, finding);
   const live = canvases.get(finding.canvasId);
   const connected = live instanceof Element && live.isConnected;
   const actions = card.querySelector<HTMLElement>('.finding-actions');
@@ -1521,6 +1550,10 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   const ranked: Array<{ finding: InvestigationFinding; index: number }> = [];
   const quiet: Array<{ finding: InvestigationFinding; index: number }> = [];
   for (const [index, finding] of session.findings.entries()) {
+    // The reader is about to be told a canvas is slow. Ask where it came from
+    // now, so the card can say it in their source rather than in the bundle.
+    // Once per canvas, and the source-map lookup cap still bounds the fetches.
+    requestSource(finding.canvasId);
     (finding.canvasApiSelfTimeMs > 0 ? ranked : quiet).push({ finding, index });
   }
   for (const { finding, index } of ranked) findings.append(createFinding(session, finding, index));

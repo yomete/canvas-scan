@@ -301,6 +301,39 @@ export function captureCreationSite(boundary?: (...args: unknown[]) => unknown):
   return { file: frame.fileName, line: frame.lineNumber, column: frame.columnNumber ?? 0 };
 }
 
+// Maps a creation site through the application's own source map.
+//
+// `app.min.js:1:48213` is a real place and no help. This turns it into the line
+// the developer wrote, which is the difference between a finding that is
+// findable and one that is useful.
+//
+// One capture is shared by every creation site, on purpose. Its lookups are
+// keyed by URL, so the 124 canvases a page makes from one bundle cost one
+// fetch, and MAX_SOURCE_MAP_LOOKUPS still caps the distinct bundles at eight.
+// Every guard the explanation path uses comes with it: same-origin only, a
+// refused redirect, and the response size cap.
+let creationSiteCapture: Capture | null = null;
+export function resetCreationSiteMapsForTests(): void { creationSiteCapture = null; }
+
+export async function mapCreationSite(
+  site: { file: string; line: number; column: number },
+  options: CaptureOptions = {},
+): Promise<{ file: string; line: number; column: number } | null> {
+  creationSiteCapture ??= createDrawCallsiteCapture(options);
+  const capture = creationSiteCapture;
+  const generated = generatedLocation(site.file, site.line, site.column, capture.locationHref);
+  if (!generated) return null;
+  const frame = unresolved(null, generated, 'source-map-load-failed');
+  addFrame(capture, frame, site.file, site.line, site.column, {}, 0);
+  // Mirrors the key addFrame builds, hash stripped, so this finds the lookup it
+  // just created rather than starting a second one.
+  const url = safeResourceUrl(site.file, capture.locationHref);
+  if (url) url.hash = '';
+  const lookup = url ? capture.lookups.get(url.href) : undefined;
+  if (lookup) await lookup.work;
+  return frame.mapped;
+}
+
 export function resolveDrawCallsiteBoundary(capture: Capture, identity: CommandWindowIdentity, windowIndex: number): void {
   capture.resolvedWindows.set(identity, windowIndex);
   for (const [sample, target] of capture.targets) if (target === identity) { sample.windowIndex = windowIndex; capture.targets.delete(sample); }
