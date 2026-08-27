@@ -9,7 +9,7 @@
 // retirement, the commit loop, sampling, the timing of instrumented calls.
 //
 // Run: node scripts/browser-tests.mjs   (needs apps/demo/dist to be built)
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { launch, serve } from './browser-driver.mjs';
 
@@ -279,6 +279,31 @@ check('a sampled recording keeps its totals and its grouping', 'sampling', `
   };
 `);
 
+// ---------------------------------------------------------------- injection
+// Runs against a blank page with the IIFE bundle installed at document-start,
+// so it needs neither the demo nor its helpers.
+const IIFE = fileURLToPath(new URL('../packages/core/dist/canvas-scan.iife.js', import.meta.url));
+const injectionCheck = {
+  name: 'installs from a document-start injection without losing the API',
+  body: `
+    return {
+      readyStateAtInjection: window.__INJECT_PROBE__?.readyState ?? null,
+      hadDocumentElement: window.__INJECT_PROBE__?.hasDocElement ?? null,
+      installed: !!window.__CANVAS_SCAN__,
+      overlayMounted: !!document.querySelector('[data-canvas-scan]'),
+      getContextWrapped: !/native code/.test(HTMLCanvasElement.prototype.getContext.toString()),
+    };
+  `,
+  expect: r => [
+    // If the document element already existed the case under test did not
+    // happen, and a pass would mean nothing.
+    [r.hadDocumentElement === false, `injection ran too late to test anything (readyState ${r.readyStateAtInjection})`],
+    [r.getContextWrapped === true, 'the canvas patch did not install'],
+    [r.installed === true, 'the prototypes were patched but no API was installed — all of the overhead, none of the tool'],
+    [r.overlayMounted === true, 'the overlay never mounted once the document arrived'],
+  ],
+};
+
 // ---------------------------------------------------------------- runner
 const EXPECTATIONS = {
   'overlay mounts and stays quiet on the console': r => [
@@ -349,6 +374,33 @@ const EXPECTATIONS = {
 const { server, port } = await serve(DIST);
 let failures = 0;
 let ran = 0;
+
+{
+  const { name, body, expect } = injectionCheck;
+  const initScript = `window.__INJECT_PROBE__ = { readyState: document.readyState, hasDocElement: !!document.documentElement };\n${readFileSync(IIFE, 'utf8')}`;
+  // /__blank has no canvas-scan of its own, so nothing can stand in for the
+  // injected copy if it fails.
+  const browser = await launch(`http://127.0.0.1:${port}/__blank`, { initScript });
+  try {
+    const result = await browser.evaluate(body);
+    const problems = expect(result).filter(([ok]) => !ok).map(([, message]) => message);
+    ran++;
+    if (problems.length) {
+      failures++;
+      console.log(`FAIL  ${name}`);
+      for (const problem of problems) console.log(`        ${problem}`);
+      console.log(`        result: ${JSON.stringify(result)}`);
+    } else {
+      console.log(`ok    ${name}`);
+    }
+  } catch (error) {
+    failures++;
+    ran++;
+    console.log(`ERROR ${name}\n        ${error.message.split('\n')[0]}`);
+  } finally {
+    await browser.close();
+  }
+}
 
 for (const { name, page, body } of checks) {
   const url = `http://127.0.0.1:${port}/${page === 'index' ? '' : page + '.html'}`;

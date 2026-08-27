@@ -1684,7 +1684,9 @@ function renderFlyout(): void {
 
 function refresh(): void {
   if (host && !host.isConnected) {
-    (document.body ?? document.documentElement).append(host);
+    // Optional: a commit can land before the document element exists when
+    // canvas-scan is injected at document-start. attachHost owns the retry.
+    (document.body ?? document.documentElement)?.append(host);
   }
   // Per-canvas overlay state must not outlive the core's retention. Read the
   // core's map directly rather than copying its keys: this runs on every
@@ -2174,6 +2176,32 @@ function handleReport(report: DrawBatchReport, canvas: unknown): void {
   markDirty();
 }
 
+// Injected at document-start — by a browser extension, or by an automation
+// harness through addInitScript or Page.addScriptToEvaluateOnNewDocument —
+// canvas-scan runs before the document element exists, so there is nothing to
+// append to yet. Appending anyway threw, and because start() sets its global
+// only after mounting, the throw left the Canvas2D prototypes patched with no
+// API and no overlay: all of the overhead and none of the tool.
+//
+// The script-tag position the README documents is not affected, because the
+// document element exists by the time a script in <head> runs. Waiting for the
+// document covers the earlier position too.
+function attachHost(element: HTMLElement): void {
+  const parent = document.body ?? document.documentElement;
+  if (parent) {
+    parent.append(element);
+    return;
+  }
+  const attachWhenReady = () => {
+    document.removeEventListener('DOMContentLoaded', attachWhenReady);
+    // mountOverlay may have been torn down before the document arrived.
+    if (host !== element) return;
+    (document.body ?? document.documentElement)?.append(element);
+    markDirty();
+  };
+  document.addEventListener('DOMContentLoaded', attachWhenReady);
+}
+
 export function mountOverlay(options: CanvasScanOptions = {}): void {
   if (typeof document === 'undefined' || host) return;
   mountGeneration++;
@@ -2358,7 +2386,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   dock.append(flyout, popover, toolbar);
   shadowRoot.append(outlineLayer, dock);
 
-  (document.body ?? document.documentElement).append(host);
+  attachHost(host);
   document.addEventListener('keydown', handleKeydown);
   unsubscribe = subscribeToReports(handleReport);
   if (getRecordingState() === 'complete') {

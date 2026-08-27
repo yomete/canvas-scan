@@ -19,9 +19,22 @@ const CONTENT_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
+// A page with a canvas and no canvas-scan in it. The injection check must not
+// run against the demo, because the demo imports canvas-scan itself: that
+// second copy installs successfully once the document exists and sets the
+// global, which would hide an injected copy failing outright.
+const BLANK_PAGE = `<!doctype html><html><head><title>blank</title></head>
+<body><canvas id="blank-canvas" width="200" height="100"></canvas>
+<script>const c=document.getElementById('blank-canvas').getContext('2d');c.fillRect(0,0,10,10);c.fillRect(20,0,10,10);</script>
+</body></html>`;
+
 export function serve(root) {
   const server = createServer((request, response) => {
     const path = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    if (path === '/__blank') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(BLANK_PAGE);
+      return;
+    }
     // normalize() collapses any ".." before the join, so a request cannot
     // escape the directory being served.
     const file = join(root, normalize(path === '/' ? '/index.html' : path));
@@ -55,7 +68,10 @@ function chromeBinary() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function launch(url) {
+// `initScript` is evaluated before any page script, which is the position a
+// browser extension or an automation harness installs from. It is a harsher
+// position than a script tag: the document element does not exist yet.
+export async function launch(url, { initScript } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'canvas-scan-browser-'));
   const port = 9400 + Math.floor(process.pid % 500);
   const chrome = spawn(chromeBinary(), [
@@ -113,9 +129,14 @@ export async function launch(url) {
     });
   };
 
-  const { targetId } = await send('Target.createTarget', { url });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
   pageSession = (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
   await send('Runtime.enable', {}, pageSession);
+  await send('Page.enable', {}, pageSession);
+  if (initScript) {
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: initScript }, pageSession);
+  }
+  await send('Page.navigate', { url }, pageSession);
   await sleep(1200);
 
   return {

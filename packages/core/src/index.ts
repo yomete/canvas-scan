@@ -74,7 +74,17 @@ export function start(options: CanvasScanOptions = {}): void {
   if (options.skipOwners?.length) addSkippedOwners(options.skipOwners);
   configureRecording(options);
   startFrameLoop(options);
-  if (options.overlay !== false) mountOverlay(options);
+  // The overlay is the convenience; the API is the tool. A failure mounting
+  // one must not cost the other. Before this, an overlay throw left the
+  // Canvas2D prototypes patched with no global at all — every bit of the
+  // overhead and no way to record, silently.
+  if (options.overlay !== false) {
+    try {
+      mountOverlay(options);
+    } catch (error) {
+      console.warn('[canvas-scan] the overlay could not be mounted; the API is still available', error);
+    }
+  }
   (window as any).__CANVAS_SCAN__ = {
     version: '0.6.2',
     getHistory,
