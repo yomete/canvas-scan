@@ -170,6 +170,10 @@ Read one back with:
 node packages/dogfood/read-handoff.mjs path/to/handoff.jsonl
 ```
 
+## For coding agents
+
+`skills/canvas-scan/SKILL.md` is an agent skill that teaches the record, explain, change, compare workflow, how to read each finding type, and which code change matches each one. Copy the `skills/canvas-scan` directory into your agent's skills directory, or point the agent at it.
+
 ## The artifacts
 
 `InvestigationSessionV1`, `ExplanationArtifactV1`, and `ComparisonArtifactV1` are versioned plain JSON: session metadata, browser features, canvases, windows, reset and lifecycle events, episodes, browser evidence entries, findings, collection limits, and dropped-entry counts. Every finding carries a `claimBoundary` stating what the evidence cannot prove and a `nextCheck` naming the next useful step.
