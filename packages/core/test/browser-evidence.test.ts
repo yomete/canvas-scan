@@ -6,7 +6,7 @@ const types = ['pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'keyd
 type Fake = { callback: (list: { getEntries(): unknown[] }) => void; entries: unknown[]; observed: unknown[]; disconnected: number; throwDisconnect?: boolean };
 let observers: Fake[] = [];
 class FakeObserver {
-  static supportedEntryTypes: string[] = ['event', 'long-animation-frame'];
+  static supportedEntryTypes: string[] = ['event', 'long-animation-frame', 'mark', 'measure'];
   value: Fake;
   constructor(callback: Fake['callback']) { this.value = { callback, entries: [], observed: [], disconnected: 0 }; observers.push(this.value); }
   observe(options: unknown): void { this.value.observed.push(options); }
@@ -29,11 +29,11 @@ describe('browser evidence', () => {
   it('uses independent feature flags, options, and cleanup', () => {
     install(); const add = vi.spyOn(document, 'addEventListener'); const remove = vi.spyOn(document, 'removeEventListener');
     expect(startBrowserEvidence(0)).toEqual({ eventTiming: true, longAnimationFrames: true });
-    expect(observers.map(item => item.observed[0])).toEqual([{ type: 'event', buffered: true, durationThreshold: 16 }, { type: 'long-animation-frame', buffered: true }]);
+    expect(observers.map(item => item.observed[0])).toEqual([{ type: 'event', buffered: true, durationThreshold: 16 }, { type: 'long-animation-frame', buffered: true }, { type: 'mark', buffered: true }, { type: 'measure', buffered: true }]);
     expect(add.mock.calls.filter(([type, , capture]) => types.includes(type as string) && capture === true)).toHaveLength(types.length);
     remove.mockClear();
     stopBrowserEvidence(20);
-    expect(observers.map(item => item.disconnected)).toEqual([1, 1]);
+    expect(observers.map(item => item.disconnected)).toEqual([1, 1, 1, 1]);
     expect(remove.mock.calls.filter(([type, , capture]) => types.includes(type as string) && capture === true)).toHaveLength(types.length);
   });
 
@@ -109,6 +109,17 @@ describe('browser evidence', () => {
     expect(marks).toMatchObject([{ label: 'step 1 step 2' }, { label: 'a b c' }]);
   });
 
+  it('records page marks and measures as user marks and skips its own entries', () => {
+    install(); startBrowserEvidence(10);
+    observers[2].entries.push({ name: 'pan-start', startTime: 12, duration: 0 }, { name: 'canvas-scan:recording-start', startTime: 10, duration: 0 }, { name: 'before', startTime: 5, duration: 0 });
+    observers[3].entries.push({ name: 'pan', startTime: 12, duration: 30 }, { name: 'canvas-scan:episode-1', startTime: 12, duration: 5 }, { get name() { throw new Error('bad'); } });
+    const marks = stopBrowserEvidence(50).entries.filter(entry => entry.kind === 'user-mark');
+    expect(marks).toEqual([
+      { entryId: 'browser-evidence-1', kind: 'user-mark', startedAtTimestampMs: 12, endedAtTimestampMs: 12, label: 'pan-start' },
+      { entryId: 'browser-evidence-2', kind: 'user-mark', startedAtTimestampMs: 12, endedAtTimestampMs: 42, label: 'pan' },
+    ]);
+  });
+
   it('copies every bounded long-frame script field', () => {
     install(); startBrowserEvidence(0);
     observers[1].entries.push({ startTime: 1, duration: 60, blockingDuration: 10, scripts: Array.from({ length: 21 }, (_, index) => ({ invoker: index === 0 ? 'BUTTON#private.primary[data-secret=value].onpointerdown' : index === 1 ? 'button#private.primary[data-secret=value].onpointerup' : index === 2 ? 'svg#private.icon[data-secret=value].onclick' : ` i${index}\u0000 `, invokerType: ' event-listener ', sourceURL: 'https://x.test/a.js?q=private#fragment', sourceFunctionName: '🙂'.repeat(201), executionStart: 2, duration: index, forcedStyleAndLayoutDuration: 3, pauseDuration: 4 })) });
@@ -153,7 +164,7 @@ describe('browser evidence', () => {
   it('ignores observer callbacks retained across stop, reset, and restart', () => {
     install(); startBrowserEvidence(0); const stopped = observers[0]; stopBrowserEvidence(10);
     startBrowserEvidence(20); stopped.callback({ getEntries: () => [{ name: 'pointerdown', startTime: 21, duration: 2 }] });
-    const reset = observers[2]; resetBrowserEvidence(); startBrowserEvidence(30);
+    const reset = observers[4]; resetBrowserEvidence(); startBrowserEvidence(30);
     reset.callback({ getEntries: () => [{ name: 'pointerup', startTime: 31, duration: 2 }] });
     expect(stopBrowserEvidence(40).entries).toEqual([]);
   });

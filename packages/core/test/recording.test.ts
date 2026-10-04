@@ -50,7 +50,7 @@ function installPerformanceEntries(entriesByType: Record<string, Array<Record<st
   vi.stubGlobal('PerformanceObserver', FakePerformanceObserver);
 }
 
-afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { resetRecordingForTests(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); performance.clearMarks(); performance.clearMeasures(); });
 
 describe('recording', () => {
   it('starts idle and has no session or no-op stop', () => {
@@ -61,7 +61,11 @@ describe('recording', () => {
 
   it('creates the exact deterministic fixture session', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-08-04T10:00:00.000Z'));
-    const now = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(1000);
+    // After the start and stop reads, the clock steps by 0.1 ms so the
+    // resolution probe at stop measures a fixed tick.
+    let clock = 1000;
+    const now = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(1000).mockImplementation(() => (clock += 0.1));
+    vi.spyOn(performance, 'timeOrigin', 'get').mockReturnValue(1785837600000);
     startRecording();
     publish(makeReport('canvas-a', 'same'), 1);
     publish(makeReport('canvas-b', 'unknown', { sampled: true, canvasApiSelfTimeMs: 0.25 }), 2);
@@ -110,6 +114,18 @@ describe('recording', () => {
     expect(second.browserEntries).toEqual([]);
     expect(getLastSession()!.browserEntries).toEqual([]);
     expect(JSON.parse(JSON.stringify(first))).toEqual(first);
+  });
+
+  it('writes User Timing entries for a trace and keeps the page\'s own measure with its duration', () => {
+    startRecording();
+    expect(performance.getEntriesByName('canvas-scan:recording-start', 'mark')).toHaveLength(1);
+    const start = performance.now();
+    performance.measure('pan', { start, end: start + 30 });
+    publish(makeReport('canvas-a'), 1);
+    const session = stopRecording()!;
+    expect(session.timeOrigin).toBe(performance.timeOrigin);
+    expect(session.browserEntries.filter(entry => entry.kind === 'user-mark')).toEqual([expect.objectContaining({ label: 'pan', startedAtTimestampMs: start, endedAtTimestampMs: start + 30 })]);
+    expect(performance.getEntriesByName('canvas-scan:episode-1', 'measure')).toHaveLength(1);
   });
 
   it('associates one inclusive entry with every overlap without changing it or a nearby entry', () => {
@@ -430,11 +446,12 @@ describe('recording', () => {
     expect(session.canvases.filter(canvas => canvas.windowDetailDropped).map(canvas => canvas.canvasId).sort()).toEqual(['canvas-1', 'canvas-2']);
     expect(session.canvases.find(canvas => canvas.canvasId === 'canvas-1')).toMatchObject({ activeWindowCount: 1, rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, maxWindowSelfTimeMs: 0.5, commandStatuses: { same: 1, changed: 0, unknown: 0 } });
     // The windows themselves are gone, so nothing derived per window mentions
-    // those canvases and the dropped count says how many frames went.
+    // those canvases. Their frames were folded into the totals, not lost, so
+    // the dropped counts do not name them.
     expect(session.windows.some(window => window.canvasId === 'canvas-1' || window.canvasId === 'canvas-2')).toBe(false);
     expect(session.windows.every(window => session.canvases.some(canvas => canvas.canvasId === window.canvasId))).toBe(true);
     expect(session.findings.some(finding => finding.canvasId === 'canvas-1' || finding.canvasId === 'canvas-2')).toBe(false);
-    expect(session.droppedEntryCounts).toMatchObject({ canvasWindowReports: 2, canvasLifetimes: 0 });
+    expect(session.droppedEntryCounts).toMatchObject({ canvasWindowReports: 0, canvasLifetimes: 0 });
   });
 
   it('counts an evicted canvas with no window to summarize as a dropped lifetime', () => {
@@ -461,6 +478,16 @@ describe('recording', () => {
     expect(session.canvases.filter(canvas => canvas.canvasId === 'returning')).toHaveLength(1);
     expect(returning).toMatchObject({ activeWindowCount: 2, rasterOperationCount: 2, canvasApiSelfTimeMs: 1, windowDetailDropped: true });
     expect(session.windows.filter(window => window.canvasId === 'returning')).toHaveLength(1);
+  });
+
+  // A per-method self-time delta below the clock tick is which calls straddled
+  // a tick. The session carries the floor so a reader can check against it.
+  it('records cross-origin isolation and the measured timer resolution', () => {
+    startRecording(); publish(makeReport(), 1);
+    const session = stopRecording()!;
+    expect(session.crossOriginIsolated).toBe(false);
+    expect(session.timerResolutionMs).toBeGreaterThan(0);
+    expect(Number.isFinite(session.timerResolutionMs)).toBe(true);
   });
 
   it('returns deep copies, JSON-only values, and JSON round trips', () => {

@@ -30,6 +30,7 @@ type Capture = {
   resolvedWindows: WeakMap<CommandWindowIdentity, number>;
   firstRaster: boolean;
   firstDifferences: Set<CommandWindowIdentity>;
+  heaviestMethods: Set<CommandWindowIdentity>;
   targets: Map<ExplanationStackSample, CommandWindowIdentity>;
   lookups: Map<string, Lookup>;
   locationHref: string;
@@ -248,7 +249,7 @@ function automaticStack(stackBoundary?: (...args: unknown[]) => unknown): { rawS
 export function createDrawCallsiteCapture(options: CaptureOptions = {}): Capture {
   const locationHref = options.locationHref ?? (typeof location === 'undefined' ? 'http://localhost/' : location.href);
   const captureFetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  return { stacks: [], dropped: { stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 }, firstAffected: {}, resolvedWindows: new WeakMap(), firstRaster: false, firstDifferences: new Set(), targets: new Map(), lookups: new Map(), locationHref, fetch: captureFetch, active: true };
+  return { stacks: [], dropped: { stackSamples: 0, stackFrames: 0, sourceMapLookups: 0, sourceMapResponses: 0 }, firstAffected: {}, resolvedWindows: new WeakMap(), firstRaster: false, firstDifferences: new Set(), heaviestMethods: new Set(), targets: new Map(), lookups: new Map(), locationHref, fetch: captureFetch, active: true };
 }
 export function captureDrawCallsite(capture: Capture, target: CommandWindowIdentity, commandOrdinal: number, reasons: Reason[], rawStack?: string, stackBoundary?: (...args: unknown[]) => unknown): void {
   if (!capture.active) return;
@@ -347,6 +348,11 @@ export function shouldCaptureFirstRaster(capture: Capture): boolean {
 export function shouldCaptureFirstDifference(capture: Capture, identity: CommandWindowIdentity): boolean {
   if (capture.firstDifferences.has(identity)) return false;
   capture.firstDifferences.add(identity);
+  return true;
+}
+export function shouldCaptureHeaviestMethod(capture: Capture, identity: CommandWindowIdentity): boolean {
+  if (capture.heaviestMethods.has(identity)) return false;
+  capture.heaviestMethods.add(identity);
   return true;
 }
 function dropPendingSamples(capture: Capture): void {

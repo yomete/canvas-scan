@@ -3,6 +3,7 @@ import type {
   ComparisonFindingRef,
   ComparisonMeasure,
   ComparisonMeasureId,
+  ComparisonSpan,
   InvestigationSessionV1,
   SessionFindingPairing,
 } from './types.js';
@@ -52,7 +53,33 @@ function metadata(baseline: unknown, candidate: unknown, pairing: UnknownRecord)
 }
 
 function incomparable(baseline: unknown, candidate: unknown, pairing: UnknownRecord, reason: IncomparableReason): ComparisonArtifactV1 {
-  return { schemaVersion: 1, ...metadata(baseline, candidate, pairing), pairingMethod: 'user-selected', baseline: ref(baseline, pairing.baselineFindingIndex), candidate: ref(candidate, pairing.candidateFindingIndex), status: 'incomparable', incomparableReasons: [reason], measures: [], improvementEstablished: false };
+  return { schemaVersion: 1, ...metadata(baseline, candidate, pairing), pairingMethod: 'user-selected', baseline: ref(baseline, pairing.baselineFindingIndex), candidate: ref(candidate, pairing.candidateFindingIndex), status: 'incomparable', incomparableReasons: [reason], measures: [], ...spans(record(baseline), record(candidate)), ...coverage(record(baseline), record(candidate)), improvementEstablished: false };
+}
+
+// Session-scoped measures are raw totals over whatever each recording covered,
+// and two hand-driven recordings rarely cover the same span. The artifact
+// carries each side's length, and says so when one side ran markedly longer or
+// drew markedly more episodes than the other, so a delta between the totals is
+// not read as a change on its own.
+function marks(session: UnknownRecord): UnknownRecord[] { return browserEntries(session, 'user-mark').filter(entry => text(entry.label) && number(entry.startedAtTimestampMs)); }
+function span(session: UnknownRecord | undefined): ComparisonSpan {
+  const episodes = array(session?.episodes);
+  return { durationMs: number(session?.durationMs) ? session.durationMs : null, episodeCount: episodes ? episodes.length : null, userMarkCount: session && array(session.browserEntries) ? marks(session).length : null };
+}
+function apart(left: number | null, right: number | null): boolean { return left !== null && right !== null && Math.abs(left - right) > 0.2 * Math.max(left, right); }
+function covers(value: ComparisonSpan): string { return `${value.durationMs === null ? 'an unknown duration' : `${value.durationMs} ms`} and ${value.episodeCount === null ? 'an unknown number of' : value.episodeCount} draw episodes`; }
+function spans(left: UnknownRecord | undefined, right: UnknownRecord | undefined): Pick<ComparisonArtifactV1, 'span' | 'spanMismatch'> {
+  const baseline = span(left); const candidate = span(right);
+  const mismatch = apart(baseline.durationMs, candidate.durationMs) || apart(baseline.episodeCount, candidate.episodeCount);
+  return { span: { baseline, candidate }, spanMismatch: mismatch ? `The baseline covers ${covers(baseline)}; the candidate covers ${covers(candidate)}. Session-scoped totals are not on one scale. Read measures scoped to the selected finding's draw episode where available.` : null };
+}
+
+// A canvas the lifetime cap evicted is kept as a summary and has no frames to
+// compare. The artifact says how many such canvases each side left out.
+function summaryOnly(session: UnknownRecord | undefined): number { return (array(session?.canvases) ?? []).filter(item => record(item)?.windowDetailDropped === true).length; }
+function coverage(left: UnknownRecord | undefined, right: UnknownRecord | undefined): Pick<ComparisonArtifactV1, 'coverageNote'> {
+  const baseline = summaryOnly(left); const candidate = summaryOnly(right);
+  return { coverageNote: baseline + candidate === 0 ? null : `${baseline} ${baseline === 1 ? 'canvas' : 'canvases'} in the baseline and ${candidate} in the candidate were summary-only and were not compared.` };
 }
 
 function statuses(value: unknown): UnknownRecord | undefined {
@@ -82,7 +109,11 @@ function canvas(session: UnknownRecord, finding: UnknownRecord): UnknownRecord |
 
 function validCanvas(value: UnknownRecord | undefined): value is UnknownRecord {
   const commandStatuses = statuses(value?.commandStatuses);
-  return !!value && text(value.canvasId) && count(value.activeWindowCount) && count(value.rasterOperationCount) && number(value.canvasApiSelfTimeMs) && number(value.maxWindowSelfTimeMs)
+  // A canvas the lifetime cap evicted keeps its totals and loses its frames,
+  // and what the comparison needs is the frames. The refusal is per canvas:
+  // the selected canvas in that state is refused, and any other summary-only
+  // canvas in the session is left out and counted in the coverage note.
+  return !!value && text(value.canvasId) && value.windowDetailDropped !== true && count(value.activeWindowCount) && count(value.rasterOperationCount) && number(value.canvasApiSelfTimeMs) && number(value.maxWindowSelfTimeMs)
     && !!commandStatuses && commandStatuses.same as number + (commandStatuses.changed as number) + (commandStatuses.unknown as number) === value.activeWindowCount && !!methods(value.methodEvidence);
 }
 
@@ -94,12 +125,11 @@ function validSession(value: UnknownRecord): boolean {
   const dropped = record(value.droppedEntryCounts);
   return text(value.sessionId) && date(value.endedAt) && text(value.canvasScanVersion) && Array.isArray(value.findings) && Array.isArray(value.canvases)
     && !!dropped && count(dropped.canvasWindowReports) && count(dropped.canvasLifetimes) && count(dropped.resetEvents)
-    && dropped.canvasWindowReports === 0 && dropped.canvasLifetimes === 0
-    // A canvas the lifetime cap evicted keeps its totals and loses its frames.
-    // That is still a truncated recording. It was refused when eviction forgot
-    // the canvas outright, and it stays refused now that eviction keeps a
-    // summary — what the comparison needs is the frames.
-    && (value.canvases as unknown[]).every(item => record(item)?.windowDetailDropped !== true);
+    // canvasWindowReports counts frames the window cap dropped from a canvas
+    // still in the session, so any count is a truncated recording. A dropped
+    // lifetime is a canvas with no frames that was forgotten; it cannot be the
+    // selected canvas, so it does not refuse the session.
+    && dropped.canvasWindowReports === 0;
 }
 
 function validHeavy(finding: UnknownRecord): boolean {
@@ -143,6 +173,15 @@ function measure(id: ComparisonMeasureId, unit: MeasureUnit, baseline: number | 
   return { id, unit, baseline, candidate, delta, direction: delta === null ? 'unknown' : delta > 0 ? 'increased' : delta < 0 ? 'decreased' : 'unchanged', interpretation: unit === 'ms' ? 'observed-timing-pair' : 'structural', scope };
 }
 
+// Browser evidence is recorded for the whole session, so both measures are
+// session scoped. A browser that did not supply the feature reports null: a
+// zero here would read as a recording with no slow interaction.
+function browserEntries(session: UnknownRecord, kind: string): UnknownRecord[] { return (array(session.browserEntries) ?? []).map(record).filter((entry): entry is UnknownRecord => entry?.kind === kind); }
+function worstInteraction(session: UnknownRecord): number | null {
+  if (record(session.browserFeatures)?.eventTiming !== true) return null;
+  return browserEntries(session, 'event-timing').reduce((worst, entry) => number(entry.durationMs) && entry.durationMs > worst ? entry.durationMs : worst, 0);
+}
+function longFrames(session: UnknownRecord): number | null { return record(session.browserFeatures)?.longAnimationFrames === true ? browserEntries(session, 'long-animation-frame').length : null; }
 function skippedGaps(finding: UnknownRecord): number { return (finding.repeatedWindows as unknown[]).reduce<number>((total, item) => total + Math.max(0, (record(item)!.comparisonGap as number) - 1), 0); }
 function maximumRatio(finding: UnknownRecord): number { return Math.max(...(finding.affectedWindows as unknown[]).map(item => record(item)!.actualToExpectedAreaRatio as number)); }
 function unknown(finding: UnknownRecord, summary: UnknownRecord): number {
@@ -174,12 +213,13 @@ export function compareSessions(baseline: InvestigationSessionV1, candidate: Inv
   if (!validSession(leftSession) || !validSession(rightSession) || !validCanvas(leftCanvas) || !validCanvas(rightCanvas) || !validFinding(left, leftSession) || !validFinding(right, rightSession)) return incomparable(baseline, candidate, selectedPairing, 'incomplete-evidence');
   const leftMethods = methods(left.type === 'heavy-canvas-work' ? left.topMethods : leftCanvas.methodEvidence); const rightMethods = methods(right.type === 'heavy-canvas-work' ? right.topMethods : rightCanvas.methodEvidence);
   if (!leftMethods || !rightMethods) return incomparable(baseline, candidate, selectedPairing, 'incomplete-evidence');
-  const result: ComparisonMeasure[] = [measure('active-window-count', 'count', leftCanvas.activeWindowCount as number, rightCanvas.activeWindowCount as number), measure('raster-operation-count', 'count', leftCanvas.rasterOperationCount as number, rightCanvas.rasterOperationCount as number), measure('canvas-api-self-time-ms', 'ms', leftCanvas.canvasApiSelfTimeMs as number, rightCanvas.canvasApiSelfTimeMs as number), measure('maximum-window-self-time-ms', 'ms', leftCanvas.maxWindowSelfTimeMs as number, rightCanvas.maxWindowSelfTimeMs as number)];
+  const length = spans(leftSession, rightSession);
+  const result: ComparisonMeasure[] = [measure('active-window-count', 'count', leftCanvas.activeWindowCount as number, rightCanvas.activeWindowCount as number), measure('raster-operation-count', 'count', leftCanvas.rasterOperationCount as number, rightCanvas.rasterOperationCount as number), measure('canvas-api-self-time-ms', 'ms', leftCanvas.canvasApiSelfTimeMs as number, rightCanvas.canvasApiSelfTimeMs as number), measure('maximum-window-self-time-ms', 'ms', leftCanvas.maxWindowSelfTimeMs as number, rightCanvas.maxWindowSelfTimeMs as number), measure('worst-interaction-duration-ms', 'ms', worstInteraction(leftSession), worstInteraction(rightSession)), measure('long-animation-frame-count', 'count', longFrames(leftSession), longFrames(rightSession))];
   // Per-method evidence comes from the finding's episode for heavy-canvas-work
   // and from the whole session for the other three types, so each measure says
   // which span it covers rather than reading alike for both.
   const methodScope = left.type === 'heavy-canvas-work' ? 'episode' : 'session';
   for (const name of [...new Set([...leftMethods.keys(), ...rightMethods.keys()])].sort()) { const leftMethod = leftMethods.get(name); const rightMethod = rightMethods.get(name); result.push(measure(`method:${name}:operation-count`, 'count', leftMethod?.count ?? 0, rightMethod?.count ?? 0, methodScope), measure(`method:${name}:self-time-ms`, 'ms', leftMethod ? leftMethod.time : 0, rightMethod ? rightMethod.time : 0, methodScope)); }
   result.push(measure('unknown-command-window-count', 'count', unknown(left, leftCanvas), unknown(right, rightCanvas), left.type === 'repeated-draw-work' ? 'episode' : 'session'), ...findingMeasures(left, right));
-  return { schemaVersion: 1, ...metadata(baseline, candidate, selectedPairing), pairingMethod: 'user-selected', baseline: ref(baseline, selectedPairing.baselineFindingIndex), candidate: ref(candidate, selectedPairing.candidateFindingIndex), status: 'comparable', incomparableReasons: [], measures: result, improvementEstablished: false };
+  return { schemaVersion: 1, ...metadata(baseline, candidate, selectedPairing), pairingMethod: 'user-selected', baseline: ref(baseline, selectedPairing.baselineFindingIndex), candidate: ref(candidate, selectedPairing.candidateFindingIndex), status: 'comparable', incomparableReasons: [], measures: result, ...length, ...coverage(leftSession, rightSession), improvementEstablished: false };
 }

@@ -959,6 +959,18 @@ status line in both READMEs, and the `readVersion` expectation in
 `test/cli.test.ts`; tag; and have Yomi run `pnpm publish --filter canvas-scan`
 (he publishes — this agent never handles npm credentials).
 
+Run `npm whoami` first. The login-session token in `~/.npmrc` expires, and a
+dead token does not fail as an auth error: it surfaces as a plain 401, or as
+`404 Not Found - PUT https://registry.npmjs.org/canvas-scan` for a package that
+exists and that we own. Two releases burned an OTP-protected publish attempt on
+this. An automation-scoped token would remove the expiry entirely.
+
+Verify the publish through the version-specific endpoint, not `npm view`. This
+machine runs Aikido, which blocks npm packages younger than 24 hours, so the
+packument omits the release you just shipped and the tarball downloads as a
+vetting block page. Compare `curl https://registry.npmjs.org/canvas-scan/<version>`
+`.dist.shasum` against `shasum -a 1` of the local `.tgz`.
+
 ### Also still open, unchanged
 
 - `records` is never pruned in `wrap-context.ts`. Memory and CPU only.

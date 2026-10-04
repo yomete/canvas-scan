@@ -16,6 +16,21 @@ const viteEntries = [
   'src/index.js',
 ];
 
+// The file init writes reaches production builds too. The guard has to stay
+// synchronous: a dynamic import evaluates after the app's own imports and
+// after React, which is exactly the late load warnIfLate reports. The Next
+// require sits on its own line so hasImport still finds it on a re-run.
+const productionGuidance = {
+  next: `Keep it out of production: replace the import in instrumentation-client.ts with
+  if (process.env.NODE_ENV === 'development') {
+    require('canvas-scan/auto');
+  }
+Next drops the dead branch from production builds. Do not use a dynamic import: it loads after React. See "Keep it out of production" in the README.`,
+  vite: `Keep it out of production: keep the import first, and alias it to an empty module in vite.config when command === 'build':
+  resolve: { alias: command === 'build' ? { 'canvas-scan/auto': 'data:text/javascript,' } : {} }
+Do not use a dynamic import: it loads after React. See "Keep it out of production" in the README.`,
+};
+
 export function detectFramework(dir) {
   const dependencies = readDependencies(dir);
 
@@ -305,6 +320,9 @@ export function run(args) {
     }
     if (!printed.includes(result.message)) {
       console.log(result.message);
+    }
+    if (result.changed) {
+      console.log(productionGuidance[plan.framework]);
     }
   }
 

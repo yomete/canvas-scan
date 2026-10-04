@@ -15,6 +15,7 @@ let entries: RecordedBrowserEvidenceEntry[] = [];
 let sequence = 0;
 let eventObserver: ObserverLike | undefined;
 let longFrameObserver: ObserverLike | undefined;
+let userTimingObservers: ObserverLike[] = [];
 let generation = 0;
 let features: FeatureFlags = { eventTiming: false, longAnimationFrames: false };
 let dropped: DropCounts = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
@@ -89,8 +90,19 @@ function processLongFrame(entry: EntryLike, rangeEnd: number): void {
     add({ entryId: nextId(), kind: 'long-animation-frame', startedAtTimestampMs: range.start, endedAtTimestampMs: range.end, durationMs: duration, blockingDurationMs: finite(read(entry, 'blockingDuration')) ?? 0, scripts: source.slice(0, MAX_SCRIPTS).map(copyScript), droppedScriptAttributionCount: Math.max(0, source.length - MAX_SCRIPTS) });
   } catch {}
 }
+// A page mark or measure from the User Timing API joins the session as a
+// user-mark, so the app's own performance.measure('pan') lines up with the
+// episodes. The tool's own canvas-scan: entries are skipped so a recording
+// does not record itself.
+function processUserTiming(entry: EntryLike, rangeEnd: number): void {
+  try {
+    const label = clean(read(entry, 'name'), 80); const range = entryRange(entry);
+    if (!label || label.startsWith('canvas-scan:') || !range || !overlaps(range.start, range.end, rangeEnd)) return;
+    add({ entryId: nextId(), kind: 'user-mark', startedAtTimestampMs: range.start, endedAtTimestampMs: range.end, label });
+  } catch {}
+}
 function disconnect(observer: ObserverLike | undefined): void { try { observer?.disconnect(); } catch {} }
-function makeObserver(type: 'event' | 'long-animation-frame', process: (entry: EntryLike, rangeEnd: number) => void, owner: number): ObserverLike | undefined {
+function makeObserver(type: 'event' | 'long-animation-frame' | 'mark' | 'measure', process: (entry: EntryLike, rangeEnd: number) => void, owner: number): ObserverLike | undefined {
   const Observer = read(globalThis, 'PerformanceObserver') as (new (callback: (list: { getEntries(): EntryLike[] }) => void) => ObserverLike) | undefined;
   if (typeof Observer !== 'function') return undefined;
   let observer: ObserverLike | undefined;
@@ -108,16 +120,17 @@ export function startBrowserEvidence(start: number): FeatureFlags {
   const supported = supportedTypes();
   if (supported.includes('event')) eventObserver = makeObserver('event', processEventTiming, owner);
   if (supported.includes('long-animation-frame')) longFrameObserver = makeObserver('long-animation-frame', processLongFrame, owner);
+  for (const type of ['mark', 'measure'] as const) { const observer = supported.includes(type) ? makeObserver(type, processUserTiming, owner) : undefined; if (observer) userTimingObservers.push(observer); }
   features = { eventTiming: eventObserver !== undefined, longAnimationFrames: longFrameObserver !== undefined };
   if (typeof document !== 'undefined') for (const type of documentEventTypes) document.addEventListener(type, onDocumentEvent, true);
   return { ...features };
 }
 export function stopBrowserEvidence(end: number): { entries: RecordedBrowserEvidenceEntry[]; features: FeatureFlags; dropped: DropCounts } {
-  for (const [observer, process] of [[eventObserver, processEventTiming], [longFrameObserver, processLongFrame]] as const) {
+  for (const [observer, process] of [[eventObserver, processEventTiming], [longFrameObserver, processLongFrame], ...userTimingObservers.map(observer => [observer, processUserTiming] as const)] as const) {
     try { for (const entry of observer?.takeRecords?.() ?? []) process(entry, end); } catch {}
   }
   active = false; generation++;
-  disconnect(eventObserver); disconnect(longFrameObserver); removeListeners(); eventObserver = undefined; longFrameObserver = undefined;
+  disconnect(eventObserver); disconnect(longFrameObserver); userTimingObservers.forEach(disconnect); removeListeners(); eventObserver = undefined; longFrameObserver = undefined; userTimingObservers = [];
   return { entries: entries.map(entry => JSON.parse(JSON.stringify(entry))), features: { ...features }, dropped: { ...dropped } };
 }
 export function markBrowserEvidence(label: string): void {
@@ -127,6 +140,6 @@ export function markBrowserEvidence(label: string): void {
 }
 export function resetBrowserEvidence(): void {
   active = false; generation++;
-  disconnect(eventObserver); disconnect(longFrameObserver); removeListeners();
-  startedAt = 0; entries = []; sequence = 0; eventObserver = undefined; longFrameObserver = undefined; features = { eventTiming: false, longAnimationFrames: false }; dropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
+  disconnect(eventObserver); disconnect(longFrameObserver); userTimingObservers.forEach(disconnect); removeListeners();
+  startedAt = 0; entries = []; sequence = 0; eventObserver = undefined; longFrameObserver = undefined; userTimingObservers = []; features = { eventTiming: false, longAnimationFrames: false }; dropped = { documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 };
 }

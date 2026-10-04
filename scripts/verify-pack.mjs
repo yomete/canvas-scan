@@ -317,7 +317,21 @@ async function verifyNext(tarball) {
     throw new Error('canvas-scan init did not create instrumentation-client.ts');
   }
 
+  // The README's "Keep it out of production" pattern: a production build must
+  // carry no canvas-scan code, in the served HTML or in any static chunk.
+  fs.writeFileSync(
+    instrumentationClient,
+    "if (process.env.NODE_ENV === 'development') {\n  require('canvas-scan/auto');\n}\n",
+  );
+
   run('npx', ['next', 'build'], fixture);
+  const shipped = fs
+    .readdirSync(path.join(fixture, '.next/static'), { recursive: true })
+    .map((entry) => path.join(fixture, '.next/static', entry))
+    .filter((entry) => fs.statSync(entry).isFile() && fs.readFileSync(entry, 'utf8').includes('canvas-scan'));
+  if (shipped.length > 0) {
+    throw new Error(`production build still contains canvas-scan: ${shipped.join(', ')}`);
+  }
   await withServer(
     'npx',
     ['next', 'start', '-p', '4382'],
@@ -326,6 +340,9 @@ async function verifyNext(tarball) {
     (body) => {
       if (!body.includes('canvas-scan package verification')) {
         throw new Error('next start served unexpected body');
+      }
+      if (body.includes('canvas-scan/') || body.includes('[canvas-scan]')) {
+        throw new Error('next start served canvas-scan code in production');
       }
     },
   );

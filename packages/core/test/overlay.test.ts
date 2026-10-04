@@ -10,7 +10,7 @@ vi.mock('../src/symbolicate', () => ({ resolveSourceOutcome }));
 
 import { droppedCanvasIds, emitLifecycleEvent, emitReport, emitResetEvent, latestReports, retiredCanvasIds } from '../src/frame-loop';
 import { mountOverlay, unmountOverlay } from '../src/overlay';
-import { getLastExplanation, getLastSession, getRecordingState, mark, resetRecordingForTests, startRecording, stopRecording } from '../src/recording';
+import { getLastExplanation, getLastSession, getRecordingState, mark, resetRecordingForTests, settleExplanationCallsitesForTests, startRecording, stopRecording } from '../src/recording';
 import type { ComparisonArtifactV1, DrawBatchReport, InvestigationSessionV1 } from '../src/types';
 import { getRecord, installCanvasPatch, notifySelectedCommandBoundary, records, type CanvasRecord } from '../src/wrap-context';
 
@@ -20,6 +20,7 @@ class OverlayExplanationContext {
   constructor(canvas: HTMLCanvasElement) { this.canvas = canvas; }
   save(..._args: unknown[]) {}
   restore(..._args: unknown[]) {}
+  clearRect(..._args: unknown[]) {}
   fillRect(..._args: unknown[]) {}
 }
 
@@ -146,6 +147,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unmountOverlay();
+  sessionStorage.clear();
   resetRecordingForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -695,6 +697,17 @@ describe('overlay flyout', () => {
     expect(JSON.stringify(getLastSession())).toContain('"userMarks":1');
   });
 
+  it('shows the measured timer resolution on the coverage line', () => {
+    let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.1));
+    mountOverlay(); startRecording();
+    emitReport(makeReport({ canvasId: 'quantized' }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
+    stopRecording(); refreshOverlay();
+    const coverage = getShadowRoot().querySelector('.session-coverage')?.textContent ?? '';
+    expect(getLastSession()).toMatchObject({ crossOriginIsolated: false, timerResolutionMs: 0.1 });
+    expect(coverage).toContain('Timer resolution 0.1 ms; per-call times below this are quantized.');
+    expect(coverage).toContain('not cross-origin isolated');
+  });
+
   it('names the canvases kept as a summary only on the coverage line', () => {
     mountOverlay(); startRecording();
     for (let index = 1; index <= 129; index++) {
@@ -707,6 +720,16 @@ describe('overlay flyout', () => {
     expect(coverage).toContain('1 canvas is kept as a summary only');
     expect(coverage).toContain('no finding covers them');
     expect(getLastSession()!.canvases.filter(canvas => canvas.windowDetailDropped)).toHaveLength(1);
+  });
+
+  it('shows a canvas handed to a worker as not observable instead of as cheap', () => {
+    mountOverlay(); startRecording();
+    emitLifecycleEvent({ canvasId: 'worker-scene', type: 'transferred-to-worker', windowIndex: 1, timestampMs: 10, connected: true, activeRegistrySize: 1, evidenceLevel: 'measured' });
+    stopRecording(); refreshOverlay();
+    const row = getShadowRoot().querySelector('.canvas-summary[data-session-canvas-id="worker-scene"] .session-owner')?.textContent ?? '';
+    expect(row).toContain('not observable: rendering moved to a worker');
+    expect(row).not.toContain('ms in Canvas2D');
+    expect(getLastSession()!.canvases).toEqual([expect.objectContaining({ canvasId: 'worker-scene', observability: 'unobservable' })]);
   });
 
   it('keeps completed-session plain copy within the approved claim boundary', () => {
@@ -1868,11 +1891,15 @@ describe('overlay session comparison', () => {
 
   function recordIncompleteFinding(canvasId: string): void {
     startRecording();
-    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 1, timestampMs: index, source: 'width-setter', dimensionChange: 'changed', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     const canvas = makeCanvas();
     canvas.width = 100; canvas.height = 50;
+    // The finding's own canvas draws, is evicted by 128 later canvases, and
+    // draws again: it carries the finding and is summary-only. Only the
+    // selected canvas in that state refuses a pairing.
     emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 1, timestampMs: 10 });
+    for (let index = 0; index < 128; index++) emitResetEvent({ canvasId: `eviction-${index}`, windowIndex: 2, timestampMs: 11 + index, source: 'width-setter', dimensionChange: 'changed', width: 10, height: 10, rasterOperationCount: 0, activeRasterOverlap: false, commandStatus: 'unknown', unknownReason: 'canvas-reset', flushedAtStop: false });
     emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 2, timestampMs: 20 });
+    emitReport(makeReport({ canvasId, rasterOperationCount: 4 }), canvas, { windowIndex: 3, timestampMs: 30 });
     stopRecording(); refreshOverlay();
   }
 
@@ -2011,19 +2038,152 @@ describe('overlay session comparison', () => {
     expect(replace.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('clears the baseline across an explicit unmount and remount', () => {
+  it('restores the kept baseline after a full page load and offers the comparison', () => {
+    mountOverlay(); recordFinding('reload-baseline');
+    const baselineSessionId = getLastSession()!.sessionId;
+    let root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain('BASELINE KEPT');
+    expect(root.querySelector('.baseline-note')?.textContent).toBe('');
+    // A reload drops every module variable and the recording module's last
+    // session; only the tab's sessionStorage survives it.
+    unmountOverlay(); resetRecordingForTests(); mountOverlay(); root = openCompletedSession();
+    expect(root.querySelector('.baseline-note')?.textContent).toBe('Baseline restored from the last page load');
+    recordFinding('reload-candidate', 4);
+    expect(root.querySelector<HTMLButtonElement>('.baseline-action')?.textContent).toBe('Replace baseline');
+    const compare = root.querySelector<HTMLButtonElement>('.comparison-action')!;
+    expect(compare.hidden).toBe(false);
+    compare.click(); refreshOverlay();
+    const text = root.querySelector('.comparison-panel')?.textContent ?? '';
+    expect(text).toContain('COMPARISON COMPLETE');
+    expect(text).toContain(`Baseline: Finding 1 · Repeated drawing · session ${baselineSessionId.replace(/^canvas-scan-/, '')}`);
+  });
+
+  it('clears the baseline across a remount when nothing was stored for the tab', () => {
     mountOverlay(); recordFinding('unmount-baseline');
     let root = openCompletedSession();
     root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
     expect(root.querySelector('.comparison-panel')?.textContent).toContain('BASELINE KEPT');
-    unmountOverlay(); mountOverlay(); recordFinding('after-unmount'); root = openCompletedSession();
+    unmountOverlay(); sessionStorage.clear(); mountOverlay(); recordFinding('after-unmount'); root = openCompletedSession();
     expect(root.querySelector('.comparison-panel')?.textContent ?? '').not.toContain('BASELINE KEPT');
+    expect(root.querySelector('.baseline-note')?.textContent).toBe('');
     expect(root.querySelector<HTMLButtonElement>('.baseline-action')?.textContent).toBe('Keep as baseline');
     expect(root.querySelector<HTMLButtonElement>('.comparison-action')?.hidden).toBe(true);
+  });
+
+  it('does not store a baseline that would not fit in sessionStorage', () => {
+    const setItem = vi.fn(() => { throw new Error('QuotaExceededError'); });
+    vi.stubGlobal('sessionStorage', { getItem: () => null, setItem, clear() {} });
+    mountOverlay(); recordFinding('quota-baseline');
+    const root = openCompletedSession();
+    root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+    expect(setItem).toHaveBeenCalledOnce();
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain('BASELINE KEPT');
+    expect(root.querySelector('.baseline-note')?.textContent).toBe('Baseline could not be kept across a page reload');
+  });
+
+  async function loadSessionJson(root: ShadowRoot, file: File): Promise<void> {
+    const input = root.querySelector<HTMLInputElement>('.load-session-input')!;
+    expect(input.type).toBe('file');
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    input.dispatchEvent(new Event('change'));
+    await vi.advanceTimersByTimeAsync(250);
+  }
+
+  it('loads a downloaded session JSON through the file input and keeps it as the baseline', async () => {
+    mountOverlay(); recordFinding('loaded-baseline');
+    const downloaded = JSON.stringify(getLastSession());
+    const baselineSessionId = getLastSession()!.sessionId;
+    unmountOverlay(); resetRecordingForTests(); mountOverlay();
+    const root = openCompletedSession();
+    expect(root.querySelector('.load-session-label')?.textContent).toBe('Load session JSON');
+    await loadSessionJson(root, new File([downloaded], 'teammate.json', { type: 'application/json' }));
+    expect(root.querySelector('.load-session-status')?.textContent).toBe(`Loaded ${baselineSessionId.replace(/^canvas-scan-/, '')} from teammate.json`);
+    expect(root.querySelector<HTMLElement>('.finding-card[data-canvas-id="loaded-baseline"]')).not.toBeNull();
+    const keep = root.querySelector<HTMLButtonElement>('.baseline-action')!;
+    expect(keep.textContent).toBe('Keep as baseline');
+    keep.click(); refreshOverlay();
+    expect(keep.textContent).toBe('Baseline kept');
+    recordFinding('loaded-candidate', 4);
+    const compare = root.querySelector<HTMLButtonElement>('.comparison-action')!;
+    expect(compare.hidden).toBe(false);
+    compare.click(); refreshOverlay();
+    expect(root.querySelector('.comparison-panel')?.textContent).toContain(`Baseline: Finding 1 · Repeated drawing · session ${baselineSessionId.replace(/^canvas-scan-/, '')}`);
+  });
+
+  it('rejects a file that is not a canvas-scan session', async () => {
+    mountOverlay();
+    const root = openCompletedSession();
+    await loadSessionJson(root, new File(['{"schemaVersion":2}'], 'other.json'));
+    expect(root.querySelector('.load-session-status')?.textContent).toBe('other.json is not a canvas-scan session JSON');
+    expect(root.querySelector('.completed-session')).toBeNull();
+    await loadSessionJson(root, new File(['not json'], 'broken.json'));
+    expect(root.querySelector('.load-session-status')?.textContent).toBe('broken.json is not a canvas-scan session JSON');
+  });
+
+  it('downloads the comparison JSON under the comparison id', () => {
+    const createObjectURL = vi.fn(() => 'blob:comparison');
+    const revokeObjectURL = vi.fn();
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    window.URL.createObjectURL = createObjectURL as typeof URL.createObjectURL;
+    window.URL.revokeObjectURL = revokeObjectURL as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      mountOverlay(); recordFinding('download-baseline');
+      const root = openCompletedSession();
+      root.querySelector<HTMLButtonElement>('.baseline-action')!.click(); refreshOverlay();
+      recordFinding('download-candidate', 4); root.querySelector<HTMLButtonElement>('.comparison-action')!.click(); refreshOverlay();
+      const download = root.querySelector<HTMLButtonElement>('[data-action="download-comparison"]')!;
+      expect(download.type).toBe('button'); expect(download.textContent).toBe('Download comparison JSON');
+      download.click(); refreshOverlay();
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      const anchor = clickSpy.mock.contexts[0] as HTMLAnchorElement;
+      expect(anchor.download).toMatch(/^canvas-scan-comparison-.*\.json$/);
+      expect(anchor.href).toBe('blob:comparison');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:comparison');
+      expect(root.querySelector('.comparison-copy-status')?.textContent).toBe('Comparison JSON download started');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      clickSpy.mockRestore();
+    }
   });
 });
 
 describe('overlay explanation action', () => {
+  it('downloads the explanation JSON under the explanation id', () => {
+    const createObjectURL = vi.fn(() => 'blob:explanation');
+    const revokeObjectURL = vi.fn();
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    window.URL.createObjectURL = createObjectURL as typeof URL.createObjectURL;
+    window.URL.revokeObjectURL = revokeObjectURL as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      mountOverlay();
+      const { canvas, record } = explanationCanvas('explain-download');
+      startRecording();
+      emitReport(makeReport({ canvasId: record.id, rasterOperationCount: 2 }), canvas, { windowIndex: 1, timestampMs: 10 });
+      stopRecording(); refreshOverlay();
+      const root = getShadowRoot();
+      root.querySelector<HTMLButtonElement>('.explanation-action')!.click(); refreshOverlay();
+      root.querySelector<HTMLButtonElement>('.stop-recording')!.click(); refreshOverlay();
+      const download = root.querySelector<HTMLButtonElement>('[data-action="download-explanation"]')!;
+      expect(download.type).toBe('button'); expect(download.textContent).toBe('Download explanation JSON');
+      download.click(); refreshOverlay();
+      const anchor = clickSpy.mock.contexts[0] as HTMLAnchorElement;
+      expect(anchor.download).toBe(`${getLastExplanation()!.explanationId}.json`);
+      expect(anchor.href).toBe('blob:explanation');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:explanation');
+      expect(root.querySelector('.explanation-copy-status')?.textContent).toBe('Explanation JSON download started');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      clickSpy.mockRestore();
+    }
+  });
+
   it('starts from the saved selection and keeps its copy button stable', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -2313,6 +2473,51 @@ describe('overlay explanation action', () => {
     }
   });
 
+  it('names the function that calls the top method on the heavy card after an explanation', async () => {
+    mountOverlay();
+    const { canvas, context, record } = explanationCanvas('top-method-callsite');
+    // The app's own source map, same-origin, mapping every generated line to
+    // line 1 of one source file.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const body = url.endsWith('.map')
+        ? JSON.stringify({ version: 3, sources: ['src/FlamegraphCanvas.tsx'], names: [], mappings: Array(5000).fill('AAAA').join(';') })
+        : 'draw();\n//# sourceMappingURL=app.js.map';
+      const response = new Response(body, { status: 200 });
+      Object.defineProperty(response, 'url', { value: url });
+      return response;
+    }));
+    startRecording();
+    emitReport(makeReport({ canvasId: record.id, canvasApiSelfTimeMs: 9, rasterOperationCount: 3, methodEvidence: { fillRect: { count: 2, canvasApiSelfTimeMs: 8 }, clearRect: { count: 1, canvasApiSelfTimeMs: 1 } } }), canvas, { windowIndex: 1, timestampMs: 10 });
+    stopRecording();
+    refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    const card = root.querySelector<HTMLElement>(`.finding-card[data-canvas-id="${record.id}"]`)!;
+    expect(card.querySelector<HTMLElement>('.finding-top-method')!.hidden).toBe(true);
+    card.querySelector<HTMLButtonElement>('.explanation-action')!.click();
+    refreshOverlay();
+    // The first raster call is clearRect. The top method, fillRect, is called
+    // from a different function, which is the one the card has to name.
+    function clearBackground() { context.clearRect(0, 0, 10, 10); }
+    function drawBars() { context.fillRect(1, 0, 10, 10); context.fillRect(2, 0, 10, 10); }
+    clearBackground();
+    drawBars();
+    notifySelectedCommandBoundary(record, 10, 10, true, true);
+    await settleExplanationCallsitesForTests();
+    root.querySelector<HTMLButtonElement>('.stop-recording')!.click();
+    refreshOverlay();
+
+    const artifact = getLastExplanation()!;
+    expect(artifact.stacks.map(sample => sample.reason)).toEqual(['first-raster', 'heaviest-method']);
+    expect(artifact.stacks[1]).toMatchObject({ windowIndex: 10, commandOrdinal: 1 });
+    expect(artifact.stacks[1].frames[0]).toMatchObject({ functionName: 'drawBars', mapped: { file: 'src/FlamegraphCanvas.tsx', line: 1 } });
+    const line = card.querySelector<HTMLElement>('.finding-top-method')!;
+    expect(line.hidden).toBe(false);
+    expect(line.textContent).toBe('Top method fillRect called from drawBars (FlamegraphCanvas.tsx:1)');
+  });
+
   it('shows the final same pair after the initial sampling gap', () => {
     mountOverlay();
     const { canvas, context, record } = explanationCanvas('same-explanation');
@@ -2478,14 +2683,18 @@ describe('overlay saved-session trims and export', () => {
     return root;
   }
 
-  it('keeps heavy reset context in the JSON and off the card', () => {
+  it('puts the reset-aware next check on the heavy card and keeps the flag in the JSON', () => {
     mountOverlay();
     startRecording();
     emitReport(makeReport({ canvasId: 'flagged-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3, followsCanvasReset: true }), makeCanvas(), { windowIndex: 1, timestampMs: 10 });
     emitReport(makeReport({ canvasId: 'clean-heavy', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(false), { windowIndex: 1, timestampMs: 10 });
     stopRecording(); refreshOverlay();
     openCompletedFlyout();
-    expect(getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="flagged-heavy"]')?.textContent).not.toContain('canvas reset');
+    const flagged = getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="flagged-heavy"]')?.textContent ?? '';
+    expect(flagged).toContain('The slowest window followed a canvas reset. The backing-store reallocation cost lands on the next context call. Check the sizing code before you check the top measured methods.');
+    expect(flagged.indexOf('canvas reset')).toBeLessThan(flagged.indexOf('top measured methods'));
+    expect(getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="clean-heavy"]')?.textContent).toContain('Check the top measured methods and the application code that calls them.');
+    expect(getShadowRoot().querySelector<HTMLElement>('.finding-card[data-canvas-id="clean-heavy"]')?.textContent).not.toContain('canvas reset');
     expect(JSON.stringify(getLastSession())).toContain('"followsCanvasReset":true');
   });
 
@@ -2956,5 +3165,55 @@ describe('overlay baseline after an explanation', () => {
       .find(value => Array.isArray(value?.findings) && typeof value?.sessionId === 'string');
     stringify.mockRestore();
     expect(kept?.sessionId).toBe(investigated);
+  });
+});
+
+describe('overlay shows the browser evidence a recording holds', () => {
+  function installPerformanceEntries(entriesByType: Record<string, Array<Record<string, unknown>>>): void {
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['event', 'long-animation-frame'];
+      type = '';
+      observe(options: { type: string }): void { this.type = options.type; }
+      takeRecords(): Array<Record<string, unknown>> { return entriesByType[this.type] ?? []; }
+      disconnect(): void {}
+    }
+    vi.stubGlobal('PerformanceObserver', FakePerformanceObserver);
+  }
+
+  // The PolarSignals dogfood run: a 728 ms pointerup and a ~500 ms long frame
+  // over a heavy episode, both read from the raw JSON because nothing on screen
+  // said so. Two later long frames overlap no episode at all.
+  function recordOverlappingStall(): ShadowRoot {
+    installPerformanceEntries({
+      event: [{ name: 'pointerup', startTime: 90, duration: 728, interactionId: 5, target: { tagName: 'DIV' } }],
+      'long-animation-frame': [
+        { startTime: 50, duration: 500, blockingDuration: 40, scripts: [] },
+        { startTime: 900, duration: 120, blockingDuration: 8, scripts: [] },
+        { startTime: 1100, duration: 140, blockingDuration: 8, scripts: [] },
+      ],
+    });
+    let clock = 0; vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    mountOverlay();
+    startRecording();
+    emitReport(makeReport({ canvasId: 'stalled', canvasApiSelfTimeMs: 9, rasterOperationCount: 3 }), makeCanvas(), { windowIndex: 1, timestampMs: 110, startedAtTimestampMs: 100, endedAtTimestampMs: 110 });
+    clock = 1500;
+    stopRecording(); refreshOverlay();
+    const root = getShadowRoot();
+    root.querySelector<HTMLButtonElement>('.counts')!.click();
+    refreshOverlay();
+    return root;
+  }
+
+  it("names the interaction and long animation frame a finding's episode overlaps", () => {
+    const root = recordOverlappingStall();
+    expect(getLastSession()!.episodeAssociations).toHaveLength(2);
+    const text = root.querySelector<HTMLElement>('.finding-card[data-canvas-id="stalled"]')!.textContent!;
+    expect(text).toContain('Overlaps: pointerup 728 ms (Event Timing) · long animation frame 500 ms, 40 ms blocking');
+  });
+
+  it('says on the coverage line when long animation frames overlapped no draw episode', () => {
+    const root = recordOverlappingStall();
+    const coverage = root.querySelector<HTMLElement>('.session-coverage')!.textContent!;
+    expect(coverage).toContain('2 long animation frames (120–140 ms) overlapped no Canvas2D draw episode');
   });
 });

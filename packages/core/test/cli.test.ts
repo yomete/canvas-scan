@@ -428,6 +428,54 @@ describe('canvas-scan init CLI: entry candidates and reporting', () => {
     }
   });
 
+  it('prints synchronous production guidance after writing a Next entry', () => {
+    const dir = fixture();
+    writePackageJson(dir, { dependencies: { next: '15.3.0' } });
+    installPackage(dir);
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      expect(cli.run(['init', dir, '--write'])).toBe(0);
+    } finally {
+      console.log = originalLog;
+    }
+    const guidance = logs.find(line => line.startsWith('Keep it out of production'));
+    expect(guidance).toContain("process.env.NODE_ENV === 'development'");
+    expect(guidance).toContain("require('canvas-scan/auto')");
+    // A dynamic import evaluates after React and trips warnIfLate.
+    expect(guidance).not.toMatch(/import\(/);
+
+    // Following the guidance must not make a re-run prepend a second import.
+    fs.writeFileSync(
+      path.join(dir, 'instrumentation-client.ts'),
+      "if (process.env.NODE_ENV === 'development') {\n  require('canvas-scan/auto');\n}\n",
+    );
+    expect(planInit(dir).action.kind).toBe('none');
+  });
+
+  it('prints the Vite alias guidance after writing a Vite entry, and not on a dry run', () => {
+    const dir = fixture();
+    writePackageJson(dir, { devDependencies: { vite: '^7.0.0' } });
+    installPackage(dir);
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src/main.tsx'), 'export {};\n');
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      expect(cli.run(['init', dir])).toBe(0);
+      expect(logs.some(line => line.startsWith('Keep it out of production'))).toBe(false);
+      expect(cli.run(['init', dir, '--write'])).toBe(0);
+    } finally {
+      console.log = originalLog;
+    }
+    const guidance = logs.find(line => line.startsWith('Keep it out of production'));
+    expect(guidance).toContain("command === 'build'");
+    expect(guidance).toContain("'canvas-scan/auto': 'data:text/javascript,'");
+    expect(guidance).not.toMatch(/import\(/);
+  });
+
   it('prints the instructions once with --write', () => {
     const dir = fixture();
     // No manifest at all, so the framework is unknown and the plan is manual.

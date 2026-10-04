@@ -14,7 +14,7 @@ function session(type: InvestigationSessionV1['findings'][number]['type'], candi
       : type === 'resize-churn' ? { ...common, type, observedResetCount: candidate ? 3 : 5, activeResetCount: candidate ? 2 : 4, resetEvents: Array.from({ length: candidate ? 2 : 4 }, (_, windowIndex) => ({ source: 'width-setter' as const, width: 1, height: 1, windowIndex, timestampMs: windowIndex })), dimensionChanges: { changed: 1, unchanged: 1, unavailable: 0 }, affectedEpisodeIds: candidate ? ['episode'] : ['episode', 'episode-two'], commandStatuses: candidate ? { same: 1, changed: 0, unknown: 1 } : { same: 1, changed: 1, unknown: 2 }, unknownReasons: {}, canvasApiSelfTimeMs: 1, rasterOperationCount: 1 }
         : { ...common, type, affectedWindowCount: candidate ? 2 : 3, affectedWindows: (candidate ? [2, 2.1] : [2, 2.5, 2.25]).map((actualToExpectedAreaRatio, windowIndex) => ({ windowIndex, timestampMs: windowIndex, rasterOperationCount: 1, canvasApiSelfTimeMs: 1, backingWidth: 1, backingHeight: 1, expectedBackingWidth: 1, expectedBackingHeight: 1, expectedPixelArea: 1, actualToExpectedAreaRatio })), affectedEpisodeIds: ['episode'], rasterOperationCount: 1, canvasApiSelfTimeMs: 1 };
   const activeWindowCount = candidate ? 4 : 5;
-  return { schemaVersion: 1, sessionId: candidate ? 'candidate session' : 'baseline/session', startedAt: '2026-08-11T10:00:00.000Z', endedAt: candidate ? '2026-08-11T10:01:00.000Z' : '2026-08-11T10:00:30.000Z', durationMs: 1, stopReason: 'manual', canvasScanVersion: '0.4.0', captureEvery: 1, browserFeatures: { monotonicTime: true, eventTiming: false, longAnimationFrames: false }, canvases: [{ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, activeWindowCount, rasterOperationCount: candidate ? 14 : 20, canvasApiSelfTimeMs: candidate ? 4.25 : 6.5, maxWindowSelfTimeMs: candidate ? 1.5 : 2, evidenceLevel: 'measured', methodEvidence: methods, commandStatuses: candidate ? { same: 2, changed: 1, unknown: 1 } : { same: 2, changed: 1, unknown: 2 }, windowDetailDropped: false }], windows: [], resetEvents: [], lifecycleEvents: [], episodes: [], browserEntries: [], episodeAssociations: [], findings: [finding], collectionLimits: {} as InvestigationSessionV1['collectionLimits'], droppedEntryCounts: { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 } };
+  return { schemaVersion: 1, sessionId: candidate ? 'candidate session' : 'baseline/session', startedAt: '2026-08-11T10:00:00.000Z', endedAt: candidate ? '2026-08-11T10:01:00.000Z' : '2026-08-11T10:00:30.000Z', durationMs: 1, stopReason: 'manual', canvasScanVersion: '0.4.0', captureEvery: 1, browserFeatures: { monotonicTime: true, eventTiming: false, longAnimationFrames: false }, timeOrigin: 0, crossOriginIsolated: false, timerResolutionMs: 0.1, canvases: [{ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, activeWindowCount, rasterOperationCount: candidate ? 14 : 20, canvasApiSelfTimeMs: candidate ? 4.25 : 6.5, maxWindowSelfTimeMs: candidate ? 1.5 : 2, evidenceLevel: 'measured', methodEvidence: methods, commandStatuses: candidate ? { same: 2, changed: 1, unknown: 1 } : { same: 2, changed: 1, unknown: 2 }, windowDetailDropped: false, observability: 'observable' }], windows: [], resetEvents: [], lifecycleEvents: [], episodes: [], browserEntries: [], episodeAssociations: [], findings: [finding], collectionLimits: {} as InvestigationSessionV1['collectionLimits'], droppedEntryCounts: { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 } };
 }
 
 const report = (canvasId: string): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 2, canvasApiSelfTimeMs: 1, signatureStatus: 'same', unknownReason: null, sampled: false, coveredWindowCount: 1, comparisonGap: 1, followsCanvasReset: false, methodEvidence: {} });
@@ -39,8 +39,8 @@ afterEach(() => { resetRecordingForTests(); records.clear(); });
 describe('compareSessions', () => {
   it('returns the exact version 1 public artifact and sorted method union for heavy work', () => {
     const artifact = compareSessions(session('heavy-canvas-work'), session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 });
-    expect(Object.keys(artifact)).toEqual(['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'improvementEstablished']);
-    expect(artifact.measures.map(item => item.id)).toEqual(['active-window-count', 'raster-operation-count', 'canvas-api-self-time-ms', 'maximum-window-self-time-ms', 'method:fillRect:operation-count', 'method:fillRect:self-time-ms', 'method:lineTo:operation-count', 'method:lineTo:self-time-ms', 'method:stroke:operation-count', 'method:stroke:self-time-ms', 'unknown-command-window-count', 'heavy-episode-operation-count', 'heavy-episode-self-time-ms']);
+    expect(Object.keys(artifact)).toEqual(['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'span', 'spanMismatch', 'coverageNote', 'improvementEstablished']);
+    expect(artifact.measures.map(item => item.id)).toEqual(['active-window-count', 'raster-operation-count', 'canvas-api-self-time-ms', 'maximum-window-self-time-ms', 'worst-interaction-duration-ms', 'long-animation-frame-count', 'method:fillRect:operation-count', 'method:fillRect:self-time-ms', 'method:lineTo:operation-count', 'method:lineTo:self-time-ms', 'method:stroke:operation-count', 'method:stroke:self-time-ms', 'unknown-command-window-count', 'heavy-episode-operation-count', 'heavy-episode-self-time-ms']);
     expect(artifact.measures.find(item => item.id === 'method:lineTo:self-time-ms')).toMatchObject({ baseline: 0, candidate: null, delta: null, direction: 'unknown' });
     expect(artifact.improvementEstablished).toBe(false);
   });
@@ -123,6 +123,25 @@ describe('compareSessions', () => {
     ]);
   });
 
+  it('carries the worst interaction and the long animation frame count for the whole recording', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = session('heavy-canvas-work', true);
+    for (const value of [baseline, candidate]) value.browserFeatures = { monotonicTime: true, eventTiming: true, longAnimationFrames: true };
+    baseline.browserEntries = [
+      { entryId: 'b1', kind: 'event-timing', eventType: 'pointerup', startedAtTimestampMs: 0, endedAtTimestampMs: 728, targetTagName: 'div', durationMs: 728, interactionId: 5 },
+      { entryId: 'b2', kind: 'event-timing', eventType: 'keydown', startedAtTimestampMs: 0, endedAtTimestampMs: 40, targetTagName: 'div', durationMs: 40, interactionId: 6 },
+      { entryId: 'b3', kind: 'long-animation-frame', startedAtTimestampMs: 0, endedAtTimestampMs: 500, durationMs: 500, blockingDurationMs: 40, scripts: [], droppedScriptAttributionCount: 0 },
+      { entryId: 'b4', kind: 'long-animation-frame', startedAtTimestampMs: 600, endedAtTimestampMs: 720, durationMs: 120, blockingDurationMs: 8, scripts: [], droppedScriptAttributionCount: 0 },
+    ];
+    candidate.browserEntries = [{ entryId: 'c1', kind: 'event-timing', eventType: 'pointerup', startedAtTimestampMs: 0, endedAtTimestampMs: 90, targetTagName: 'div', durationMs: 90, interactionId: 5 }];
+    const artifact = compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 });
+    expect(artifact.measures.find(measure => measure.id === 'worst-interaction-duration-ms')).toEqual({ id: 'worst-interaction-duration-ms', unit: 'ms', baseline: 728, candidate: 90, delta: -638, direction: 'decreased', interpretation: 'observed-timing-pair', scope: 'session' });
+    expect(artifact.measures.find(measure => measure.id === 'long-animation-frame-count')).toEqual({ id: 'long-animation-frame-count', unit: 'count', baseline: 2, candidate: 0, delta: -2, direction: 'decreased', interpretation: 'structural', scope: 'session' });
+    // A browser without the feature reports null, not a zero it never measured.
+    const unavailable = compareSessions(session('heavy-canvas-work'), session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 });
+    expect(unavailable.measures.find(measure => measure.id === 'worst-interaction-duration-ms')).toMatchObject({ baseline: null, candidate: null, direction: 'unknown' });
+    expect(unavailable.measures.find(measure => measure.id === 'long-animation-frame-count')).toMatchObject({ baseline: null, candidate: null, direction: 'unknown' });
+  });
+
   it('covers increased, decreased, unchanged, and unknown directions', () => {
     const artifact = compareSessions(session('heavy-canvas-work'), session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 });
     expect(artifact.measures.find(value => value.id === 'method:lineTo:operation-count')?.direction).toBe('increased');
@@ -165,15 +184,52 @@ describe('compareSessions', () => {
     expect(resize.measures.find(measure => measure.id === 'method:fillRect:operation-count')?.scope).toBe('session');
   });
 
+  it('keeps selected measures unchanged when unrelated episodes and marks change', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = session('heavy-canvas-work', true);
+    const pairing = { baselineFindingIndex: 0, candidateFindingIndex: 0 };
+    const plain = compareSessions(baseline, candidate, pairing);
+    expect(plain.span).toEqual({ baseline: { durationMs: 1, episodeCount: 0, userMarkCount: 0 }, candidate: { durationMs: 1, episodeCount: 0, userMarkCount: 0 } });
+    expect(plain.spanMismatch).toBeNull();
+
+    const episode = (index: number) => ({ episodeId: `unrelated-${index}`, firstWindowIndex: index, lastWindowIndex: index, startedAtTimestampMs: index * 1000, endedAtTimestampMs: index * 1000 + 100, activeWindowCount: 1, rasterOperationCount: 1, canvasApiSelfTimeMs: 0.5, methodEvidence: {}, canvases: [], resetEventCount: 0 });
+    baseline.durationMs = 20000; baseline.episodes = [episode(0)];
+    candidate.durationMs = 30000; candidate.episodes = Array.from({ length: 10 }, (_, index) => episode(index));
+    const mark = (entryId: string, label: string, startedAtTimestampMs: number, endedAtTimestampMs = startedAtTimestampMs) => ({ entryId, kind: 'user-mark' as const, label, startedAtTimestampMs, endedAtTimestampMs });
+    baseline.browserEntries = [mark('b1', 'pan', 5000, 6000)];
+    candidate.browserEntries = [mark('c1', 'pan', 12000, 13000), mark('c2', 'unrelated', 14000), mark('c3', 'pan', 20000, 21000)];
+
+    const artifact = compareSessions(baseline, candidate, pairing);
+    expect(artifact.status).toBe('comparable');
+    expect(artifact.span).toEqual({ baseline: { durationMs: 20000, episodeCount: 1, userMarkCount: 1 }, candidate: { durationMs: 30000, episodeCount: 10, userMarkCount: 3 } });
+    expect(artifact.spanMismatch).toContain('The baseline covers 20000 ms and 1 draw episodes; the candidate covers 30000 ms and 10 draw episodes.');
+    expect(artifact.measures).toEqual(plain.measures);
+    expect(artifact.measures.find(measure => measure.id === 'heavy-episode-operation-count')).toMatchObject({ baseline: 18, candidate: 12, scope: 'episode' });
+  });
+
   it('fails closed for required drops and ignores unrelated collection drops', () => {
-    for (const key of ['canvasWindowReports', 'canvasLifetimes'] as const) {
-      const baseline = session('heavy-canvas-work'); baseline.droppedEntryCounts[key] = 1;
-      expect(compareSessions(baseline, session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 }).incomparableReasons).toEqual(['incomplete-evidence']);
-    }
+    const baseline = session('heavy-canvas-work'); baseline.droppedEntryCounts.canvasWindowReports = 1;
+    expect(compareSessions(baseline, session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 }).incomparableReasons).toEqual(['incomplete-evidence']);
     const resize = session('resize-churn'); resize.droppedEntryCounts.resetEvents = 1;
     expect(compareSessions(resize, session('resize-churn', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 }).incomparableReasons).toEqual(['incomplete-evidence']);
-    const ignored = session('heavy-canvas-work'); Object.assign(ignored.droppedEntryCounts, { resetEvents: 2, lifecycleEvents: 1, documentEvents: 1, eventTiming: 1, userMarks: 1, longAnimationFrames: 1 });
+    // A dropped lifetime is a canvas with no frames that was forgotten. It
+    // cannot be the selected canvas, so it does not refuse the session.
+    const ignored = session('heavy-canvas-work'); Object.assign(ignored.droppedEntryCounts, { canvasLifetimes: 1, resetEvents: 2, lifecycleEvents: 1, documentEvents: 1, eventTiming: 1, userMarks: 1, longAnimationFrames: 1 });
     expect(compareSessions(ignored, session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 }).status).toBe('comparable');
+  });
+
+  it('refuses only a summary-only selected canvas and counts the summary-only canvases it left out', () => {
+    // An application that keeps a cache canvas per element reaches the
+    // lifetime cap on every recording. The evicted canvases are kept as
+    // summaries; a finding on a canvas that kept its frames still compares.
+    const summary = (canvasId: string, candidate = false) => ({ ...session('heavy-canvas-work', candidate).canvases[0], canvasId, windowDetailDropped: true });
+    const baseline = session('heavy-canvas-work'); baseline.canvases.push(summary('evicted-1'), summary('evicted-2')); baseline.droppedEntryCounts.canvasLifetimes = 1;
+    const candidate = session('heavy-canvas-work', true); candidate.canvases.push(summary('evicted-3', true));
+    expect(compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 })).toMatchObject({ status: 'comparable', incomparableReasons: [], coverageNote: '2 canvases in the baseline and 1 in the candidate were summary-only and were not compared.' });
+    expect(compareSessions(session('heavy-canvas-work'), session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 }).coverageNote).toBeNull();
+    // The selected canvas itself has no frames, so that pairing is refused,
+    // and the refusal still says what was left out.
+    const selected = session('heavy-canvas-work'); selected.canvases[0].windowDetailDropped = true;
+    expect(compareSessions(selected, session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 })).toMatchObject({ status: 'incomparable', incomparableReasons: ['incomplete-evidence'], measures: [], coverageNote: '1 canvas in the baseline and 0 in the candidate were summary-only and were not compared.' });
   });
 
   it('uses only the explicit indexes and never auto-matches a nearby finding', () => {

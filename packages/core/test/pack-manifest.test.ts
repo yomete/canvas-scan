@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error plain JS module without declarations
-import { ESM_RUNTIME_EXPORTS, MANIFEST_REQUIRED, RITUAL_METHODS, RITUAL_STEP_IDS, TYPE_EXPORTS, assertInvestigationRitual, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
+import { ESM_RUNTIME_EXPORTS, MANIFEST_REQUIRED, PACKED_README_HEADER, RITUAL_METHODS, RITUAL_STEP_IDS, TYPE_EXPORTS, assertInvestigationRitual, assertLabBoundary, assertManifestEntries, assertPackedVersion, assertPublicContract } from '../../../scripts/pack-manifest.mjs';
 
 const FULL = [...MANIFEST_REQUIRED, 'package/dist/chunk-ABC123.js'];
 
@@ -140,13 +140,22 @@ describe('v0.5 investigation ritual', () => {
 
   it('rejects independent and coordinated README drift', () => {
     const actual = sources();
-    expect(() => assertInvestigationRitual({ ...actual, sourceReadme: actual.sourceReadme.replace('Copy comparison JSON', 'Copy result') })).toThrow(/README rituals differ/);
-    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('Copy explanation JSON', 'Copy result') })).toThrow(/README rituals differ/);
+    expect(() => assertInvestigationRitual({ ...actual, sourceReadme: actual.sourceReadme.replace('Copy comparison JSON', 'Copy result') })).toThrow(/outside the packed header/);
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('Copy explanation JSON', 'Copy result') })).toThrow(/outside the packed header/);
     expect(() => assertInvestigationRitual({
       ...actual,
       sourceReadme: actual.sourceReadme.replaceAll('candidateFindingIndex', 'candidateIndex'),
       packedReadme: actual.packedReadme.replaceAll('candidateFindingIndex', 'candidateIndex'),
     })).toThrow(/step 7.*candidateFindingIndex/);
+  });
+
+  it('rejects packed README drift outside the ritual section', () => {
+    const actual = sources();
+    expect(actual.packedReadme).toContain('### Options');
+    expect(actual.packedReadme).toContain('### Sampling');
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('### Sampling', '### Sampled') })).toThrow(/outside the packed header/);
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: `${actual.packedReadme}\nA line only the tarball has.\n` })).toThrow(/outside the packed header/);
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace(PACKED_README_HEADER, '') })).toThrow(/packed header/);
   });
 
   it('rejects every missing or reordered demo step', () => {

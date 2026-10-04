@@ -129,6 +129,9 @@ const CAPTURED_METHODS = [
 // Wrapped for count and Canvas2D API self-time only — see the loop that
 // installs them for why their arguments stay out of the signature.
 const TIMED_ONLY_METHODS = ['getImageData', 'measureText'];
+// Pixel readbacks live on the element, not the context. Timed the same way;
+// the cost lands on the element's tracked context record.
+const READBACK_METHODS = ['toDataURL', 'toBlob'];
 const GRADIENT_CREATORS = new Set([
   'createLinearGradient',
   'createRadialGradient',
@@ -940,6 +943,35 @@ export function isKilled(): boolean {
   return killed;
 }
 
+function wrapTimedOnly(
+  original: (...args: unknown[]) => unknown,
+  name: string,
+  recordBy: WeakMap<object, CanvasRecord>,
+) {
+  return function (this: any, ...args: unknown[]) {
+    const record = recordBy.get(this);
+    if (!record || killed) return original.apply(this, args);
+    if (record.retired) reactivateRecord(record);
+    const timed = windowCaptured;
+    const start = timed ? performance.now() : 0;
+    const result = original.apply(this, args);
+    if (timed) {
+      const duration = performance.now() - start;
+      record.selfTimeMs += duration;
+      if (methodEvidenceByRecord) addMethodEvidence(methodEvidenceByRecord, record, name, duration);
+    } else if (methodEvidenceByRecord) {
+      addMethodEvidence(methodEvidenceByRecord, record, name, null);
+    }
+    try {
+      if (record.activeInWindow) record.contextActivityInWindow = true;
+      else markRecordActive(record);
+    } catch (error) {
+      kill(error);
+    }
+    return result;
+  };
+}
+
 export function installCanvasPatch(targets?: PatchTargets): void {
   if (installed) return;
   installed = true;
@@ -984,6 +1016,60 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   attributeObserverUnavailable =
     observeAttributes === null || takeAttributeRecords === null;
 
+  function registerCanvas(canvas: any, creationSite: SourceLocation | null): CanvasRecord {
+    const elementId = canvas.getAttribute('id');
+    const serial = nextCanvasSerial++;
+    const record: CanvasRecord = {
+      canvas,
+      creationSite,
+      contentDirty: false,
+      contentSig: newWindowSignature(),
+      contentVersion: 0,
+      id: elementId ? `${elementId}#${serial}` : `canvas:${serial}`,
+      serial,
+      sig: newWindowSignature(),
+      rasterOps: 0,
+      selfTimeMs: 0,
+      carriedRasterOps: 0,
+      carriedSelfTimeMs: 0,
+      carriedWindows: 0,
+      activeInWindow: false,
+      prev: null,
+      attribution: null,
+      lastStatus: null,
+      props: new Map(),
+      matrix: [1, 0, 0, 1, 0, 0],
+      matrixUnknown: false,
+      matrixHash: 0,
+      pathHash: 0x811c9dc5,
+      pathUnknown: false,
+      clipHash: 0x811c9dc5,
+      clipUnknown: false,
+      resetPendingReason: null,
+      modelUntrusted: false,
+      resetVersion: 0,
+      continuityLost: false,
+      sourceResetVersions: new Map(),
+      attributeObservationUnavailable: attributeObserverUnavailable,
+      contextActivityInWindow: false,
+      exactResetDepth: 0,
+      inactiveBoundaries: 0,
+      retired: false,
+      lastConnected: false,
+      activeLifecycleRecorded: false,
+      pendingLifecycleEvents: [],
+      stateStack: [],
+    };
+    record.lastConnected = getConnectionState(record);
+    computeMatrixHash(record);
+    refreshContentToken(record);
+    trackBuild(canvas, record.contentSig);
+    records.add(record);
+    queueLifecycleEvent(record, 'first-observed', record.lastConnected);
+    recordByCanvas.set(canvas, record);
+    return record;
+  }
+
   canvasProto.getContext = function (this: any, ...args: unknown[]) {
     const context = originalGetContext.apply(this, args);
     if (
@@ -991,56 +1077,7 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       context &&
       !recordByCanvas.has(this)
     ) {
-      const elementId = this.getAttribute('id');
-      const serial = nextCanvasSerial++;
-      const record: CanvasRecord = {
-        canvas: this,
-        creationSite: captureCreationSite(canvasProto.getContext),
-        contentDirty: false,
-        contentSig: newWindowSignature(),
-        contentVersion: 0,
-        id: elementId ? `${elementId}#${serial}` : `canvas:${serial}`,
-        serial,
-        sig: newWindowSignature(),
-        rasterOps: 0,
-        selfTimeMs: 0,
-        carriedRasterOps: 0,
-        carriedSelfTimeMs: 0,
-        carriedWindows: 0,
-        activeInWindow: false,
-        prev: null,
-        attribution: null,
-        lastStatus: null,
-        props: new Map(),
-        matrix: [1, 0, 0, 1, 0, 0],
-        matrixUnknown: false,
-        matrixHash: 0,
-        pathHash: 0x811c9dc5,
-        pathUnknown: false,
-        clipHash: 0x811c9dc5,
-        clipUnknown: false,
-        resetPendingReason: null,
-        modelUntrusted: false,
-        resetVersion: 0,
-        continuityLost: false,
-        sourceResetVersions: new Map(),
-        attributeObservationUnavailable: attributeObserverUnavailable,
-        contextActivityInWindow: false,
-        exactResetDepth: 0,
-        inactiveBoundaries: 0,
-        retired: false,
-        lastConnected: false,
-        activeLifecycleRecorded: false,
-        pendingLifecycleEvents: [],
-        stateStack: [],
-      };
-      record.lastConnected = getConnectionState(record);
-      computeMatrixHash(record);
-      refreshContentToken(record);
-      trackBuild(this, record.contentSig);
-      records.add(record);
-      queueLifecycleEvent(record, 'first-observed', record.lastConnected);
-      recordByCanvas.set(this, record);
+      const record = registerCanvas(this, captureCreationSite(canvasProto.getContext));
       recordByContext.set(context, record);
       if (observeAttributes) {
         try {
@@ -1058,6 +1095,21 @@ export function installCanvasPatch(targets?: PatchTargets): void {
     }
     return context;
   };
+
+  // OffscreenCanvas contexts are not patched. Keep a record of this blind
+  // spot. Native transfer throws if a context or prior transfer exists,
+  // so a successful transfer always creates a new record.
+  const originalTransferControlToOffscreen = canvasProto.transferControlToOffscreen;
+  if (typeof originalTransferControlToOffscreen === 'function') {
+    canvasProto.transferControlToOffscreen = function (this: any, ...args: unknown[]) {
+      const result = originalTransferControlToOffscreen.apply(this, args);
+      if (!killed) {
+        const record = registerCanvas(this, captureCreationSite(canvasProto.transferControlToOffscreen));
+        queueLifecycleEvent(record, 'transferred-to-worker');
+      }
+      return result;
+    };
+  }
 
   const widthDescriptor = Object.getOwnPropertyDescriptor(
     canvasProto,
@@ -1378,30 +1430,17 @@ export function installCanvasPatch(targets?: PatchTargets): void {
   for (const name of TIMED_ONLY_METHODS) {
     const original = contextProto[name];
     if (typeof original !== 'function') continue;
+    contextProto[name] = wrapTimedOnly(original, name, recordByContext);
+  }
 
-    const wrapped = function (this: any, ...args: unknown[]) {
-      const record = recordByContext.get(this);
-      if (!record || killed) return original.apply(this, args);
-      if (record.retired) reactivateRecord(record);
-      const timed = windowCaptured;
-      const start = timed ? performance.now() : 0;
-      const result = original.apply(this, args);
-      if (timed) {
-        const duration = performance.now() - start;
-        record.selfTimeMs += duration;
-        if (methodEvidenceByRecord) addMethodEvidence(methodEvidenceByRecord, record, name, duration);
-      } else if (methodEvidenceByRecord) {
-        addMethodEvidence(methodEvidenceByRecord, record, name, null);
-      }
-      try {
-        if (record.activeInWindow) record.contextActivityInWindow = true;
-        else markRecordActive(record);
-      } catch (error) {
-        kill(error);
-      }
-      return result;
-    };
-    contextProto[name] = wrapped;
+  // A synchronous readback flushes the pipeline, and an application whose
+  // canvas cost is mostly thumbnails or exports used to show that cost
+  // nowhere. toBlob encodes asynchronously: its span covers the synchronous
+  // readback copy only, never the encode.
+  for (const name of READBACK_METHODS) {
+    const original = canvasProto[name];
+    if (typeof original !== 'function') continue;
+    canvasProto[name] = wrapTimedOnly(original, name, recordByCanvas);
   }
 
   for (const name of CAPTURED_SETTERS) {

@@ -82,4 +82,16 @@ describe('claim discipline', () => {
       expect(offendingLines(readFileSync(file, 'utf8'))).toEqual([]);
     }
   });
+
+  it('states what the heavy-work gate sums, how an episode ends, and why 8 ms in both READMEs', () => {
+    for (const file of [
+      join(packageDir, 'README.md'),
+      join(packageDir, '../../README.md'),
+    ]) {
+      const bullet = readFileSync(file, 'utf8').split('\n').find(line => line.startsWith('- **`heavy-canvas-work`**'))!;
+      expect(bullet).toContain('sums the self-time of one canvas across the whole episode');
+      expect(bullet).toContain('two consecutive frame boundaries have no Canvas2D activity');
+      expect(bullet).toContain('close to half of one 16.7 ms frame at 60 Hz');
+    }
+  });
 });

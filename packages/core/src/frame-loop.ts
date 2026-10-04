@@ -58,6 +58,7 @@ const lifecycleEventListeners = new Set<(event: RecordedCanvasLifecycleEvent) =>
 export const INACTIVE_BOUNDARIES_BEFORE_RETIREMENT = 120;
 
 let windowIndex = 0;
+let frameHandle: number | null = null;
 let recordingWindowStartTimestampMs: number | undefined;
 
 export function setRecordingWindowRangeTracking(
@@ -423,8 +424,13 @@ export function startFrameLoop(options: CanvasScanOptions): void {
       }
     }
 
-    raf(tick);
+    frameHandle = raf(tick);
   };
 
-  raf(tick);
+  frameHandle = raf(tick);
+}
+
+export function stopFrameLoop(): void {
+  if (frameHandle !== null) window.cancelAnimationFrame(frameHandle);
+  frameHandle = null;
 }

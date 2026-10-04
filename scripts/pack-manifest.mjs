@@ -59,6 +59,10 @@ export function assertPackedVersion(sources, version) {
 export const ESM_RUNTIME_EXPORTS = ['start', 'getReports', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
 export const IIFE_RUNTIME_FIELDS = ['version', 'getHistory', 'getReports', 'startRecording', 'stopRecording', 'mark', 'getLastSession', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
 export const TYPE_EXPORTS = ['AttributionKind', 'CanvasMethodEvidence', 'CanvasScanOptions', 'DrawBatchReport', 'SignatureStatus', 'SourceLocation', 'InvestigationSessionV1', 'RecordedCanvasSummary', 'RecordedCanvasWindow', 'RecordedCanvasGeometry', 'CanvasGeometryUnavailableReason', 'RecordedResetEvent', 'CanvasResetSource', 'CanvasLifecycleEventType', 'RecordedCanvasLifecycleEvent', 'RecordedDrawEpisode', 'RecordedEpisodeCanvasSummary', 'RecordedTopMethod', 'HeavyCanvasWorkFinding', 'InvestigationFinding', 'RepeatedDrawWorkFinding', 'ResizeChurnFinding', 'BackingStoreMismatchFinding', 'RecordedRepeatedWindow', 'RecordingState', 'RecordingStopReason', 'RecordedDocumentEvent', 'RecordedEventTiming', 'RecordedUserMark', 'RecordedLongAnimationFrameScript', 'RecordedLongAnimationFrame', 'RecordedBrowserEvidenceEntry', 'RecordedEpisodeAssociation', 'ExplanationSelection', 'ExplanationStartResult', 'ExplanationUnknownReason', 'NormalizedCommandArgument', 'NormalizedCanvasCommand', 'ExplanationCommandWindow', 'CommandDifference', 'ExplanationWindowComparison', 'ExplanationStackFrame', 'ExplanationStackSample', 'ExplanationLimitName', 'ExplanationLimitReason', 'ExplanationLimitCoordinate', 'ExplanationLimitResult', 'ExplanationCallsiteLimitReason', 'ExplanationCallsiteCoverage', 'ExplanationArtifactV1', 'SessionFindingPairing', 'ComparisonMeasureId', 'ComparisonMeasure', 'ComparisonFindingRef', 'ComparisonArtifactV1'];
+// npm shows packages/core/README.md, so the packed copy is the root README with
+// one header comment in front. Everything after the header must match the root
+// README after trimming outer whitespace; edit the root README and copy it, never the packed one.
+export const PACKED_README_HEADER = /^<!-- This README is packed with the canvas-scan package\. -->\n\n/;
 export const RITUAL_METHODS = ['startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
 export const RITUAL_STEP_IDS = ['early-load', 'baseline', 'explanation-start', 'explanation-result', 'baseline-selection', 'candidate', 'pairing', 'comparison-copy'];
 const labMarkers = ['CANVAS_LAB_V04', 'canvas-performance-lab-v0.4', 'lab-v04-truth'];
@@ -122,20 +126,16 @@ function assertTokens(source, tokens, label) {
 }
 
 export function assertInvestigationRitual({ sourceReadme, packedReadme, demo, demoEntry, runtimeExports }) {
-  const sourceSection = ritualSection(sourceReadme, 'source README');
-  const packedSection = ritualSection(packedReadme, 'packed README');
-  if (sourceSection !== packedSection) throw new Error('source and packed README rituals differ');
+  if (!PACKED_README_HEADER.test(packedReadme)) throw new Error('packed README does not start with the packed header');
+  if (packedReadme.replace(PACKED_README_HEADER, '').trim() !== sourceReadme.trim()) throw new Error('packed README differs from source README outside the packed header');
 
+  const sourceSection = ritualSection(sourceReadme, 'source README');
   const sourceSteps = numberedSteps(sourceSection, 'source README');
-  const packedSteps = numberedSteps(packedSection, 'packed README');
   for (let index = 0; index < RITUAL_STEP_IDS.length; index++) {
     assertTokens(sourceSteps[index], readmeStepTokens[index], `source README step ${index + 1}`);
-    assertTokens(packedSteps[index], readmeStepTokens[index], `packed README step ${index + 1}`);
   }
   assertTokens(sourceSection, readmeBoundaryTokens, 'source README boundaries');
-  assertTokens(packedSection, readmeBoundaryTokens, 'packed README boundaries');
   assertTokens(sourceReadme, RITUAL_METHODS, 'source README public API');
-  assertTokens(packedReadme, RITUAL_METHODS, 'packed README public API');
 
   const demoSteps = markedSteps(demo, 'demo');
   for (let index = 0; index < RITUAL_STEP_IDS.length; index++) assertTokens(demoSteps[index], demoStepTokens[index], `demo step ${index + 1}`);

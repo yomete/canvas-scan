@@ -22,6 +22,11 @@ const stream =
   'mixed';
 const selfContained = baseUrlOverride == null;
 const opsLevels = [100, 1000, 10000];
+// The canvas-count axis: `canvasOps` operations on each of N canvases per
+// frame. The frame loop walks every tracked canvas on every frame, so an app
+// with many canvases pays a cost the single-canvas levels cannot show.
+const canvasLevels = [10, 100, 300];
+const canvasOps = 100;
 const modes = ['off', 'passthrough', 'full', 'countonly'];
 const thresholds = {
   fullAddedMeanMs: 2,
@@ -132,14 +137,19 @@ const collectBlocks = async (browser) => {
   for (let block = 0; block < blockCount; block++) {
     const blockRaw = {};
     const order = modes.map((_, i) => modes[(i + block) % modes.length]);
-    for (const ops of opsLevels) {
-      blockRaw[ops] = {};
+    const levels = [
+      ...opsLevels.map((ops) => ({ key: ops, ops, canvases: 1 })),
+      ...canvasLevels.map((canvases) => ({ key: `canvases:${canvases}`, ops: canvasOps, canvases })),
+    ];
+    for (const { key, ops, canvases } of levels) {
+      blockRaw[key] = {};
       for (const mode of order) {
         const page = await browser.newPage();
         try {
           const url = new URL('/bench.html', baseUrl);
           url.searchParams.set('mode', mode);
           url.searchParams.set('ops', String(ops));
+          url.searchParams.set('canvases', String(canvases));
           url.searchParams.set('stream', stream);
           await page.goto(url.href, { waitUntil: 'load' });
           const loaded = await page.evaluate(() => window.__CANVAS_SCAN__ != null);
@@ -150,7 +160,7 @@ const collectBlocks = async (browser) => {
             throw new Error(`canvas-scan loaded in ${mode} mode`);
           }
           await page.waitForFunction(() => window.__BENCH?.done, null, { timeout: 60000 });
-          blockRaw[ops][mode] = await page.evaluate(() => window.__BENCH.frames);
+          blockRaw[key][mode] = await page.evaluate(() => window.__BENCH.frames);
         } finally {
           await page.close();
         }
@@ -180,6 +190,27 @@ const summarizeBlocks = (blocks) => blocks.map((blockRaw) => {
       countOnlyAddedP95Ms: modeStats.countonly.p95 - modeStats.off.p95,
       // evidence, not a gate: the floor an EMPTY wrapper pays (no canvas-scan)
       passthroughAddedMeanMs: modeStats.passthrough.mean - modeStats.off.mean,
+    };
+  }
+  for (const canvases of canvasLevels) {
+    const key = `canvases:${canvases}`;
+    const modeStats = {};
+    for (const mode of modes) {
+      modeStats[mode] = {
+        median: median(blockRaw[key][mode]),
+        p95: p95(blockRaw[key][mode]),
+        mean: mean(blockRaw[key][mode]),
+      };
+    }
+    const fullAddedMeanMs = modeStats.full.mean - modeStats.off.mean;
+    const countOnlyAddedMeanMs = modeStats.countonly.mean - modeStats.off.mean;
+    stats[key] = {
+      ...modeStats,
+      fullAddedMeanMs,
+      countOnlyAddedMeanMs,
+      // per-canvas per-frame cost, in microseconds: evidence, not a gate
+      fullAddedPerCanvasUs: (fullAddedMeanMs / canvases) * 1000,
+      countOnlyAddedPerCanvasUs: (countOnlyAddedMeanMs / canvases) * 1000,
     };
   }
   return stats;
@@ -286,7 +317,7 @@ await writeFile(
   `${JSON.stringify(result, null, 2)}\n`,
 );
 
-const medianMetric = (ops, metric) => median(perBlock.map((s) => s[ops][metric]));
+const medianMetric = (key, metric) => median(perBlock.map((s) => s[key][metric]));
 if (perBlock.length > 0) {
   console.table(
     opsLevels.map((ops) => ({
@@ -298,6 +329,20 @@ if (perBlock.length > 0) {
       'countonly added mean': medianMetric(ops, 'countOnlyAddedMeanMs').toFixed(3),
       'countonly added p95': medianMetric(ops, 'countOnlyAddedP95Ms').toFixed(3),
     })),
+  );
+  console.table(
+    canvasLevels.map((canvases) => {
+      const key = `canvases:${canvases}`;
+      return {
+        canvases,
+        'ops/canvas': canvasOps,
+        'off mean': median(perBlock.map((s) => s[key].off.mean)).toFixed(3),
+        'full added mean': medianMetric(key, 'fullAddedMeanMs').toFixed(3),
+        'full added per canvas (us)': medianMetric(key, 'fullAddedPerCanvasUs').toFixed(2),
+        'countonly added mean': medianMetric(key, 'countOnlyAddedMeanMs').toFixed(3),
+        'countonly added per canvas (us)': medianMetric(key, 'countOnlyAddedPerCanvasUs').toFixed(2),
+      };
+    }),
   );
 }
 

@@ -5401,3 +5401,86 @@ Local commit and tag creation are authorized. Push and npm publish are not part
 of this approval.
 
 CODEX_STATUS: APPROVED
+
+---
+
+## Codex simplification review (2026-09-05)
+
+### Scope and acceptance
+
+Review the uncommitted candidate on `main`, based on `80a2d9b`.
+The initial tree already contained 28 changed files, two new tests, and three
+package tarballs. Preserve unrelated changes and artifacts.
+
+Done means the selected comparison retains its explicit evidence, unrelated
+episodes and marks cannot change its measures, and the relevant checks pass.
+This review is a simplification task, not an AFK issue closure or release approval.
+
+### Decisions and changes
+
+- Remove the new `canvas-scan check` command, its parser, count reader, tests,
+  and documentation. Direct execution showed that `{ findings: [] }` passes
+  without session evidence. An incomparable object with a candidate count of
+  zero also passes. A candidate finding is not a suitable build verdict without
+  a stronger evidence contract. Do not add that contract in this task.
+- Remove both per-episode rates. They divide selected-canvas totals by episodes
+  across all canvases. Adding unrelated episodes changes the apparent rate.
+- Remove automatic mark comparison ranges and their helpers, types, and labels.
+  Matching labels do not establish equivalent interactions. The old code also
+  ignored explicit measure ends. Keep marks as context and retain explicit
+  selected-finding episode measures and session span metadata.
+- Remove the existing-record branch after a successful OffscreenCanvas transfer.
+  Native transfer rejects a canvas with an existing context or prior transfer.
+  Correct the fake and test those rejection paths.
+- Remove duplicate checks of the packed README after whole-document equality
+  already establishes that it matches the source. Keep the content checks once.
+- Remove unsupported claims from the `stop()` comment and README. Keep the
+  shared timing wrapper and canvas registration helper; both have distinct uses.
+
+The primary agent owned CLI, documentation, README checks, and integration.
+One agent owned comparison removals. One agent owned runtime removals.
+A final independent review found no P1 or P2 regression in this simplification
+slice against the saved initial candidate.
+
+### Checks
+
+- Core tests: 677 passed across 35 files.
+- Workspace typecheck: passed.
+- CLI and package-manifest focused tests: 60 passed.
+- Runtime stop and transfer focused tests: 4 passed.
+- Core and demo builds: passed as part of `pnpm run test:browser`.
+- `git diff --check`: passed.
+- Chrome suite: pending. The sandbox blocked the initial localhost listener.
+  One approved retry runs the built suite outside the sandbox.
+
+### Remaining concerns in the broader candidate
+
+These concerns concern retained additions, not regressions from this slice.
+They prevent this entry from certifying the whole candidate for release.
+
+- Session import accepts an incomplete version-one object before rendering it.
+  The reader and baseline restoration need a coherent input boundary.
+- Browser comparison measures do not account for dropped browser entries.
+- Failed baseline replacement can leave the prior baseline in storage.
+- The reset-specific next-check text asserts where allocation cost occurs,
+  although the reset flag only establishes event order.
+- Top-method stack sampling for timed-only methods needs a runtime check.
+
+No commit or push includes the pre-existing uncommitted feature work.
+
+Run ledger: correction rounds 0/1; full evidence runs 2/2, including one
+confirmed environment failure; final judge rounds 1/2.
+
+CODEX_STATUS: CHANGES_REQUESTED
+
+### Final check result — 2026-09-05
+
+The approved Chrome retry passed all 12 browser checks. The core and demo
+builds, 677 core tests, workspace typecheck, and final diff check passed.
+The simplification slice is complete. The broader candidate still needs the
+follow-up checks listed above before release approval.
+
+Run ledger: correction rounds 0/1; full evidence runs 2/2, including one
+confirmed environment failure; final judge rounds 1/2.
+
+CODEX_STATUS: CHANGES_REQUESTED

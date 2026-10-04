@@ -141,7 +141,7 @@ export interface ExplanationStackFrame {
 export interface ExplanationStackSample {
   windowIndex: number;
   commandOrdinal: number;
-  reason: 'first-raster' | 'first-difference';
+  reason: 'first-raster' | 'first-difference' | 'heaviest-method';
   frames: ExplanationStackFrame[];
   droppedFrameCount: number;
 }
@@ -242,7 +242,8 @@ export type CanvasLifecycleEventType =
   | 'active'
   | 'detached'
   | 'retired'
-  | 'reactivated';
+  | 'reactivated'
+  | 'transferred-to-worker';
 
 export interface RecordedCanvasLifecycleEvent {
   canvasId: string;
@@ -290,6 +291,10 @@ export interface RecordedCanvasSummary {
   // its per-window detail, resets and lifecycle events are no longer in the
   // session, so nothing derived per-window mentions it.
   windowDetailDropped: boolean;
+  // 'unobservable' once the canvas was handed to a worker with
+  // transferControlToOffscreen. Its drawing happens where no patch reaches, so
+  // its totals above stop at the transfer and never say the canvas was cheap.
+  observability: 'observable' | 'unobservable';
 }
 
 export interface RecordedEpisodeCanvasSummary {
@@ -401,6 +406,18 @@ export interface InvestigationSessionV1 {
   // comparison checks this before pairing them.
   captureEvery: number;
   browserFeatures: { monotonicTime: boolean; eventTiming: boolean; longAnimationFrames: boolean };
+  // performance.timeOrigin at stop. Every timestamp in the session is relative
+  // to it, so a DevTools trace of the same run lines up by adding it.
+  timeOrigin: number;
+  // Whether the page was cross-origin isolated at stop. Chrome coarsens
+  // performance.now() to 100 µs when it is not, so a single canvas call reads
+  // as 0 or 0.1 ms and a per-method self-time total is a sum of quantized
+  // values.
+  crossOriginIsolated: boolean;
+  // The smallest nonzero step performance.now() took at stop. A per-call
+  // self-time below it is quantized, not measured. 0 when the clock did not
+  // advance during the probe.
+  timerResolutionMs: number;
   canvases: RecordedCanvasSummary[];
   windows: RecordedCanvasWindow[];
   resetEvents: RecordedResetEvent[];
@@ -431,6 +448,8 @@ export type ComparisonMeasureId =
   | 'raster-operation-count'
   | 'canvas-api-self-time-ms'
   | 'maximum-window-self-time-ms'
+  | 'worst-interaction-duration-ms'
+  | 'long-animation-frame-count'
   | 'unknown-command-window-count'
   | 'heavy-episode-operation-count'
   | 'heavy-episode-self-time-ms'
@@ -461,6 +480,15 @@ export interface ComparisonMeasure {
   scope: 'session' | 'episode';
 }
 
+// The length of one side of a comparison. Session-scoped measures are raw
+// totals over whatever the recording covered, so a reader needs each side's
+// length before a delta between the two means anything.
+export interface ComparisonSpan {
+  durationMs: number | null;
+  episodeCount: number | null;
+  userMarkCount: number | null;
+}
+
 export interface ComparisonFindingRef {
   sessionId: string;
   findingIndex: number;
@@ -485,6 +513,14 @@ export interface ComparisonArtifactV1 {
     | 'sampling-mismatch'
   >;
   measures: ComparisonMeasure[];
+  span: { baseline: ComparisonSpan; candidate: ComparisonSpan };
+  // Set when the two sides differ by more than 20 percent in duration or in
+  // episode count. Session-scoped totals are then not on one scale.
+  spanMismatch: string | null;
+  // Set when either session kept a canvas as a summary only. Such a canvas has
+  // no frames and is left out of the comparison; the note carries the count on
+  // each side.
+  coverageNote: string | null;
   improvementEstablished: false;
 }
 

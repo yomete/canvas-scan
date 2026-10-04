@@ -114,6 +114,14 @@ class FakeCanvas {
     this.context ??= new FakeContext(this);
     return this.context;
   }
+
+  toDataURL(..._args: unknown[]) {
+    return 'data:image/png;base64,';
+  }
+
+  toBlob(callback: (blob: null) => void) {
+    callback(null);
+  }
 }
 
 installCanvasPatch({
@@ -242,6 +250,35 @@ describe('canvas context wrapping', () => {
     expect(record.activeInWindow).toBe(true);
     // Neither draws, so neither is a raster operation and neither changes the
     // command signature — two identical redraws around them still compare same.
+    expect(record.rasterOps).toBe(0);
+    expect(record.sig.hash).toBe(before);
+    clock.mockRestore();
+  });
+
+  it('times toDataURL and toBlob on the element and lands the cost on its canvas', () => {
+    const record = getRecord(canvas)!;
+    setMethodEvidenceCollectionEnabled(true);
+    record.selfTimeMs = 0;
+    record.rasterOps = 0;
+    record.activeInWindow = false;
+    const before = record.sig.hash;
+    const clock = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0).mockReturnValueOnce(3)
+      .mockReturnValueOnce(10).mockReturnValueOnce(10.25);
+    const callback = vi.fn();
+
+    expect(canvas.toDataURL('image/png')).toBe('data:image/png;base64,');
+    canvas.toBlob(callback);
+
+    // The readback is on the element, but the cost lands on the canvas's
+    // record, so it reaches topMethods like getImageData does.
+    expect(callback).toHaveBeenCalledWith(null);
+    expect(getMethodEvidence(record)).toEqual({
+      toDataURL: { count: 1, canvasApiSelfTimeMs: 3 },
+      toBlob: { count: 1, canvasApiSelfTimeMs: 0.25 },
+    });
+    expect(record.selfTimeMs).toBe(3.25);
+    expect(record.activeInWindow).toBe(true);
     expect(record.rasterOps).toBe(0);
     expect(record.sig.hash).toBe(before);
     clock.mockRestore();

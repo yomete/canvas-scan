@@ -8,9 +8,12 @@
   "canvasScanVersion": "0.7.1",
   "captureEvery": 1,
   "browserFeatures": { "monotonicTime": true, "eventTiming": false, "longAnimationFrames": false },
+  "timeOrigin": 1785837600000,
+  "crossOriginIsolated": false,
+  "timerResolutionMs": 0.1,
   "canvases": [
-    { "canvasId": "canvas-a", "nearestReactOwner": "Chart", "attributionKind": "jsx-owner", "sourceLocation": { "file": "/src/Chart.tsx", "line": 4, "column": 2 }, "activeWindowCount": 2, "rasterOperationCount": 3, "canvasApiSelfTimeMs": 1.5, "maxWindowSelfTimeMs": 1, "evidenceLevel": "measured", "methodEvidence": {}, "commandStatuses": { "same": 1, "changed": 1, "unknown": 0 }, "windowDetailDropped": false },
-    { "canvasId": "canvas-b", "nearestReactOwner": null, "attributionKind": "unattributed", "sourceLocation": null, "activeWindowCount": 1, "rasterOperationCount": 1, "canvasApiSelfTimeMs": 0.25, "maxWindowSelfTimeMs": 0.25, "evidenceLevel": "measured", "methodEvidence": {}, "commandStatuses": { "same": 0, "changed": 0, "unknown": 1 }, "windowDetailDropped": false }
+    { "canvasId": "canvas-a", "nearestReactOwner": "Chart", "attributionKind": "jsx-owner", "sourceLocation": { "file": "/src/Chart.tsx", "line": 4, "column": 2 }, "activeWindowCount": 2, "rasterOperationCount": 3, "canvasApiSelfTimeMs": 1.5, "maxWindowSelfTimeMs": 1, "evidenceLevel": "measured", "methodEvidence": {}, "commandStatuses": { "same": 1, "changed": 1, "unknown": 0 }, "windowDetailDropped": false, "observability": "observable" },
+    { "canvasId": "canvas-b", "nearestReactOwner": null, "attributionKind": "unattributed", "sourceLocation": null, "activeWindowCount": 1, "rasterOperationCount": 1, "canvasApiSelfTimeMs": 0.25, "maxWindowSelfTimeMs": 0.25, "evidenceLevel": "measured", "methodEvidence": {}, "commandStatuses": { "same": 0, "changed": 0, "unknown": 1 }, "windowDetailDropped": false, "observability": "observable" }
   ],
   "windows": [
     { "canvasId": "canvas-a", "nearestReactOwner": "Chart", "attributionKind": "jsx-owner", "sourceLocation": { "file": "/src/Chart.tsx", "line": 4, "column": 2 }, "rasterOperationCount": 1, "canvasApiSelfTimeMs": 0.5, "signatureStatus": "same", "unknownReason": null, "sampled": false, "coveredWindowCount": 1, "comparisonGap": 1, "followsCanvasReset": false, "methodEvidence": {}, "windowIndex": 1, "timestampMs": 100, "startedAtTimestampMs": 100, "endedAtTimestampMs": 100, "geometry": { "backingWidth": null, "backingHeight": null, "cssWidth": null, "cssHeight": null, "devicePixelRatio": null, "expectedBackingWidth": null, "expectedBackingHeight": null, "expectedPixelArea": null, "actualToExpectedAreaRatio": null, "unavailableReason": "unavailable" } },

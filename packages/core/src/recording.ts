@@ -3,7 +3,7 @@ import { drainAttributeRecords, getConnectionState, getRecord, isKilled, reactiv
 import { collectCanvasGeometry } from './geometry.js';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence.js';
 import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture.js';
-import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, shouldCaptureFirstDifference, shouldCaptureFirstRaster } from './draw-callsite.js';
+import { captureDrawCallsite, createDrawCallsiteCapture, disableDrawCallsiteCapture, finishDrawCallsiteCapture, resetDrawCallsiteForTests, resolveDrawCallsiteBoundary, settleDrawCallsiteCaptureForTests, shouldCaptureFirstDifference, shouldCaptureFirstRaster, shouldCaptureHeaviestMethod } from './draw-callsite.js';
 import { subscribeToSelectedCommands } from './wrap-context.js';
 import type {
   AttributionKind,
@@ -46,6 +46,7 @@ const HEAVY_CANVAS_WORK_CLAIM = {
   nonEstablishedFacts: 'The evidence does not establish GPU time, presentation or render time, or avoidable work.',
 };
 const HEAVY_CANVAS_WORK_NEXT_CHECK = 'Check the top measured methods and the application code that calls them.';
+const HEAVY_CANVAS_WORK_AFTER_RESET_NEXT_CHECK = 'The slowest window followed a canvas reset. The backing-store reallocation cost lands on the next context call. Check the sizing code before you check the top measured methods.';
 const REPEATED_DRAW_WORK_CLAIM = {
   observation: 'The canvas sent repeated commands in the recorded windows and spent the measured Canvas2D API self-time shown here.',
   explanation: 'The repeated commands are a review candidate.',
@@ -83,7 +84,7 @@ let canvasIds: string[] = [];
 // Canvases the MAX_CANVASES cap evicted, folded down to the totals a
 // finding is derived from. Keyed by canvas id, so a canvas that draws
 // again after eviction merges rather than appearing twice.
-type EvictedCanvasTotals = Omit<RecordedCanvasSummary, 'canvasId' | 'evidenceLevel' | 'windowDetailDropped'>;
+type EvictedCanvasTotals = Omit<RecordedCanvasSummary, 'canvasId' | 'evidenceLevel' | 'windowDetailDropped' | 'observability'>;
 let evictedCanvasTotals = new Map<string, EvictedCanvasTotals>();
 let droppedCanvases = 0;
 let droppedWindows = 0;
@@ -122,6 +123,23 @@ const listeners = new Set<(state: RecordingState) => void>();
 
 function now(): number {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
+
+// The clock's floor is measured rather than assumed. Chrome coarsens
+// performance.now() to 100 µs unless the page is cross-origin isolated, so most
+// single canvas calls read as 0 or 0.1 ms; a reader needs that floor to tell a
+// self-time delta from tick straddling. The smallest nonzero step between
+// consecutive reads, over a few ticks, is the resolution on this page.
+function measureTimerResolutionMs(): number {
+  let resolution = Infinity;
+  let previous = now();
+  for (let ticks = 0, reads = 0; ticks < 4 && reads < 20000; reads++) {
+    const current = now();
+    const delta = current - previous;
+    if (delta > 0) { ticks++; if (delta < resolution) resolution = delta; }
+    previous = current;
+  }
+  return resolution === Infinity ? 0 : Number(resolution.toFixed(6));
 }
 
 function copyWindow(window: RecordedCanvasWindow): RecordedCanvasWindow {
@@ -217,12 +235,10 @@ function notify(): void {
 function removeCanvas(canvasId: string): void {
   canvasIds = canvasIds.filter(id => id !== canvasId);
   recordsForRecordingSession.delete(canvasId);
-  const kept: RecordedCanvasWindow[] = [];
-  for (const window of windows) {
-    if (window.canvasId === canvasId) droppedWindows++;
-    else kept.push(window);
-  }
-  windows = kept;
+  // The windows of an evicted canvas were folded into its totals, so they are
+  // not lost reports. canvasWindowReports counts only the frames the window
+  // cap dropped.
+  windows = windows.filter(window => window.canvasId !== canvasId);
   const keptResetEvents: RecordedResetEvent[] = [];
   for (const event of resetEvents) {
     if (event.canvasId === canvasId) droppedResetEvents++;
@@ -323,7 +339,11 @@ function summaries(): RecordedCanvasSummary[] {
   // An evicted canvas keeps its entry here even though no window of it
   // survives. A canvas that was evicted and then drew again appears once, with
   // the two halves added together.
-  const reported = [...new Set([...evictedCanvasTotals.keys(), ...canvasIds.filter(canvasId => windows.some(window => window.canvasId === canvasId))])];
+  // A canvas handed to a worker keeps its entry too, with or without a window.
+  // Its drawing is out of reach, and the alternative — no row at all — reads
+  // as a canvas that cost nothing.
+  const transferred = new Set(lifecycleEvents.filter(event => event.type === 'transferred-to-worker').map(event => event.canvasId));
+  const reported = [...new Set([...evictedCanvasTotals.keys(), ...canvasIds.filter(canvasId => transferred.has(canvasId) || windows.some(window => window.canvasId === canvasId))])];
   return reported.map(canvasId => {
     const retained = windows.filter(window => window.canvasId === canvasId);
     const evicted = evictedCanvasTotals.get(canvasId);
@@ -343,17 +363,19 @@ function summaries(): RecordedCanvasSummary[] {
     // The newest window wins the attribution, and the evicted half supplies it
     // only when no window survives. Chosen by which half exists, not by which
     // value is nullish — an unattributed canvas has a real null owner.
-    const attributedFrom = latest ?? evicted!;
+    // A transferred canvas can have neither half: nothing drew through it here.
+    const attributedFrom = latest ?? evicted;
     return {
       canvasId,
-      nearestReactOwner: attributedFrom.nearestReactOwner,
-      attributionKind: attributedFrom.attributionKind,
-      sourceLocation: attributedFrom.sourceLocation ? { ...attributedFrom.sourceLocation } : null,
+      nearestReactOwner: attributedFrom?.nearestReactOwner ?? null,
+      attributionKind: attributedFrom?.attributionKind ?? 'unattributed',
+      sourceLocation: attributedFrom?.sourceLocation ? { ...attributedFrom.sourceLocation } : null,
       activeWindowCount: (evicted?.activeWindowCount ?? 0) + retained.length,
       rasterOperationCount,
       canvasApiSelfTimeMs: rounded(canvasApiSelfTimeMs), maxWindowSelfTimeMs: rounded(maxWindowSelfTimeMs), evidenceLevel: 'measured' as const, methodEvidence: roundedEvidence(methodEvidence),
       commandStatuses,
       windowDetailDropped: evicted !== undefined,
+      observability: transferred.has(canvasId) ? 'unobservable' as const : 'observable' as const,
     };
   }).sort((left, right) => right.canvasApiSelfTimeMs - left.canvasApiSelfTimeMs || right.maxWindowSelfTimeMs - left.maxWindowSelfTimeMs || right.rasterOperationCount - left.rasterOperationCount || left.canvasId.localeCompare(right.canvasId));
 }
@@ -413,7 +435,7 @@ function episodesAndFindings(): { episodes: RecordedDrawEpisode[]; findings: Inv
   const findings: InvestigationFinding[] = [];
   for (const episode of episodes) for (const canvas of episode.canvases) if (canvas.canvasApiSelfTimeMs >= HEAVY_CANVAS_WORK_THRESHOLD_MS) {
     const maximum = episodeMaximumWindows.get(episode.episodeId)!.get(canvas.canvasId)!;
-    findings.push({ type: 'heavy-canvas-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, rasterOperationCount: canvas.rasterOperationCount, topMethods: topMethods(canvas.methodEvidence), maximumWindow: { windowIndex: maximum.windowIndex, timestampMs: maximum.timestampMs, canvasApiSelfTimeMs: maximum.canvasApiSelfTimeMs, rasterOperationCount: maximum.rasterOperationCount, followsCanvasReset: maximum.followsCanvasReset, methodEvidence: copyEvidence(maximum.methodEvidence) }, gateThresholdMs: HEAVY_CANVAS_WORK_THRESHOLD_MS, gateExcessMs: rounded(canvas.canvasApiSelfTimeMs - HEAVY_CANVAS_WORK_THRESHOLD_MS), claimBoundary: { ...HEAVY_CANVAS_WORK_CLAIM }, nextCheck: HEAVY_CANVAS_WORK_NEXT_CHECK });
+    findings.push({ type: 'heavy-canvas-work', evidenceLevel: 'candidate', canvasId: canvas.canvasId, episodeId: episode.episodeId, canvasApiSelfTimeMs: canvas.canvasApiSelfTimeMs, rasterOperationCount: canvas.rasterOperationCount, topMethods: topMethods(canvas.methodEvidence), maximumWindow: { windowIndex: maximum.windowIndex, timestampMs: maximum.timestampMs, canvasApiSelfTimeMs: maximum.canvasApiSelfTimeMs, rasterOperationCount: maximum.rasterOperationCount, followsCanvasReset: maximum.followsCanvasReset, methodEvidence: copyEvidence(maximum.methodEvidence) }, gateThresholdMs: HEAVY_CANVAS_WORK_THRESHOLD_MS, gateExcessMs: rounded(canvas.canvasApiSelfTimeMs - HEAVY_CANVAS_WORK_THRESHOLD_MS), claimBoundary: { ...HEAVY_CANVAS_WORK_CLAIM }, nextCheck: maximum.followsCanvasReset ? HEAVY_CANVAS_WORK_AFTER_RESET_NEXT_CHECK : HEAVY_CANVAS_WORK_NEXT_CHECK });
   }
   for (const episode of episodes) {
     const reports = windows.filter(window => window.windowIndex >= episode.firstWindowIndex && window.windowIndex <= episode.lastWindowIndex);
@@ -549,16 +571,23 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   if (explanation) explanation.unsubscribeDetail();
   const derived = episodesAndFindings();
   episodeAssociations = deriveAssociations(derived.episodes);
+  // Episodes exist only now, so the measures that line them up with a
+  // DevTools trace are written at stop rather than as they happen.
+  derived.episodes.forEach((episode, index) => { try { performance.measure(`canvas-scan:episode-${index + 1}`, { start: episode.startedAtTimestampMs, end: episode.endedAtTimestampMs }); } catch {} });
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
     stopReason, canvasScanVersion: '0.7.1', captureEvery, browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    timeOrigin: typeof performance === 'undefined' ? 0 : performance.timeOrigin,
+    crossOriginIsolated: typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated,
+    timerResolutionMs: measureTimerResolutionMs(),
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
-    // canvasLifetimes now counts only the canvases eviction could keep
-    // nothing about — the ones with no window to summarize. A canvas that had
-    // windows keeps its totals, and canvasWindowReports counts the frames it
-    // lost.
+    // canvasLifetimes counts only the canvases eviction could keep nothing
+    // about — the ones with no window to summarize. A canvas that had windows
+    // keeps its totals and says so with windowDetailDropped. Its folded
+    // windows are not lost reports, so canvasWindowReports counts only the
+    // frames the window cap dropped.
     droppedEntryCounts: { canvasWindowReports: droppedWindows, canvasLifetimes: droppedCanvases, resetEvents: droppedResetEvents, lifecycleEvents: droppedLifecycleEvents, ...browserDropped },
   };
   recordsForCompletedSession = recordsForRecordingSession;
@@ -619,6 +648,7 @@ function startRecordingWithDuration(durationMs: number): void {
   setResetEventCollectionEnabled(true);
   startedAt = new Date().toISOString();
   startedMonotonic = now();
+  try { performance.mark('canvas-scan:recording-start'); } catch {}
   sessionId = `canvas-scan-${Date.parse(startedAt)}-${++sequence}`;
   windows = [];
   resetEvents = [];
@@ -701,6 +731,12 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
   if (!capture) return { status: 'unavailable', reason: 'instrumentation-disabled' };
   reactivateRecord(record);
   const callsites = createDrawCallsiteCapture();
+  // The heavy card names its top method, and the only stacks used to come
+  // from the first raster call and the first differing command. Neither is
+  // that method unless by luck, so the code that actually draws the hot path
+  // was never named. One sample per window for the first call of that method
+  // stays inside the same cap.
+  const heaviestMethod = finding.type === 'heavy-canvas-work' ? finding.topMethods[0]?.method ?? null : null;
   const started = new Date().toISOString();
   const unsubscribeDetail = subscribeToSelectedCommands(
     record,
@@ -713,9 +749,10 @@ export function startExplanation(selection: ExplanationSelection): ExplanationSt
     (command, rasterOperation, stackBoundary) => {
       const relationship = getLiveCommandRelationship(capture, command);
       if (!relationship) return;
-      const reasons: Array<'first-raster' | 'first-difference'> = [];
+      const reasons: Array<'first-raster' | 'first-difference' | 'heaviest-method'> = [];
       if (rasterOperation && shouldCaptureFirstRaster(callsites)) reasons.push('first-raster');
       if (relationship.firstDifference && shouldCaptureFirstDifference(callsites, relationship.identity)) reasons.push('first-difference');
+      if (heaviestMethod !== null && command.name === heaviestMethod && shouldCaptureHeaviestMethod(callsites, relationship.identity)) reasons.push('heaviest-method');
       if (reasons.length) captureDrawCallsite(callsites, relationship.identity, command.ordinal, reasons, undefined, stackBoundary);
     },
   );
@@ -754,6 +791,7 @@ export function subscribeToRecordingState(listener: (next: RecordingState) => vo
   return () => listeners.delete(listener);
 }
 
+export async function settleExplanationCallsitesForTests(): Promise<void> { if (activeExplanation) await settleDrawCallsiteCaptureForTests(activeExplanation.callsites); }
 export function resetRecordingForTests(): void {
   resetBrowserEvidence();
   setMethodEvidenceCollectionEnabled(false);

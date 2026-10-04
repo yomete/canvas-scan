@@ -34,6 +34,8 @@ import type {
   InvestigationFinding,
   InvestigationSessionV1,
   RecordedCanvasGeometry,
+  RecordedEventTiming,
+  RecordedLongAnimationFrame,
   SourceLocation,
 } from './types.js';
 
@@ -118,6 +120,8 @@ let explanationStartFailure = '';
 let copyExplanationStatus = '';
 let copyExplanationRequest = 0;
 let baseline: { findingIndex: number; session: InvestigationSessionV1 } | null = null;
+let baselineNote = '';
+let loadSessionStatus = '';
 let completedComparison: ComparisonArtifactV1 | null = null;
 let copyComparisonStatus = '';
 let copyComparisonRequest = 0;
@@ -311,6 +315,11 @@ button { font: inherit; }
 .session-section { border-top: 1px solid rgba(255,255,255,.1); margin-top: 4px; padding: 6px 5px; }
 .session-header { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
 .session-copy-status { grid-column: 1 / -1; color: rgba(255, 255, 255, 0.72); }
+.load-session-label { display: inline-block; border: 1px solid rgba(255,255,255,.16); border-radius: 4px; color: rgba(255,255,255,.72); cursor: pointer; font: inherit; padding: 2px 5px; }
+.load-session-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.load-session-label:focus-within { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.18); }
+.load-session-status, .baseline-note { color: rgba(255, 255, 255, 0.72); }
+.load-session-status:empty, .baseline-note:empty { display: none; }
 .repeated-finding-title { color: #fff; }
 .repeated-finding-line { margin-top: 2px; }
 .badge {
@@ -1039,6 +1048,27 @@ function setDrawnFrom(line: HTMLElement, session: InvestigationSessionV1, findin
   line.hidden = text === null;
 }
 
+function setTopMethodCallsite(line: HTMLElement, session: InvestigationSessionV1, finding: InvestigationFinding, index: number): void {
+  const text = findingTopMethodCallsite(session, finding, index);
+  line.textContent = text ?? '';
+  line.hidden = text === null;
+}
+
+function findingTopMethodCallsite(session: InvestigationSessionV1, finding: InvestigationFinding, index: number): string | null {
+  // "Drawn from" is a component or creation site, never the code that draws.
+  // A draw callsite exists only inside an explanation, so the card reads the
+  // explanation taken for this finding and shows the one sample tagged for the
+  // method the card itself names.
+  if (finding.type !== 'heavy-canvas-work' || !finding.topMethods.length) return null;
+  const artifact = completedExplanation;
+  if (!artifact || artifact.source.sessionId !== session.sessionId || artifact.source.findingIndex !== index) return null;
+  const sample = artifact.stacks.find(candidate => candidate.reason === 'heaviest-method');
+  const frame = sample?.frames.find(candidate => candidate.mapped && !/node_modules/.test(candidate.mapped.file));
+  if (!frame?.mapped) return null;
+  const basename = frame.mapped.file.split(/[\\/]/).pop() || frame.mapped.file;
+  return `Top method ${finding.topMethods[0].method} called from ${frame.functionName || 'anonymous'} (${basename}:${frame.mapped.line})`;
+}
+
 function findingDrawnFrom(session: InvestigationSessionV1, finding: InvestigationFinding): string | null {
   // The artifact carries the raw creation site, taken with no network at all.
   // A mapped location, once one exists, is the same place said in the reader's
@@ -1049,6 +1079,28 @@ function findingDrawnFrom(session: InvestigationSessionV1, finding: Investigatio
   if (!location) return null;
   const basename = location.file.split(/[\\/]/).pop() || location.file;
   return `Drawn from ${basename}:${location.line}`;
+}
+
+function entryOverlap(entry: RecordedEventTiming | RecordedLongAnimationFrame): string {
+  return entry.kind === 'event-timing'
+    ? `${entry.eventType} ${Math.round(entry.durationMs)} ms (Event Timing)`
+    : `long animation frame ${Math.round(entry.durationMs)} ms, ${Math.round(entry.blockingDurationMs)} ms blocking`;
+}
+
+function findingOverlaps(session: InvestigationSessionV1, finding: InvestigationFinding): string | null {
+  // The recording already knows which Event Timing entries and long animation
+  // frames this episode overlapped, and only ever wrote them to the JSON. The
+  // first question an engineer asks is whether the canvas was the slow part of
+  // the frame, so the answer goes on the card, longest first. Associated
+  // evidence: the two happened at the same time, and no more than that.
+  const episodeIds = findingEpisodeIds(finding);
+  const entryIds = new Set(session.episodeAssociations.filter(association => episodeIds.includes(association.episodeId)).map(association => association.entryId));
+  const entries = session.browserEntries
+    .filter((entry): entry is RecordedEventTiming | RecordedLongAnimationFrame => entryIds.has(entry.entryId) && (entry.kind === 'event-timing' || entry.kind === 'long-animation-frame'))
+    .sort((left, right) => right.durationMs - left.durationMs);
+  if (!entries.length) return null;
+  const parts = entries.slice(0, 3).map(entryOverlap);
+  return entries.length > 3 ? `${parts.join(' · ')} · +${entries.length - 3} more` : parts.join(' · ');
 }
 
 function findingWindows(
@@ -1117,10 +1169,76 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
   return JSON.parse(JSON.stringify(session)) as InvestigationSessionV1;
 }
 
+// sessionStorage is already scoped to the origin and to the tab, so a reload
+// of the same page gets the baseline back and another origin never sees it.
+const baselineStorageKey = 'canvas-scan:baseline';
+const baselineStorageLimit = 4 * 1024 * 1024;
+
+function storeBaseline(): void {
+  if (!baseline) return;
+  const json = JSON.stringify(baseline);
+  if (json.length > baselineStorageLimit) { baselineNote = 'Baseline is too large to keep across a page reload'; return; }
+  try { sessionStorage.setItem(baselineStorageKey, json); baselineNote = ''; } catch { baselineNote = 'Baseline could not be kept across a page reload'; }
+}
+
+function restoreBaseline(): void {
+  let stored: { findingIndex: number; session: InvestigationSessionV1 } | null = null;
+  try { stored = JSON.parse(sessionStorage.getItem(baselineStorageKey) ?? 'null'); } catch { return; }
+  if (stored?.session?.schemaVersion !== 1 || !stored.session.findings?.[stored.findingIndex]) return;
+  baseline = stored;
+  baselineNote = 'Baseline restored from the last page load';
+}
+
+function downloadJson(value: unknown, filename: string, started: string): string {
+  // A blocked or failed download used to report success anyway. Only the
+  // steps that actually ran are reported.
+  let url: string | undefined;
+  try {
+    const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
+    url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    return started;
+  } catch {
+    return 'Download failed';
+  } finally {
+    if (url !== undefined) URL.revokeObjectURL(url);
+  }
+}
+
+function loadSessionFile(file: File): void {
+  const reader = new FileReader();
+  const failed = () => { loadSessionStatus = `${file.name} is not a canvas-scan session JSON`; flyoutRevision++; markDirty(); };
+  reader.onerror = failed;
+  reader.onload = () => {
+    let session: InvestigationSessionV1;
+    try { session = JSON.parse(String(reader.result)); } catch { failed(); return; }
+    if (session?.schemaVersion !== 1 || !Array.isArray(session.findings)) { failed(); return; }
+    shownSession = session;
+    expandedFindingId = session.findings[0] ? findingKey(session.findings[0]) : null;
+    completedExplanation = null;
+    explanationSelection = null;
+    explanationStartFailure = '';
+    copyExplanationStatus = '';
+    completedComparison = null;
+    copyComparisonStatus = '';
+    copyComparisonRequest++;
+    copySessionStatus = '';
+    showAllSessionCanvases = false;
+    findingNodes.clear();
+    loadSessionStatus = `Loaded ${sessionLabel(session.sessionId)} from ${file.name}`;
+    flyoutRevision++; markDirty();
+  };
+  reader.readAsText(file);
+}
+
 function comparisonMeasureLabel(id: ComparisonMeasureId): string {
   const labels: Record<Exclude<ComparisonMeasureId, `method:${string}:operation-count` | `method:${string}:self-time-ms`>, string> = {
     'active-window-count': 'Active window count', 'raster-operation-count': 'Raster operation count',
     'canvas-api-self-time-ms': 'Canvas2D API self-time', 'maximum-window-self-time-ms': 'Maximum window Canvas2D API self-time',
+    'worst-interaction-duration-ms': 'Worst interaction duration', 'long-animation-frame-count': 'Long animation frame count',
     'unknown-command-window-count': 'Unknown command window count', 'heavy-episode-operation-count': 'Heavy episode operation count',
     'heavy-episode-self-time-ms': 'Heavy episode Canvas2D API self-time', 'repeated-window-count': 'Repeated window count',
     'repeated-raster-operation-count': 'Repeated raster operation count', 'comparison-gap-count': 'Comparison gap count',
@@ -1163,6 +1281,14 @@ function updateComparisonPanel(): void {
     // alike. A count is a structural fact about the two recordings; a time is
     // two measurements taken on separate occasions, so a small move in it can
     // be noise while a count of the same size is real.
+    // Two hand-driven recordings rarely cover the same span, and a session
+    // total over a longer recording reads as more work. Each side's length is
+    // shown, and a marked difference is named before the totals.
+    const covers = (value: ComparisonArtifactV1['span']['baseline']) => `${value.durationMs ?? 'unknown'} ms · ${value.episodeCount ?? 'unknown'} draw episodes · ${value.userMarkCount ?? 'unknown'} user marks`;
+    appendExplanationLine(panel, `Baseline covers: ${covers(artifact.span.baseline)}`);
+    appendExplanationLine(panel, `Candidate covers: ${covers(artifact.span.candidate)}`);
+    if (artifact.spanMismatch) appendExplanationLine(panel, 'RECORDINGS DIFFER IN LENGTH', artifact.spanMismatch);
+    if (artifact.coverageNote) appendExplanationLine(panel, 'CANVASES NOT COMPARED', artifact.coverageNote);
     const structural = artifact.measures.filter(measure => measure.interpretation === 'structural');
     const timings = artifact.measures.filter(measure => measure.interpretation === 'observed-timing-pair');
     const line = (measure: ComparisonMeasure) => {
@@ -1181,9 +1307,11 @@ function updateComparisonPanel(): void {
   } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Couldn't compare: ${reason.replaceAll('-', ' ')}`);
   const copy = document.createElement('button');
   copy.className = 'comparison-copy'; copy.type = 'button'; copy.dataset.action = 'copy-comparison'; copy.textContent = 'Copy comparison JSON';
+  const download = document.createElement('button');
+  download.className = 'comparison-copy'; download.type = 'button'; download.dataset.action = 'download-comparison'; download.textContent = 'Download comparison JSON';
   const status = document.createElement('div');
   status.className = 'comparison-copy-status'; status.setAttribute('aria-live', 'polite'); status.textContent = copyComparisonStatus;
-  panel.append(copy, status);
+  panel.append(copy, download, status);
 }
 
 function updateExplanationPanel(): void {
@@ -1277,9 +1405,11 @@ function updateExplanationPanel(): void {
     }
     const copy = document.createElement('button');
     copy.className = 'explanation-copy'; copy.type = 'button'; copy.dataset.action = 'copy-explanation'; copy.textContent = 'Copy explanation JSON';
+    const download = document.createElement('button');
+    download.className = 'explanation-copy'; download.type = 'button'; download.dataset.action = 'download-explanation'; download.textContent = 'Download explanation JSON';
     const copyStatus = document.createElement('div');
     copyStatus.className = 'explanation-copy-status'; copyStatus.setAttribute('aria-live', 'polite'); copyStatus.textContent = copyExplanationStatus;
-    panel.append(copy, copyStatus);
+    panel.append(copy, download, copyStatus);
     return;
   }
   if (explanationStartFailure) {
@@ -1317,6 +1447,8 @@ function createFinding(
   evidence.className = 'finding-evidence';
   evidence.id = `${id}-evidence`;
   appendLine(evidence, '', findingSummary(finding));
+  const overlaps = findingOverlaps(session, finding);
+  if (overlaps) appendLine(evidence, 'Overlaps', overlaps);
   // Always created, because the location can arrive after the card does: the
   // creation site is known with no network, and its mapping through the
   // application's source map is not.
@@ -1324,6 +1456,12 @@ function createFinding(
   drawnFrom.className = 'finding-line finding-drawn-from';
   setDrawnFrom(drawnFrom, session, finding);
   evidence.append(drawnFrom);
+  // Also always created: the callsite of the top method arrives only once an
+  // explanation for this finding completes.
+  const topMethod = document.createElement('div');
+  topMethod.className = 'finding-line finding-top-method';
+  setTopMethodCallsite(topMethod, session, finding, index);
+  evidence.append(topMethod);
 
   if (lifecycleEndsRetired(session, finding.canvasId)) {
     const retired = document.createElement('div');
@@ -1417,6 +1555,8 @@ function updateFinding(session: InvestigationSessionV1, finding: InvestigationFi
   if (evidence) evidence.hidden = !expanded;
   const drawnFrom = card.querySelector<HTMLElement>('.finding-drawn-from');
   if (drawnFrom) setDrawnFrom(drawnFrom, session, finding);
+  const topMethod = card.querySelector<HTMLElement>('.finding-top-method');
+  if (topMethod) setTopMethodCallsite(topMethod, session, finding, index);
   const live = canvases.get(finding.canvasId);
   const connected = live instanceof Element && live.isConnected;
   const actions = card.querySelector<HTMLElement>('.finding-actions');
@@ -1483,8 +1623,23 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   coverage.className = 'session-section session-coverage';
   if (!session.browserFeatures.eventTiming) appendLine(coverage, '', 'Event Timing is unavailable in this browser.');
   if (!session.browserFeatures.longAnimationFrames) appendLine(coverage, '', 'Long Animation Frames are unavailable in this browser.');
+  // A self-time delta smaller than the clock tick is which calls straddled a
+  // tick, not a change in the work. One dogfood run reported roundRect cheaper
+  // on exactly that. The floor is measured per session, so say it once here.
+  if (session.timerResolutionMs > 0) {
+    appendLine(coverage, 'Coverage', `Timer resolution ${session.timerResolutionMs} ms; per-call times below this are quantized.${session.crossOriginIsolated ? '' : ' The page is not cross-origin isolated, so the browser coarsens the clock.'}`);
+  }
   for (const [name, count] of droppedEntries(session)) {
     appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name, count)} dropped`);
+  }
+  // A long animation frame that overlapped no draw episode is the recording's
+  // answer to whether the canvas was the slow part of the frame: it was not.
+  // Two dogfood runs had to read that from the raw JSON.
+  const associated = new Set(session.episodeAssociations.map(association => association.entryId));
+  const idleFrames = session.browserEntries.filter((entry): entry is RecordedLongAnimationFrame => entry.kind === 'long-animation-frame' && !associated.has(entry.entryId)).map(entry => Math.round(entry.durationMs));
+  if (idleFrames.length) {
+    const shortest = Math.min(...idleFrames); const longest = Math.max(...idleFrames);
+    appendLine(coverage, 'Coverage', `${idleFrames.length} long animation frame${idleFrames.length === 1 ? '' : 's'} (${shortest === longest ? shortest : `${shortest}–${longest}`} ms) overlapped no Canvas2D draw episode`);
   }
   // A canvas the lifetime cap evicted is a state of its own: its totals are
   // real and it still appears in the summaries, but nothing derived per window
@@ -1537,7 +1692,9 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
       line.dataset.sessionCanvasId = canvas.canvasId;
       const owner = document.createElement('div');
       owner.className = 'session-owner';
-      owner.textContent = `${ownerName(canvas.nearestReactOwner, canvas.attributionKind)} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
+      owner.textContent = canvas.observability === 'unobservable'
+        ? `${ownerName(canvas.nearestReactOwner, canvas.attributionKind)} · not observable: rendering moved to a worker`
+        : `${ownerName(canvas.nearestReactOwner, canvas.attributionKind)} · ${canvas.canvasApiSelfTimeMs} ms in Canvas2D · ${canvas.rasterOperationCount} draw calls · slowest frame ${canvas.maxWindowSelfTimeMs} ms`;
       const identifier = document.createElement('div');
       identifier.className = 'session-identifier';
       identifier.textContent = `Canvas ID: ${canvas.canvasId}`;
@@ -1691,6 +1848,10 @@ function renderFlyout(): void {
   if (shownSession) {
     updateSessionView(shownSession);
   }
+  const loadStatus = flyout.querySelector<HTMLElement>('.load-session-status');
+  if (loadStatus) loadStatus.textContent = loadSessionStatus;
+  const baselineLine = flyout.querySelector<HTMLElement>('.baseline-note');
+  if (baselineLine) baselineLine.textContent = baselineNote;
   let liveHeading = flyout.querySelector<HTMLElement>('.live-heading');
   if (rows.length) {
     if (!liveHeading) {
@@ -2075,6 +2236,7 @@ function handleFlyoutClick(event: MouseEvent): void {
     const finding = source?.findings[findingIndex];
     if (!source || !finding || action.dataset.sessionId !== source.sessionId) return;
     baseline = { session: copySession(source), findingIndex };
+    storeBaseline();
     completedComparison = null;
     copyComparisonStatus = '';
     copyComparisonRequest++;
@@ -2144,6 +2306,18 @@ function handleFlyoutClick(event: MouseEvent): void {
     markDirty();
     return;
   }
+  if (action?.dataset.action === 'download-comparison' && completedComparison) {
+    copyComparisonRequest++;
+    copyComparisonStatus = downloadJson(completedComparison, `${completedComparison.comparisonId}.json`, 'Comparison JSON download started');
+    flyoutRevision++; markDirty();
+    return;
+  }
+  if (action?.dataset.action === 'download-explanation' && completedExplanation) {
+    copyExplanationRequest++;
+    copyExplanationStatus = downloadJson(completedExplanation, `${completedExplanation.explanationId}.json`, 'Explanation JSON download started');
+    flyoutRevision++; markDirty();
+    return;
+  }
   if (action?.dataset.action === 'copy-explanation' && completedExplanation) {
     const explanationId = completedExplanation.explanationId;
     const request = ++copyExplanationRequest;
@@ -2174,23 +2348,8 @@ function handleFlyoutClick(event: MouseEvent): void {
     return;
   }
   if (action?.dataset.action === 'download-session' && shownSession) {
-    // A blocked or failed download used to report success anyway. Only the
-    // steps that actually ran are reported.
     copySessionRequest++;
-    let url: string | undefined;
-    try {
-      const blob = new Blob([JSON.stringify(shownSession)], { type: 'application/json' });
-      url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${shownSession.sessionId}.json`;
-      anchor.click();
-      copySessionStatus = 'Session JSON download started';
-    } catch {
-      copySessionStatus = 'Download failed';
-    } finally {
-      if (url !== undefined) URL.revokeObjectURL(url);
-    }
+    copySessionStatus = downloadJson(shownSession, `${shownSession.sessionId}.json`, 'Session JSON download started');
     flyoutRevision++;
     markDirty();
     return;
@@ -2431,6 +2590,29 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   flyout.hidden = true;
   flyout.addEventListener('click', handleFlyoutClick);
   flyout.addEventListener('mouseover', handleFlyoutMouseover);
+  const loadSession = document.createElement('div');
+  loadSession.className = 'session-section load-session';
+  const loadLabel = document.createElement('label');
+  loadLabel.className = 'load-session-label';
+  loadLabel.textContent = 'Load session JSON';
+  const loadInput = document.createElement('input');
+  loadInput.className = 'load-session-input';
+  loadInput.type = 'file';
+  loadInput.accept = '.json,application/json';
+  loadInput.addEventListener('change', () => {
+    const file = loadInput.files?.[0];
+    if (file) loadSessionFile(file);
+    loadInput.value = '';
+  });
+  loadLabel.append(loadInput);
+  const loadStatus = document.createElement('div');
+  loadStatus.className = 'session-line load-session-status';
+  loadStatus.setAttribute('aria-live', 'polite');
+  const baselineLine = document.createElement('div');
+  baselineLine.className = 'session-line baseline-note';
+  loadSession.append(loadLabel, loadStatus, baselineLine);
+  flyout.append(loadSession);
+  restoreBaseline();
   popover = document.createElement('div');
   popover.className = 'popover';
   popover.hidden = true;
@@ -2597,6 +2779,8 @@ export function unmountOverlay(): void {
   copyExplanationStatus = '';
   copyExplanationRequest = 0;
   baseline = null;
+  baselineNote = '';
+  loadSessionStatus = '';
   completedComparison = null;
   copyComparisonStatus = '';
   copyComparisonRequest = 0;

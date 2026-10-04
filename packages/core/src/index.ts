@@ -5,8 +5,9 @@ import {
   getHistory,
   latestReports,
   startFrameLoop,
+  stopFrameLoop,
 } from './frame-loop.js';
-import { mountOverlay } from './overlay.js';
+import { mountOverlay, unmountOverlay } from './overlay.js';
 import { compareSessions } from './comparison.js';
 import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording.js';
 import type {
@@ -97,7 +98,18 @@ export function start(options: CanvasScanOptions = {}): void {
     stopExplanation,
     getLastExplanation,
     compareSessions,
+    stop,
   };
+}
+
+// Stop the frame loop and remove the overlay. Prototype wrappers stay in
+// place; start() can run again without patching twice.
+export function stop(): void {
+  if (!started) return;
+  stopFrameLoop();
+  unmountOverlay();
+  delete (window as any).__CANVAS_SCAN__;
+  started = false;
 }
 
 export type {
