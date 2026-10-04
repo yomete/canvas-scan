@@ -86,7 +86,7 @@ export function start(options: CanvasScanOptions = {}): void {
     }
   }
   (window as any).__CANVAS_SCAN__ = {
-    version: '0.7.0',
+    version: '0.7.1',
     getHistory,
     getReports,
     startRecording,
