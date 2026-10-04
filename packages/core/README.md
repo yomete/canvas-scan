@@ -101,7 +101,7 @@ import {
 
 ## For coding agents
 
-`skills/canvas-scan/SKILL.md` in this package is an agent skill that teaches the record, explain, change, compare workflow, how to read each finding type, and which code change matches each one. After install it is at `node_modules/canvas-scan/skills/canvas-scan`. Copy that directory into your agent's skills directory, or point the agent at it.
+canvas-scan ships an agent skill at `skills/canvas-scan/SKILL.md` in the published package, and at `packages/core/skills/canvas-scan` in the repository. It teaches the record, explain, change, compare workflow, how to read each finding type, and which code change matches each one. After install it is at `node_modules/canvas-scan/skills/canvas-scan`. Copy that directory into your agent's skills directory, or point the agent at it.
 
 ## The artifacts
 
