@@ -12,6 +12,8 @@ export const MANIFEST_REQUIRED = [
   'package/dist/auto.d.ts',
   'package/dist/recording.d.ts',
   'package/dist/types.d.ts',
+  'package/skills/canvas-scan/SKILL.md',
+  'package/skills/canvas-scan/REFERENCE.md',
 ];
 
 export const MANIFEST_ALLOW = [
@@ -56,8 +58,8 @@ export function assertPackedVersion(sources, version) {
   }
 }
 
-export const ESM_RUNTIME_EXPORTS = ['start', 'getReports', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
-export const IIFE_RUNTIME_FIELDS = ['version', 'getHistory', 'getReports', 'startRecording', 'stopRecording', 'mark', 'getLastSession', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
+export const ESM_RUNTIME_EXPORTS = ['start', 'stop', 'getReports', 'startRecording', 'stopRecording', 'getLastSession', 'mark', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
+export const IIFE_RUNTIME_FIELDS = ['version', 'stop', 'getHistory', 'getReports', 'startRecording', 'stopRecording', 'mark', 'getLastSession', 'startExplanation', 'stopExplanation', 'getLastExplanation', 'compareSessions'];
 export const TYPE_EXPORTS = ['AttributionKind', 'CanvasMethodEvidence', 'CanvasScanOptions', 'DrawBatchReport', 'SignatureStatus', 'SourceLocation', 'InvestigationSessionV1', 'RecordedCanvasSummary', 'RecordedCanvasWindow', 'RecordedCanvasGeometry', 'CanvasGeometryUnavailableReason', 'RecordedResetEvent', 'CanvasResetSource', 'CanvasLifecycleEventType', 'RecordedCanvasLifecycleEvent', 'RecordedDrawEpisode', 'RecordedEpisodeCanvasSummary', 'RecordedTopMethod', 'HeavyCanvasWorkFinding', 'InvestigationFinding', 'RepeatedDrawWorkFinding', 'ResizeChurnFinding', 'BackingStoreMismatchFinding', 'RecordedRepeatedWindow', 'RecordingState', 'RecordingStopReason', 'RecordedDocumentEvent', 'RecordedEventTiming', 'RecordedUserMark', 'RecordedLongAnimationFrameScript', 'RecordedLongAnimationFrame', 'RecordedBrowserEvidenceEntry', 'RecordedEpisodeAssociation', 'ExplanationSelection', 'ExplanationStartResult', 'ExplanationUnknownReason', 'NormalizedCommandArgument', 'NormalizedCanvasCommand', 'ExplanationCommandWindow', 'CommandDifference', 'ExplanationWindowComparison', 'ExplanationStackFrame', 'ExplanationStackSample', 'ExplanationLimitName', 'ExplanationLimitReason', 'ExplanationLimitCoordinate', 'ExplanationLimitResult', 'ExplanationCallsiteLimitReason', 'ExplanationCallsiteCoverage', 'ExplanationArtifactV1', 'SessionFindingPairing', 'ComparisonMeasureId', 'ComparisonMeasure', 'ComparisonFindingRef', 'ComparisonArtifactV1'];
 // npm shows packages/core/README.md, so the packed copy is the root README with
 // one header comment in front. Everything after the header must match the root

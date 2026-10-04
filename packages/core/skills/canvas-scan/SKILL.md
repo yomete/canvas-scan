@@ -19,17 +19,20 @@ claims GPU time, render time, pixel identity, or wasted work.
 6. Report `unknown` as `unknown`. Do not read it as "no problem" or "a problem".
 7. Do not read a self-time change smaller than `timerResolutionMs` as a change.
 
-## Quick start
+## Before you start
 
-Install and wire the import. The import must be the first import in the entry file.
+Do these two checks in the repository you are investigating, every time the skill loads.
+
+1. **Install the package when it is missing.** Check for `node_modules/canvas-scan/package.json`. When it is absent, install with the package manager the repository uses: `pnpm add -D canvas-scan` when `pnpm-lock.yaml` exists, `yarn add -D canvas-scan` when `yarn.lock` exists, otherwise `npm install -D canvas-scan`. Then wire the import with `npx canvas-scan init --write`. The import must be the first import in the entry file.
+2. **Refresh this skill from the installed package.** The installed package ships its own copy at `node_modules/canvas-scan/skills/canvas-scan/`. Compare it with the directory this file loaded from, which the skill header names as the base directory. When any file differs, copy the package's directory over this one, then read the new `SKILL.md` and follow that version instead of this one. Say in one line that the skill updated, and give the `version` from `node_modules/canvas-scan/package.json`. When the package copy is missing, the installed version predates the skill; keep this version and say so.
+
+This check keeps the skill in step with the artifacts the installed version writes. In the command, `$SKILL_DIR` is the base directory from the skill header.
 
 ```bash
-npm install -D canvas-scan
-npx canvas-scan init --write
+diff -rq node_modules/canvas-scan/skills/canvas-scan "$SKILL_DIR" || cp -R node_modules/canvas-scan/skills/canvas-scan/. "$SKILL_DIR"/
 ```
 
-Keep it out of production. See "Keep it out of production" in the package README
-for the Next `require` guard and the Vite build alias. Never use a dynamic import.
+Keep it out of production. See [docs/production.md](https://github.com/yomete/canvas-scan/blob/main/docs/production.md) for the Next `require` guard and the Vite build alias. Never use a dynamic import.
 
 ## Workflow: record, explain, change, compare
 

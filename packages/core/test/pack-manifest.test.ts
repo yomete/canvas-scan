@@ -74,9 +74,9 @@ describe('packed version rules', () => {
 });
 
 describe('public package rules', () => {
-  const runtimeApi = 'export { start, getReports, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
+  const runtimeApi = 'export { start, stop, getReports, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
   const api = `${runtimeApi} export type { ${TYPE_EXPORTS.join(', ')} };`;
-  const iife = 'window.__CANVAS_SCAN__={version,getHistory,getReports,startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
+  const iife = 'window.__CANVAS_SCAN__={version,stop,getHistory,getReports,startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
 
   it('accepts every required public operation', () => {
     expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife })).not.toThrow();
@@ -151,9 +151,9 @@ describe('v0.5 investigation ritual', () => {
 
   it('rejects packed README drift outside the ritual section', () => {
     const actual = sources();
-    expect(actual.packedReadme).toContain('### Options');
-    expect(actual.packedReadme).toContain('### Sampling');
-    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('### Sampling', '### Sampled') })).toThrow(/outside the packed header/);
+    expect(actual.packedReadme).toContain('## Quick start');
+    expect(actual.packedReadme).toContain('## What it finds');
+    expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace('## What it finds', '## What it found') })).toThrow(/outside the packed header/);
     expect(() => assertInvestigationRitual({ ...actual, packedReadme: `${actual.packedReadme}\nA line only the tarball has.\n` })).toThrow(/outside the packed header/);
     expect(() => assertInvestigationRitual({ ...actual, packedReadme: actual.packedReadme.replace(PACKED_README_HEADER, '') })).toThrow(/packed header/);
   });
