@@ -35,7 +35,7 @@ import 'canvas-scan/auto';
 Or, for development without a bundler, a script tag before all other scripts:
 
 ```html
-<script src="https://unpkg.com/canvas-scan@0.7.2/dist/canvas-scan.iife.js"></script>
+<script src="https://unpkg.com/canvas-scan@0.7.3/dist/canvas-scan.iife.js"></script>
 ```
 
 Reload, press **Record investigation** in the overlay, reproduce the slow interaction once, and stop. Findings appear ranked, each with its evidence level, its claim boundary, and its next check.

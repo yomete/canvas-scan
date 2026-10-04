@@ -577,7 +577,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
   lastSession = {
     schemaVersion: 1, sessionId, startedAt, endedAt: new Date().toISOString(),
     durationMs: Math.max(0, Number((endedMonotonic - startedMonotonic).toFixed(3))),
-    stopReason, canvasScanVersion: '0.7.2', captureEvery, browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
+    stopReason, canvasScanVersion: '0.7.3', captureEvery, browserFeatures: { monotonicTime: typeof performance !== 'undefined', ...browserFeatures },
     timeOrigin: typeof performance === 'undefined' ? 0 : performance.timeOrigin,
     crossOriginIsolated: typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated,
     timerResolutionMs: measureTimerResolutionMs(),
