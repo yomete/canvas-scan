@@ -92,9 +92,9 @@ const readmeBoundaryTokens = ['selected canvas', 'raw argument', 'page text', 'p
 const demoBoundaryTokens = ['selected canvas', 'raw values', 'page text', 'pixels', 'raw application and argument URLs', 'application objects', 'source content', 'generated script paths', 'mapped source paths', 'honest unknown', 'does not prove improvement'];
 
 function ritualSection(source, label) {
-  const heading = '## v0.5 investigation ritual';
+  const heading = '## Investigate: record, explain, change, compare';
   const start = source.indexOf(heading);
-  if (start < 0) throw new Error(`${label} has no v0.5 investigation ritual`);
+  if (start < 0) throw new Error(`${label} has no investigation section`);
   const end = source.indexOf('\n## ', start + heading.length);
   return source.slice(start, end < 0 ? source.length : end).trim();
 }

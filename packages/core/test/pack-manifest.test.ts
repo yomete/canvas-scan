@@ -124,7 +124,7 @@ describe('public package rules', () => {
   });
 });
 
-describe('v0.5 investigation ritual', () => {
+describe('investigation section', () => {
   const root = join(packageDir, '../..');
   const sources = () => ({
     sourceReadme: readFileSync(join(root, 'README.md'), 'utf8'),

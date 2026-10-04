@@ -55,41 +55,22 @@ Four finding types. Each one states what it cannot prove and names the next chec
 - **`resize-churn`**: reset events span repeated active raster-work windows.
 - **`backing-store-mismatch`**: the recorded backing area is larger than the DPR-adjusted expected area.
 
-## v0.5 investigation ritual
+## Investigate: record, explain, change, compare
 
-The workflow is record → explain → change → compare, with a plain JSON artifact at every step:
+Every step leaves a plain JSON artifact. The overlay and the API do the same work.
 
 1. Load `canvas-scan/auto` before React and before application Canvas2D work.
-2. Start the baseline with the overlay or `startRecording()`. Reproduce one
-   bounded interaction, stop with `stopRecording()`, and read
-   `getLastSession()`.
-3. Open one baseline finding. Select **Explain next interaction**, or call
-   `startExplanation({ sessionId, findingIndex })` with that explicit finding.
-4. Reproduce the interaction again. Stop with the overlay or
-   `stopExplanation()`, read `getLastExplanation()`, and use
-   **Copy explanation JSON** or **Download explanation JSON** when you need
-   the artifact.
-5. Select **Keep as baseline** on the explained finding. The overlay also
-   keeps the baseline in the tab's `sessionStorage`. A full page reload
-   restores it and shows `Baseline restored from the last page load`. A
-   baseline larger than 4 MB stays in page memory only, and the overlay says
-   so.
-6. Make the application change. Start a candidate with `startRecording()`,
-   reproduce the same bounded interaction, and stop with `stopRecording()`.
-7. Open a candidate of the same finding type. Select **Compare with baseline**,
-   or call `compareSessions(baseline, candidate, { baselineFindingIndex,
-   candidateFindingIndex })`. The pairing is always explicit.
-8. Review the measured pair. Select **Copy comparison JSON** or **Download
-   comparison JSON** to keep the plain JSON artifact.
+2. Record a baseline: `startRecording()`, reproduce one bounded interaction, `stopRecording()`, then read `getLastSession()`.
+3. Open one baseline finding. Select **Explain next interaction**, or call `startExplanation({ sessionId, findingIndex })` with that explicit finding.
+4. Reproduce the interaction again. Stop with `stopExplanation()`, read `getLastExplanation()`, and use **Copy explanation JSON** when you need the artifact.
+5. Select **Keep as baseline** on the explained finding. The overlay keeps it across a page reload.
+6. Make the application change. Record a candidate: `startRecording()`, the same bounded interaction, `stopRecording()`.
+7. Open a candidate finding of the same finding type. Select **Compare with baseline**, or call `compareSessions(baseline, candidate, { baselineFindingIndex, candidateFindingIndex })`. The pairing is always explicit.
+8. Review the measured pair. **Copy comparison JSON** keeps the plain JSON artifact.
 
 The public API for this workflow is `startRecording`, `stopRecording`, `getLastSession`, `mark`, `startExplanation`, `stopExplanation`, `getLastExplanation`, and `compareSessions`. `mark` adds a labeled marker to the recording. See [API, options, and sampling](https://github.com/yomete/canvas-scan/blob/main/docs/api.md).
 
-Explanation detail covers only the selected canvas. It excludes raw argument
-values, page text, pixels, and raw application and argument URLs. It also
-excludes application objects and source content. Sanitized selected-callsite
-evidence can include generated script paths and mapped source paths. A result
-can be an honest `unknown` when safe comparison is not possible. One measured
-pair does not prove that the application improved.
+An explanation covers only the selected canvas. It excludes raw argument values, page text, pixels, raw application and argument URLs, application objects, and source content. Sanitized callsite evidence can include generated script paths and mapped source paths. A result can be an honest `unknown`. One measured pair does not prove that the application improved.
 
 More detail: [load a saved session, explanation samples, browser measures, span mismatch, User Timing, and recording states](https://github.com/yomete/canvas-scan/blob/main/docs/investigation-details.md).
 
