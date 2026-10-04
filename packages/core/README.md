@@ -99,6 +99,10 @@ import {
 } from 'canvas-scan';
 ```
 
+## For coding agents
+
+`skills/canvas-scan/SKILL.md` in this package is an agent skill that teaches the record, explain, change, compare workflow, how to read each finding type, and which code change matches each one. After install it is at `node_modules/canvas-scan/skills/canvas-scan`. Copy that directory into your agent's skills directory, or point the agent at it.
+
 ## The artifacts
 
 `InvestigationSessionV1`, `ExplanationArtifactV1`, and `ComparisonArtifactV1` are versioned plain JSON: session metadata, browser features, canvases, windows, reset and lifecycle events, episodes, browser evidence entries, findings, collection limits, and dropped-entry counts. Every finding carries a `claimBoundary` stating what the evidence cannot prove and a `nextCheck` naming the next useful step.
