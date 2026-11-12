@@ -14,7 +14,7 @@ function session(type: InvestigationSessionV1['findings'][number]['type'], candi
       : type === 'resize-churn' ? { ...common, type, observedResetCount: candidate ? 3 : 5, activeResetCount: candidate ? 2 : 4, resetEvents: Array.from({ length: candidate ? 2 : 4 }, (_, windowIndex) => ({ source: 'width-setter' as const, width: 1, height: 1, windowIndex, timestampMs: windowIndex })), dimensionChanges: { changed: 1, unchanged: 1, unavailable: 0 }, affectedEpisodeIds: candidate ? ['episode'] : ['episode', 'episode-two'], commandStatuses: candidate ? { same: 1, changed: 0, unknown: 1 } : { same: 1, changed: 1, unknown: 2 }, unknownReasons: {}, canvasApiSelfTimeMs: 1, rasterOperationCount: 1 }
         : { ...common, type, affectedWindowCount: candidate ? 2 : 3, affectedWindows: (candidate ? [2, 2.1] : [2, 2.5, 2.25]).map((actualToExpectedAreaRatio, windowIndex) => ({ windowIndex, timestampMs: windowIndex, rasterOperationCount: 1, canvasApiSelfTimeMs: 1, backingWidth: 1, backingHeight: 1, expectedBackingWidth: 1, expectedBackingHeight: 1, expectedPixelArea: 1, actualToExpectedAreaRatio })), affectedEpisodeIds: ['episode'], rasterOperationCount: 1, canvasApiSelfTimeMs: 1 };
   const activeWindowCount = candidate ? 4 : 5;
-  return { schemaVersion: 1, sessionId: candidate ? 'candidate session' : 'baseline/session', startedAt: '2026-08-11T10:00:00.000Z', endedAt: candidate ? '2026-08-11T10:01:00.000Z' : '2026-08-11T10:00:30.000Z', durationMs: 1, stopReason: 'manual', canvasScanVersion: '0.4.0', captureEvery: 1, browserFeatures: { monotonicTime: true, eventTiming: false, longAnimationFrames: false }, timeOrigin: 0, crossOriginIsolated: false, timerResolutionMs: 0.1, canvases: [{ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, activeWindowCount, rasterOperationCount: candidate ? 14 : 20, canvasApiSelfTimeMs: candidate ? 4.25 : 6.5, maxWindowSelfTimeMs: candidate ? 1.5 : 2, evidenceLevel: 'measured', methodEvidence: methods, commandStatuses: candidate ? { same: 2, changed: 1, unknown: 1 } : { same: 2, changed: 1, unknown: 2 }, windowDetailDropped: false, observability: 'observable' }], windows: [], resetEvents: [], lifecycleEvents: [], episodes: [], browserEntries: [], episodeAssociations: [], findings: [finding], collectionLimits: {} as InvestigationSessionV1['collectionLimits'], droppedEntryCounts: { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 } };
+  return { schemaVersion: 1, sessionId: candidate ? 'candidate session' : 'baseline/session', startedAt: '2026-08-11T10:00:00.000Z', endedAt: candidate ? '2026-08-11T10:01:00.000Z' : '2026-08-11T10:00:30.000Z', durationMs: 1, stopReason: 'manual', canvasScanVersion: '0.4.0', captureEvery: 1, browserFeatures: { monotonicTime: true, eventTiming: false, longAnimationFrames: false }, timeOrigin: 0, crossOriginIsolated: false, timerResolutionMs: 0.1, canvases: [{ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, activeWindowCount, rasterOperationCount: candidate ? 14 : 20, canvasApiSelfTimeMs: candidate ? 4.25 : 6.5, maxWindowSelfTimeMs: candidate ? 1.5 : 2, evidenceLevel: 'measured', methodEvidence: methods, commandStatuses: candidate ? { same: 2, changed: 1, unknown: 1 } : { same: 2, changed: 1, unknown: 2 }, windowDetailDropped: false, observability: 'observable' }], windows: [], resetEvents: [], lifecycleEvents: [], episodes: [], browserEntries: [], episodeAssociations: [], findings: [finding], observationCoverage: { observedScope: 'main-thread-canvas2d', limit: '', unobservedCanvases: [], unobservedCanvasCount: 0, undeterminedCanvasCount: 0 }, collectionLimits: {} as InvestigationSessionV1['collectionLimits'], droppedEntryCounts: { canvasWindowReports: 0, canvasLifetimes: 0, resetEvents: 0, lifecycleEvents: 0, documentEvents: 0, eventTiming: 0, userMarks: 0, longAnimationFrames: 0 } };
 }
 
 const report = (canvasId: string): DrawBatchReport => ({ canvasId, nearestReactOwner: null, attributionKind: 'unattributed', sourceLocation: null, rasterOperationCount: 2, canvasApiSelfTimeMs: 1, signatureStatus: 'same', unknownReason: null, sampled: false, coveredWindowCount: 1, comparisonGap: 1, followsCanvasReset: false, methodEvidence: {} });
@@ -36,10 +36,61 @@ function completeSource(canvasId = 'comparison-source') {
 
 afterEach(() => { resetRecordingForTests(); records.clear(); });
 
+describe('compareSessions session fallback', () => {
+  it('reports session totals when a fix removed the selected finding, keeping the reason', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = { ...session('heavy-canvas-work', true), findings: [] };
+    candidate.resetEvents = [{ canvasId: 'candidate', source: 'width-setter', width: 1, height: 1, windowIndex: 0, timestampMs: 0 } as never];
+    candidate.droppedEntryCounts = { ...candidate.droppedEntryCounts, resetEvents: 2 };
+    const artifact = compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 });
+    expect(artifact).toMatchObject({ status: 'incomparable', incomparableReasons: ['finding-not-found'], measures: [], improvementEstablished: false });
+    expect(artifact.sessionFallback?.caveat).toMatch(/missing from one or both sessions/);
+    expect(artifact.sessionFallback?.caveat).toMatch(/not a paired comparison/);
+    expect(artifact.sessionFallback?.measures.map(item => [item.id, item.baseline, item.candidate, item.delta, item.scope])).toEqual([
+      ['session-canvas-api-self-time-ms', 6.5, 4.25, -2.25, 'session'],
+      ['session-raster-operation-count', 20, 14, -6, 'session'],
+      ['session-active-window-count', 5, 4, -1, 'session'],
+      ['session-reset-count', 0, 3, 3, 'session'],
+    ]);
+  });
+
+  it('sums every canvas and names transferred canvases and a span mismatch in the caveat', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = session('repeated-draw-work', true);
+    baseline.canvases = [...baseline.canvases, { ...baseline.canvases[0], canvasId: 'second', canvasApiSelfTimeMs: 1.5, rasterOperationCount: 3, activeWindowCount: 2, windowDetailDropped: true, observability: 'unobservable' }];
+    candidate.durationMs = 10;
+    const artifact = compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 });
+    expect(artifact.incomparableReasons).toEqual(['finding-type-mismatch']);
+    expect(artifact.sessionFallback?.measures[0]).toMatchObject({ baseline: 8, candidate: 4.25 });
+    expect(artifact.sessionFallback?.measures[1]).toMatchObject({ baseline: 23, candidate: 14 });
+    expect(artifact.sessionFallback?.caveat).toMatch(/1 canvases in the baseline and 0 in the candidate were transferred to a worker/);
+    expect(artifact.sessionFallback?.caveat).toMatch(/differ markedly in length/);
+  });
+
+  it('gives no fallback when the totals are not on one scale or cannot be read', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = session('heavy-canvas-work', true);
+    expect(compareSessions({ ...baseline, schemaVersion: 2 } as never, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 }).sessionFallback).toBeNull();
+    expect(compareSessions(baseline, { ...candidate, captureEvery: 3 }, { baselineFindingIndex: 0, candidateFindingIndex: 0 }).sessionFallback).toBeNull();
+    const broken = { ...candidate, findings: [], canvases: [{ ...candidate.canvases[0], canvasApiSelfTimeMs: -1 }] };
+    expect(compareSessions(baseline, broken, { baselineFindingIndex: 0, candidateFindingIndex: 0 })).toMatchObject({ incomparableReasons: ['finding-not-found'], sessionFallback: null });
+  });
+});
+
+describe('compareSessions observation note', () => {
+  it('names unobserved canvases on either side and stays quiet when there are none', () => {
+    const baseline = session('heavy-canvas-work'); const candidate = session('heavy-canvas-work', true);
+    expect(compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 }).observationNote).toBeNull();
+    candidate.observationCoverage = { ...candidate.observationCoverage, unobservedCanvases: [{ reason: 'webgl', count: 2 }], unobservedCanvasCount: 2 };
+    const note = compareSessions(baseline, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 }).observationNote;
+    expect(note).toMatch(/^0 canvases in the baseline and 2 in the candidate drew through APIs canvas-scan does not observe/);
+    const old = { ...baseline } as Partial<InvestigationSessionV1>; delete old.observationCoverage;
+    expect(compareSessions(old as InvestigationSessionV1, candidate, { baselineFindingIndex: 0, candidateFindingIndex: 0 }).observationNote).toMatch(/^an unknown number of canvases in the baseline/);
+  });
+});
+
 describe('compareSessions', () => {
   it('returns the exact version 1 public artifact and sorted method union for heavy work', () => {
     const artifact = compareSessions(session('heavy-canvas-work'), session('heavy-canvas-work', true), { baselineFindingIndex: 0, candidateFindingIndex: 0 });
-    expect(Object.keys(artifact)).toEqual(['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'span', 'spanMismatch', 'coverageNote', 'improvementEstablished']);
+    expect(Object.keys(artifact)).toEqual(['schemaVersion', 'comparisonId', 'createdAt', 'canvasScanVersion', 'pairingMethod', 'baseline', 'candidate', 'status', 'incomparableReasons', 'measures', 'span', 'spanMismatch', 'coverageNote', 'observationNote', 'sessionFallback', 'improvementEstablished']);
+    expect(artifact.sessionFallback).toBeNull();
     expect(artifact.measures.map(item => item.id)).toEqual(['active-window-count', 'raster-operation-count', 'canvas-api-self-time-ms', 'maximum-window-self-time-ms', 'worst-interaction-duration-ms', 'long-animation-frame-count', 'method:fillRect:operation-count', 'method:fillRect:self-time-ms', 'method:lineTo:operation-count', 'method:lineTo:self-time-ms', 'method:stroke:operation-count', 'method:stroke:self-time-ms', 'unknown-command-window-count', 'heavy-episode-operation-count', 'heavy-episode-self-time-ms']);
     expect(artifact.measures.find(item => item.id === 'method:lineTo:self-time-ms')).toMatchObject({ baseline: 0, candidate: null, delta: null, direction: 'unknown' });
     expect(artifact.improvementEstablished).toBe(false);

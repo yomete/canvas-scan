@@ -74,9 +74,9 @@ describe('packed version rules', () => {
 });
 
 describe('public package rules', () => {
-  const runtimeApi = 'export { start, stop, getReports, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, compareSessions };';
+  const runtimeApi = 'export { start, stop, getReports, startRecording, stopRecording, getLastSession, mark, startExplanation, stopExplanation, getLastExplanation, hideOverlay, showOverlay, compareSessions };';
   const api = `${runtimeApi} export type { ${TYPE_EXPORTS.join(', ')} };`;
-  const iife = 'window.__CANVAS_SCAN__={version,stop,getHistory,getReports,startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,compareSessions};';
+  const iife = 'window.__CANVAS_SCAN__={version,stop,getHistory,getReports,startRecording,stopRecording,getLastSession,mark,startExplanation,stopExplanation,getLastExplanation,hideOverlay,showOverlay,compareSessions};';
 
   it('accepts every required public operation', () => {
     expect(() => assertPublicContract({ runtime: runtimeApi, declarations: api, iife })).not.toThrow();

@@ -10,8 +10,13 @@
 // nothing anywhere, and touches no browser profile of yours.
 //
 // Usage:
-//   node investigate-url.mjs --url=https://example.com [--out=DIR] [--timeout=MINUTES]
+//   node investigate-url.mjs --url=https://example.com [--out=DIR] [--tag=NAME] [--timeout=MINUTES]
 //                             [--handoff=json|jsonl|both|none] [--block-external]
+//
+// --tag names the build or run, for example --tag=baseline and --tag=candidate.
+// It goes into every file name the run writes, so two tagged runs can share one
+// --out directory. A run never replaces an earlier one: when the directory
+// already holds a report under the same name, the run moves to DIR-2, DIR-3, ….
 //   node investigate-url.mjs --url=... --drive=./path/to/module.mjs   (unattended)
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -49,12 +54,14 @@ export function parseArguments(argv) {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new UsageError(`--url must be http or https, not ${url.protocol.replace(':', '')}. A local file cannot host the application this investigates.`);
   const handoff = options.handoff === undefined ? 'both' : options.handoff;
   if (!['json', 'jsonl', 'both', 'none'].includes(handoff)) throw new UsageError(`--handoff must be json, jsonl, both or none, not ${handoff}`);
+  if (options.tag !== undefined && (typeof options.tag !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(options.tag))) throw new UsageError(`--tag must be 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit, not ${options.tag}`);
   const timeoutMinutes = options.timeout === undefined ? 60 : Number(options.timeout);
   if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) throw new UsageError(`--timeout must be a positive number of minutes, not ${options.timeout}`);
   return {
     url: url.href,
     origin: url.origin,
     out: typeof options.out === 'string' ? options.out : null,
+    tag: typeof options.tag === 'string' ? options.tag : null,
     drive: typeof options.drive === 'string' ? options.drive : null,
     blockExternal: options['block-external'] === true || options['block-external'] === 'true',
     handoff,
@@ -90,6 +97,34 @@ const OBSERVER = `
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const stable = value => `${JSON.stringify(value, null, 2)}\n`;
 const digest = value => createHash('sha256').update(value).digest('hex');
+
+// Every name the run writes, with the tag in it when there is one. Two builds
+// recorded into one directory under different tags keep both sets of files.
+export function outputNames(tag) {
+  const suffix = tag ? `-${tag}` : '';
+  const prefix = tag ? `${tag}-` : '';
+  return {
+    report: `run-report${suffix}.json`,
+    handoffJson: `handoff${suffix}.json`,
+    handoffJsonl: `handoff${suffix}.jsonl`,
+    artifact: (kind, index) => `artifacts/${prefix}${kind}-${index}.json`,
+  };
+}
+
+// Where the run writes. Without --out it is a fresh directory named for the
+// tag and the time. With --out it is that directory, unless a report under the
+// same name is already there: then the first free DIR-2, DIR-3, … is used, so a
+// repeated run keeps the baseline it would otherwise have replaced.
+export function resolveOutDir({ out, tag }, { now = new Date(), exists = existsSync } = {}) {
+  const names = outputNames(tag);
+  if (!out) return path.join(root, `.investigation-${tag ? `${tag}-` : ''}${now.toISOString().replaceAll(/[:.]/g, '-')}`);
+  const base = path.resolve(out);
+  if (!exists(path.join(base, names.report))) return base;
+  for (let attempt = 2; ; attempt++) {
+    const candidate = `${base}-${attempt}`;
+    if (!exists(path.join(candidate, names.report))) return candidate;
+  }
+}
 
 function summarizeSession(session) {
   return {
@@ -130,7 +165,8 @@ function steps(sessions, explanations, comparisons) {
 
 export async function investigate(options, { log = console.log } = {}) {
   if (!existsSync(iife)) throw new UsageError(`build the bundle first: pnpm --filter canvas-scan run build (${iife})`);
-  const outDir = options.out ?? path.join(root, `.investigation-${new Date().toISOString().replaceAll(/[:.]/g, '-')}`);
+  const names = outputNames(options.tag ?? null);
+  const outDir = resolveOutDir({ out: options.out ?? null, tag: options.tag ?? null });
   mkdirSync(path.join(outDir, 'artifacts'), { recursive: true });
 
   // Playwright's Chrome runs from a directory made for this run alone, so the
@@ -179,6 +215,8 @@ export async function investigate(options, { log = console.log } = {}) {
     schemaVersion: 1,
     issue: 'SIDPROJ-108',
     target: options.url,
+    tag: options.tag ?? null,
+    outDir,
     startedAt: new Date().toISOString(),
     endedAt: null,
     browserVersion: browser.browser()?.version() ?? null,
@@ -278,9 +316,9 @@ export async function investigate(options, { log = console.log } = {}) {
       writeFileSync(path.join(outDir, file), contents);
       report.artifacts.push({ id, path: file, sha256: digest(contents) });
     };
-    for (const [index, session] of sessions.entries()) write(index === 0 ? 'baseline-session' : `session-${index + 1}`, `artifacts/session-${index + 1}.json`, session);
-    for (const [index, explanation] of explanations.entries()) write(`explanation-${index + 1}`, `artifacts/explanation-${index + 1}.json`, explanation);
-    for (const [index, comparison] of comparisons.entries()) write(`comparison-${index + 1}`, `artifacts/comparison-${index + 1}.json`, comparison);
+    for (const [index, session] of sessions.entries()) write(index === 0 ? 'baseline-session' : `session-${index + 1}`, names.artifact('session', index + 1), session);
+    for (const [index, explanation] of explanations.entries()) write(`explanation-${index + 1}`, names.artifact('explanation', index + 1), explanation);
+    for (const [index, comparison] of comparisons.entries()) write(`comparison-${index + 1}`, names.artifact('comparison', index + 1), comparison);
 
     report.endedAt = new Date().toISOString();
     report.steps = steps(sessions, explanations, comparisons);
@@ -292,7 +330,7 @@ export async function investigate(options, { log = console.log } = {}) {
     report.pageErrors = pageErrors;
     report.consoleFromCanvasScan = consoleFromCanvasScan;
     if (offOriginRequests.some(request => request.hasBody)) report.notes.push('a request carrying a body left the target origin — check offOriginRequests before trusting this run');
-    report.reportPath = path.join(outDir, 'run-report.json');
+    report.reportPath = path.join(outDir, names.report);
     writeFileSync(report.reportPath, stable(report));
 
     // The handoff is built from the same records the report is, and validated
@@ -301,8 +339,8 @@ export async function investigate(options, { log = console.log } = {}) {
     if (options.handoff !== 'none') {
       try {
         const records = buildHandoff(report, { sessions, explanations, comparisons });
-        if (options.handoff === 'json' || options.handoff === 'both') { writeFileSync(path.join(outDir, 'handoff.json'), toJson(records)); report.handoffPaths.json = path.join(outDir, 'handoff.json'); }
-        if (options.handoff === 'jsonl' || options.handoff === 'both') { writeFileSync(path.join(outDir, 'handoff.jsonl'), toJsonl(records)); report.handoffPaths.jsonl = path.join(outDir, 'handoff.jsonl'); }
+        if (options.handoff === 'json' || options.handoff === 'both') { writeFileSync(path.join(outDir, names.handoffJson), toJson(records)); report.handoffPaths.json = path.join(outDir, names.handoffJson); }
+        if (options.handoff === 'jsonl' || options.handoff === 'both') { writeFileSync(path.join(outDir, names.handoffJsonl), toJsonl(records)); report.handoffPaths.jsonl = path.join(outDir, names.handoffJsonl); }
         report.handoffRecordCount = records.length;
       } catch (error) {
         report.notes.push(`the agent handoff was not written: ${String(error)}`);

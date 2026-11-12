@@ -7,7 +7,7 @@ import {
   startFrameLoop,
   stopFrameLoop,
 } from './frame-loop.js';
-import { mountOverlay, unmountOverlay } from './overlay.js';
+import { mountOverlay, setOverlayHidden, unmountOverlay } from './overlay.js';
 import { compareSessions } from './comparison.js';
 import { configureRecording, getLastExplanation, getLastSession, mark, startExplanation, startRecording, stopExplanation, stopRecording } from './recording.js';
 import type {
@@ -98,9 +98,18 @@ export function start(options: CanvasScanOptions = {}): void {
     stopExplanation,
     getLastExplanation,
     compareSessions,
+    hideOverlay,
+    showOverlay,
     stop,
   };
 }
+
+// Take the overlay out of the layout, or put it back. Recording and the rest of
+// the API are unaffected. A browser test that clicks the page after a recording
+// calls hideOverlay() first: the completed-session panel takes pointer events,
+// and a pointer-events rule on the host element does not reach it.
+export function hideOverlay(): void { setOverlayHidden(true); }
+export function showOverlay(): void { setOverlayHidden(false); }
 
 // Stop the frame loop and remove the overlay. Prototype wrappers stay in
 // place; start() can run again without patching twice.
@@ -120,6 +129,8 @@ export type {
   SignatureStatus,
   SourceLocation,
   InvestigationSessionV1,
+  RecordedObservationCoverage,
+  UnobservedCanvasReason,
   RecordedCanvasSummary,
   RecordedCanvasWindow,
   RecordedCanvasGeometry,

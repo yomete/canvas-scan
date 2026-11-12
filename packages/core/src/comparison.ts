@@ -53,7 +53,54 @@ function metadata(baseline: unknown, candidate: unknown, pairing: UnknownRecord)
 }
 
 function incomparable(baseline: unknown, candidate: unknown, pairing: UnknownRecord, reason: IncomparableReason): ComparisonArtifactV1 {
-  return { schemaVersion: 1, ...metadata(baseline, candidate, pairing), pairingMethod: 'user-selected', baseline: ref(baseline, pairing.baselineFindingIndex), candidate: ref(candidate, pairing.candidateFindingIndex), status: 'incomparable', incomparableReasons: [reason], measures: [], ...spans(record(baseline), record(candidate)), ...coverage(record(baseline), record(candidate)), improvementEstablished: false };
+  const length = spans(record(baseline), record(candidate));
+  return { schemaVersion: 1, ...metadata(baseline, candidate, pairing), pairingMethod: 'user-selected', baseline: ref(baseline, pairing.baselineFindingIndex), candidate: ref(candidate, pairing.candidateFindingIndex), status: 'incomparable', incomparableReasons: [reason], measures: [], ...length, ...coverage(record(baseline), record(candidate)), ...observation(record(baseline), record(candidate)), sessionFallback: fallback(record(baseline), record(candidate), reason, length.spanMismatch), improvementEstablished: false };
+}
+
+// When the selected findings cannot be paired, the sessions still measured
+// something. A fix that removes the finding it targeted is the commonest case,
+// and refusing to say anything there loses the before-and-after the user came
+// for. Session-wide totals are reported instead, with the reason the findings
+// were not paired kept beside them. A different schema or a different sampling
+// rate puts the totals themselves on different scales, so neither gets one.
+const fallbackReasons: ReadonlySet<IncomparableReason> = new Set(['finding-not-found', 'finding-type-mismatch', 'incomplete-evidence']);
+const fallbackCaveats: Record<string, string> = {
+  'finding-not-found': 'The selected finding is missing from one or both sessions, for example because a change removed it.',
+  'finding-type-mismatch': 'The selected findings are of different types, so they do not describe the same work.',
+  'incomplete-evidence': 'The selected findings lack the evidence a paired comparison needs.',
+};
+function totals(session: UnknownRecord | undefined): { selfTime: number; raster: number; windows: number; resets: number; unobservable: number } | undefined {
+  const canvases = array(session?.canvases); const resets = array(session?.resetEvents); const dropped = record(session?.droppedEntryCounts);
+  if (!session || !canvases || !resets || !dropped || !count(dropped.resetEvents)) return undefined;
+  let selfTime = 0; let raster = 0; let windows = 0; let unobservable = 0;
+  for (const item of canvases) {
+    const value = record(item);
+    if (!value || !number(value.canvasApiSelfTimeMs) || !count(value.rasterOperationCount) || !count(value.activeWindowCount)) return undefined;
+    selfTime += value.canvasApiSelfTimeMs as number; raster += value.rasterOperationCount as number; windows += value.activeWindowCount as number;
+    if (value.observability === 'unobservable') unobservable++;
+  }
+  return { selfTime, raster, windows, resets: resets.length + (dropped.resetEvents as number), unobservable };
+}
+function fallback(left: UnknownRecord | undefined, right: UnknownRecord | undefined, reason: IncomparableReason, spanMismatch: string | null): ComparisonArtifactV1['sessionFallback'] {
+  if (!fallbackReasons.has(reason) || left?.schemaVersion !== 1 || right?.schemaVersion !== 1 || sampling(left) !== sampling(right)) return null;
+  const baseline = totals(left); const candidate = totals(right);
+  if (!baseline || !candidate) return null;
+  const notes = [
+    `${fallbackCaveats[reason]} These are session-wide totals over every recorded canvas, not a paired comparison of one finding.`,
+    'They describe the same work only if both recordings drove the same interaction.',
+    spanMismatch ? 'The two recordings differ markedly in length; see spanMismatch.' : null,
+    baseline.unobservable + candidate.unobservable > 0 ? `${baseline.unobservable} canvases in the baseline and ${candidate.unobservable} in the candidate were transferred to a worker; their drawing after the transfer is not in these totals.` : null,
+    'Only main-thread Canvas2D API calls are counted. Rendering outside that, such as WebGL, workers, or GPU work, is not in these totals.',
+  ].filter((note): note is string => note !== null);
+  return {
+    caveat: notes.join(' '),
+    measures: [
+      measure('session-canvas-api-self-time-ms', 'ms', rounded(baseline.selfTime, 'ms'), rounded(candidate.selfTime, 'ms')),
+      measure('session-raster-operation-count', 'count', baseline.raster, candidate.raster),
+      measure('session-active-window-count', 'count', baseline.windows, candidate.windows),
+      measure('session-reset-count', 'count', baseline.resets, candidate.resets),
+    ],
+  };
 }
 
 // Session-scoped measures are raw totals over whatever each recording covered,
@@ -80,6 +127,19 @@ function summaryOnly(session: UnknownRecord | undefined): number { return (array
 function coverage(left: UnknownRecord | undefined, right: UnknownRecord | undefined): Pick<ComparisonArtifactV1, 'coverageNote'> {
   const baseline = summaryOnly(left); const candidate = summaryOnly(right);
   return { coverageNote: baseline + candidate === 0 ? null : `${baseline} ${baseline === 1 ? 'canvas' : 'canvases'} in the baseline and ${candidate} in the candidate were summary-only and were not compared.` };
+}
+
+// A session written before observationCoverage existed has none, and says
+// nothing either way. Older sessions are not refused for it.
+function unobserved(session: UnknownRecord | undefined): number | null {
+  const value = record(session?.observationCoverage);
+  return value && count(value.unobservedCanvasCount) ? value.unobservedCanvasCount as number : null;
+}
+function observation(left: UnknownRecord | undefined, right: UnknownRecord | undefined): Pick<ComparisonArtifactV1, 'observationNote'> {
+  const baseline = unobserved(left); const candidate = unobserved(right);
+  if (!baseline && !candidate) return { observationNote: null };
+  const side = (value: number | null) => value === null ? 'an unknown number of' : String(value);
+  return { observationNote: `${side(baseline)} ${baseline === 1 ? 'canvas' : 'canvases'} in the baseline and ${side(candidate)} in the candidate drew through APIs canvas-scan does not observe, such as WebGL or a worker. Their work is in no measure here, and a lower Canvas2D total does not mean they drew less. See observationCoverage in each session.` };
 }
 
 function statuses(value: unknown): UnknownRecord | undefined {
@@ -221,5 +281,5 @@ export function compareSessions(baseline: InvestigationSessionV1, candidate: Inv
   const methodScope = left.type === 'heavy-canvas-work' ? 'episode' : 'session';
   for (const name of [...new Set([...leftMethods.keys(), ...rightMethods.keys()])].sort()) { const leftMethod = leftMethods.get(name); const rightMethod = rightMethods.get(name); result.push(measure(`method:${name}:operation-count`, 'count', leftMethod?.count ?? 0, rightMethod?.count ?? 0, methodScope), measure(`method:${name}:self-time-ms`, 'ms', leftMethod ? leftMethod.time : 0, rightMethod ? rightMethod.time : 0, methodScope)); }
   result.push(measure('unknown-command-window-count', 'count', unknown(left, leftCanvas), unknown(right, rightCanvas), left.type === 'repeated-draw-work' ? 'episode' : 'session'), ...findingMeasures(left, right));
-  return { schemaVersion: 1, ...metadata(baseline, candidate, selectedPairing), pairingMethod: 'user-selected', baseline: ref(baseline, selectedPairing.baselineFindingIndex), candidate: ref(candidate, selectedPairing.candidateFindingIndex), status: 'comparable', incomparableReasons: [], measures: result, ...length, ...coverage(leftSession, rightSession), improvementEstablished: false };
+  return { schemaVersion: 1, ...metadata(baseline, candidate, selectedPairing), pairingMethod: 'user-selected', baseline: ref(baseline, selectedPairing.baselineFindingIndex), candidate: ref(candidate, selectedPairing.candidateFindingIndex), status: 'comparable', incomparableReasons: [], measures: result, ...length, ...coverage(leftSession, rightSession), ...observation(leftSession, rightSession), sessionFallback: null, improvementEstablished: false };
 }

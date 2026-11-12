@@ -30,6 +30,23 @@ episodes. Session episode counts do not establish equivalent interactions.
 User marks remain recorded context; matching labels do not define comparison
 ranges.
 
+When the selected findings cannot be paired, the comparison is
+`incomparable` and names the reason. A fix that removes the finding it
+targeted is the commonest case: the candidate has no finding to pair. For
+`finding-not-found`, `finding-type-mismatch`, and `incomplete-evidence`, the
+artifact still carries `sessionFallback`: session-wide totals of Canvas2D
+API self-time, raster operations, active windows, and canvas resets, summed
+over every recorded canvas, with a `caveat` that keeps the reason visible.
+The totals are not a paired comparison. They describe the same work only if
+both recordings drove the same interaction, and `spanMismatch` still says
+when the two recordings differ in length. A different schema or sampling rate
+puts the totals on different scales, so those get no fallback.
+
+The comparison also carries `observationNote` when either session counted
+canvases that canvas-scan does not observe, such as a WebGL canvas or one
+transferred to a worker. Their work is in no measure, so a lower Canvas2D
+total does not mean they drew less.
+
 canvas-scan also writes to the User Timing API, so a DevTools Performance
 trace of the same run lines up with the session. `startRecording()` calls
 `performance.mark('canvas-scan:recording-start')`. `stopRecording()` calls

@@ -24,3 +24,13 @@ A canvas whose size is reassigned has no previous frame to compare against, and 
 The measured figures are unaffected. Canvas2D API self-time, raster counts, method evidence, canvas resets, and backing-store ratios are all still measured on every frame. Three of the four finding types do not use the comparison at all. Only repeated-draw-work rests on it, and it rests only on the frames the comparison could answer for.
 
 Two real applications, recorded on the same day, show both ends. A charting application drawing into one stable canvas came back with 1 unknown window out of 1378. Excalidraw, which caches every element on its own canvas, came back with 224 unknown out of 342. Both answers are correct. When most frames come back `unknown`, the overlay says so on the coverage line rather than leaving it to be discovered.
+
+## How many recordings a before-and-after needs
+
+Timing varies between runs of the same workload. In one investigation, a single-session change from 168 ms to 304 ms of Canvas2D self-time looked like a regression, and repeated runs did not confirm it. One session per build is one sample.
+
+- Record the same interaction at least 5 times per build, each in a fresh page load. Name each file for its build and run, for example `baseline-run-3.json`, so nothing overwrites the baseline. The guided run's `--tag` does this for you; see [Investigate a URL](https://github.com/yomete/canvas-scan/blob/main/docs/investigate-url.md).
+- For each build, list the self-time of the finding under investigation, or the session total, across the runs. Look at the median and at the range.
+- Call it a regression or an improvement only when the two builds' ranges do not overlap. When they overlap, the answer is "no clear change at this sample size".
+- Structural counts such as raster operations, resets, and active windows vary far less than times. A count change that holds in every run is stronger evidence than a time change.
+- `compareSessions` compares one pair at a time. A single-session comparison is still allowed, but say that it rests on one sample per build.

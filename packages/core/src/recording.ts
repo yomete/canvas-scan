@@ -1,5 +1,5 @@
 import { copyReport, getCurrentWindowIndex, setRecordingWindowRangeTracking, subscribeToLifecycleEvents, subscribeToReports, subscribeToResetEvents } from './frame-loop.js';
-import { drainAttributeRecords, getConnectionState, getRecord, isKilled, reactivateRecord, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context.js';
+import { drainAttributeRecords, getConnectionState, getRecord, isKilled, observationCoverage, reactivateRecord, records, setMethodEvidenceCollectionEnabled, setResetEventCollectionEnabled, takeResetEvents, type CanvasRecord } from './wrap-context.js';
 import { collectCanvasGeometry } from './geometry.js';
 import { markBrowserEvidence, resetBrowserEvidence, startBrowserEvidence, stopBrowserEvidence } from './browser-evidence.js';
 import { captureBoundary, captureCommand, createCommandCapture, disableCommandCapture, finishCommandCapture, getLiveCommandRelationship, resetCommandCaptureForTests } from './command-capture.js';
@@ -223,6 +223,8 @@ function copySession(session: InvestigationSessionV1): InvestigationSessionV1 {
         : finding.type === 'resize-churn'
           ? { ...finding, resetEvents: finding.resetEvents.map(event => ({ ...event })), dimensionChanges: { ...finding.dimensionChanges }, affectedEpisodeIds: [...finding.affectedEpisodeIds], commandStatuses: { ...finding.commandStatuses }, unknownReasons: { ...finding.unknownReasons }, claimBoundary: { ...finding.claimBoundary } }
           : { ...finding, affectedWindows: finding.affectedWindows.map(window => ({ ...window })), affectedEpisodeIds: [...finding.affectedEpisodeIds], claimBoundary: { ...finding.claimBoundary } }),
+    // A session saved by an earlier version has no coverage block; keep it absent.
+    ...(session.observationCoverage ? { observationCoverage: { ...session.observationCoverage, unobservedCanvases: session.observationCoverage.unobservedCanvases.map(item => ({ ...item })) } } : {}) as Pick<InvestigationSessionV1, 'observationCoverage'>,
     collectionLimits: { ...session.collectionLimits },
     droppedEntryCounts: { ...session.droppedEntryCounts },
   };
@@ -582,6 +584,7 @@ function finish(stopReason: RecordingStopReason): InvestigationSessionV1 | undef
     crossOriginIsolated: typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated,
     timerResolutionMs: measureTimerResolutionMs(),
     canvases: summaries(), windows: windows.map(copyWindow), resetEvents: resetEvents.map(copyResetEvent), lifecycleEvents: lifecycleEvents.map(copyLifecycleEvent), episodes: derived.episodes, browserEntries: browserEntries.map(copyBrowserEntry), episodeAssociations: episodeAssociations.map(association => ({ ...association })), findings: derived.findings,
+    observationCoverage: observationCoverage(),
     collectionLimits: { maxDurationMs: 30000, maxCanvasWindowReports: 10000, maxCanvasLifetimes: 128, maxResetEvents: 10000, maxLifecycleEvents: 10000, maxBrowserEvidenceEntries: 2000, maxLongFrameScriptAttributions: 20 },
     // canvasLifetimes counts only the canvases eviction could keep nothing
     // about — the ones with no window to summarize. A canvas that had windows

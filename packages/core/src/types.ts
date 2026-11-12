@@ -393,6 +393,31 @@ export interface BackingStoreMismatchFinding {
 
 export type InvestigationFinding = HeavyCanvasWorkFinding | RepeatedDrawWorkFinding | ResizeChurnFinding | BackingStoreMismatchFinding;
 
+// Why canvas-scan did not observe a canvas's drawing. Each is a known blind
+// spot: the drawing goes through an API canvas-scan does not wrap.
+export type UnobservedCanvasReason =
+  | 'webgl'
+  | 'webgl2'
+  | 'webgpu'
+  | 'bitmaprenderer'
+  | 'other-context'
+  | 'transferred-to-worker'
+  | 'main-thread-offscreen-canvas';
+
+// What the recording could not see. Counted at stop over the page as it is
+// then, not over the recording's span. A low Canvas2D total says nothing about
+// the canvases listed here.
+export interface RecordedObservationCoverage {
+  observedScope: 'main-thread-canvas2d';
+  limit: string;
+  unobservedCanvases: Array<{ reason: UnobservedCanvasReason; count: number }>;
+  unobservedCanvasCount: number;
+  // Canvases in the document with no context canvas-scan saw. Either they
+  // never drew, or their context was taken before canvas-scan loaded; the two
+  // cannot be told apart, so they are not counted as unobserved.
+  undeterminedCanvasCount: number;
+}
+
 export interface InvestigationSessionV1 {
   schemaVersion: 1;
   sessionId: string;
@@ -426,6 +451,7 @@ export interface InvestigationSessionV1 {
   browserEntries: RecordedBrowserEvidenceEntry[];
   episodeAssociations: RecordedEpisodeAssociation[];
   findings: InvestigationFinding[];
+  observationCoverage: RecordedObservationCoverage;
   collectionLimits: {
     maxDurationMs: 30000;
     maxCanvasWindowReports: 10000;
@@ -463,6 +489,10 @@ export type ComparisonMeasureId =
   | 'changed-command-window-count'
   | 'affected-backing-window-count'
   | 'maximum-backing-area-ratio'
+  | 'session-canvas-api-self-time-ms'
+  | 'session-raster-operation-count'
+  | 'session-active-window-count'
+  | 'session-reset-count'
   | `method:${string}:operation-count`
   | `method:${string}:self-time-ms`;
 
@@ -521,6 +551,17 @@ export interface ComparisonArtifactV1 {
   // no frames and is left out of the comparison; the note carries the count on
   // each side.
   coverageNote: string | null;
+  // Set only when the selected findings could not be paired: a finding that a
+  // fix removed, two findings of different types, or a finding whose evidence
+  // is incomplete. It carries session-wide totals over every recorded canvas,
+  // so a fix that removed its own finding still has numbers to report. The
+  // caveat names why the findings were not paired and what the totals cover.
+  // status stays 'incomparable': these totals are not a paired comparison.
+  sessionFallback: { caveat: string; measures: ComparisonMeasure[] } | null;
+  // Set when either session counted canvases canvas-scan could not observe,
+  // such as WebGL or worker-transferred canvases. Their drawing is in no
+  // measure above, and a lower total does not mean they drew less.
+  observationNote: string | null;
   improvementEstablished: false;
 }
 

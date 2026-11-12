@@ -19,6 +19,8 @@ import type {
   ResetDimensionChange,
   SignatureStatus,
   SourceLocation,
+  UnobservedCanvasReason,
+  RecordedObservationCoverage,
 } from './types.js';
 import type { WindowSignature } from './signature.js';
 
@@ -35,6 +37,8 @@ type ResetReason = 'canvas-reset' | 'canvas-attribute-reset';
 
 export interface CanvasRecord {
   canvas: any;
+  // Set when the canvas was handed to a worker with transferControlToOffscreen.
+  transferred?: boolean;
   // Where the application first asked this canvas for a 2D context. It is the
   // only ownership evidence an imperatively created canvas has, so it is taken
   // once, here, rather than looked up later when the stack is long gone.
@@ -202,6 +206,13 @@ export const records = new Set<CanvasRecord>();
 const recordByCanvas = new WeakMap<object, CanvasRecord>();
 const recordByContext = new WeakMap<object, CanvasRecord>();
 const gradientDependents = new WeakMap<object, Set<CanvasRecord>>();
+// Canvases whose first context was not '2d'. Their drawing goes through an API
+// canvas-scan does not wrap, so they are counted as known blind spots rather
+// than left to look like canvases that drew nothing.
+const otherContextKind = new WeakMap<object, UnobservedCanvasReason>();
+// Main-thread OffscreenCanvas contexts. Their prototypes are not patched, and
+// an OffscreenCanvas is not in the document, so they are counted as made.
+const offscreenContextCounts = new Map<UnobservedCanvasReason, number>();
 
 let installed = false;
 let killed = false;
@@ -939,6 +950,43 @@ export function drainAttributeRecords(): void {
   }
 }
 
+function contextReason(type: unknown): UnobservedCanvasReason {
+  return type === 'webgl' || type === 'experimental-webgl' ? 'webgl' : type === 'webgl2' ? 'webgl2' : type === 'webgpu' ? 'webgpu' : type === 'bitmaprenderer' ? 'bitmaprenderer' : 'other-context';
+}
+
+const UNOBSERVED_ORDER: UnobservedCanvasReason[] = ['webgl', 'webgl2', 'webgpu', 'bitmaprenderer', 'other-context', 'transferred-to-worker', 'main-thread-offscreen-canvas'];
+
+// What canvas-scan could not see, as far as it can tell from the main thread.
+// Known blind spots are counted by reason. A canvas in the document with no
+// context canvas-scan saw is counted apart: it may never have drawn, or its
+// context was taken before canvas-scan loaded, and the two cannot be told
+// apart. Work in a worker that made its own OffscreenCanvas leaves no trace
+// here at all, which the limit text says.
+export function observationCoverage(): RecordedObservationCoverage {
+  const counts = new Map<UnobservedCanvasReason, number>(offscreenContextCounts);
+  let undeterminedCanvasCount = 0;
+  const add = (reason: UnobservedCanvasReason) => counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  const seen = new Set<object>();
+  try {
+    const elements = typeof document === 'undefined' ? [] : [...document.querySelectorAll('canvas')];
+    for (const canvas of elements) {
+      seen.add(canvas);
+      const kind = otherContextKind.get(canvas);
+      if (kind) { add(kind); continue; }
+      if (!recordByCanvas.has(canvas)) undeterminedCanvasCount++;
+    }
+  } catch { /* a document that cannot be queried reports what the records know */ }
+  for (const record of records) if (record.transferred) add('transferred-to-worker');
+  const unobservedCanvases = UNOBSERVED_ORDER.filter(reason => counts.has(reason)).map(reason => ({ reason, count: counts.get(reason)! }));
+  return {
+    observedScope: 'main-thread-canvas2d',
+    limit: 'canvas-scan measures synchronous main-thread Canvas2D API calls only. WebGL, WebGPU, bitmaprenderer, OffscreenCanvas, worker rendering, and GPU time are not measured, so an unobserved renderer is not a cheap one. Use a browser performance trace for that work.',
+    unobservedCanvases,
+    unobservedCanvasCount: unobservedCanvases.reduce((total, item) => total + item.count, 0),
+    undeterminedCanvasCount,
+  };
+}
+
 export function isKilled(): boolean {
   return killed;
 }
@@ -1072,6 +1120,9 @@ export function installCanvasPatch(targets?: PatchTargets): void {
 
   canvasProto.getContext = function (this: any, ...args: unknown[]) {
     const context = originalGetContext.apply(this, args);
+    if (context && args[0] !== '2d' && !recordByCanvas.has(this) && !otherContextKind.has(this)) {
+      otherContextKind.set(this, contextReason(args[0]));
+    }
     if (
       args[0] === '2d' &&
       context &&
@@ -1105,9 +1156,28 @@ export function installCanvasPatch(targets?: PatchTargets): void {
       const result = originalTransferControlToOffscreen.apply(this, args);
       if (!killed) {
         const record = registerCanvas(this, captureCreationSite(canvasProto.transferControlToOffscreen));
+        record.transferred = true;
         queueLifecycleEvent(record, 'transferred-to-worker');
       }
       return result;
+    };
+  }
+
+  // Counted only. canvas-scan does not wrap OffscreenCanvas contexts, so this
+  // makes their existence visible without claiming anything about their cost.
+  const offscreenProto = targets ? null : (globalThis as any).OffscreenCanvas?.prototype;
+  const originalOffscreenGetContext = offscreenProto?.getContext;
+  if (typeof originalOffscreenGetContext === 'function') {
+    const seen = new WeakSet<object>();
+    offscreenProto.getContext = function (this: any, ...args: unknown[]) {
+      const context = originalOffscreenGetContext.apply(this, args);
+      try {
+        if (context && !seen.has(this)) {
+          seen.add(this);
+          offscreenContextCounts.set('main-thread-offscreen-canvas', (offscreenContextCounts.get('main-thread-offscreen-canvas') ?? 0) + 1);
+        }
+      } catch { /* counting must never break the page */ }
+      return context;
     };
   }
 

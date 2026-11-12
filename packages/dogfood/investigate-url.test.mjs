@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../scripts/browser-driver.mjs';
-import { UsageError, investigate, parseArguments } from './investigate-url.mjs';
+import { UsageError, investigate, outputNames, parseArguments, resolveOutDir } from './investigate-url.mjs';
 import { parseJson, parseJsonl } from './agent-handoff.mjs';
 import { summarize } from './read-handoff.mjs';
 
@@ -38,6 +38,33 @@ test('refuses unsupported schemes and ambiguous targets', () => {
   assert.throws(() => parseArguments(['https://example.com']), refused('unexpected argument'));
   assert.throws(() => parseArguments(['--url=https://example.com', '--timeout=0']), refused('positive number'));
   assert.throws(() => parseArguments(['--url=https://example.com', '--handoff=yaml']), refused('must be json, jsonl, both or none'));
+});
+
+test('tags output names and never replaces an earlier run', () => {
+  assert.equal(parseArguments(['--url=https://example.com']).tag, null);
+  assert.equal(parseArguments(['--url=https://example.com', '--tag=build-42.a']).tag, 'build-42.a');
+  for (const bad of ['--tag', '--tag=', '--tag=../x', '--tag=a/b', '--tag=-lead']) {
+    assert.throws(() => parseArguments(['--url=https://example.com', bad]), error => error instanceof UsageError && /--tag must be/.test(error.message), bad);
+  }
+
+  // Untagged names are the ones earlier releases wrote.
+  const plain = outputNames(null);
+  assert.deepEqual([plain.report, plain.handoffJson, plain.handoffJsonl, plain.artifact('session', 1)], ['run-report.json', 'handoff.json', 'handoff.jsonl', 'artifacts/session-1.json']);
+  const tagged = outputNames('candidate');
+  assert.deepEqual([tagged.report, tagged.handoffJson, tagged.handoffJsonl, tagged.artifact('comparison', 2)], ['run-report-candidate.json', 'handoff-candidate.json', 'handoff-candidate.jsonl', 'artifacts/candidate-comparison-2.json']);
+
+  const now = new Date('2026-11-12T10:20:30.400Z');
+  assert.match(resolveOutDir({ out: null, tag: 'baseline' }, { now }), /\.investigation-baseline-2026-11-12T10-20-30-400Z$/);
+  assert.match(resolveOutDir({ out: null, tag: null }, { now }), /\.investigation-2026-11-12T10-20-30-400Z$/);
+
+  const out = path.resolve('perf');
+  const taken = new Set([path.join(out, 'run-report.json'), path.join(`${out}-2`, 'run-report.json'), path.join(out, 'run-report-baseline.json')]);
+  const exists = file => taken.has(file);
+  // A second untagged run into the same directory moves aside.
+  assert.equal(resolveOutDir({ out: 'perf', tag: null }, { exists }), `${out}-3`);
+  // A differently tagged run shares the directory; the same tag moves aside.
+  assert.equal(resolveOutDir({ out: 'perf', tag: 'candidate' }, { exists }), out);
+  assert.equal(resolveOutDir({ out: 'perf', tag: 'baseline' }, { exists }), `${out}-2`);
 });
 
 test('carries a complete ritual from a URL to a written report', { timeout: 240_000 }, async () => {

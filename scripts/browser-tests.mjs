@@ -273,6 +273,37 @@ check('Escape acts only while focus is inside the overlay', 'index', `
   return { afterOutside, afterInside };
 `);
 
+// ---------------------------------------------------------------- hit testing
+check('hideOverlay lets clicks reach the page after a recording', 'index', `
+  // An API-driven stop opens the completed-session panel, which takes pointer
+  // events. Playwright decides a click is intercepted with the same hit test
+  // as elementFromPoint, so this is the check it would make.
+  api.startRecording();
+  for (let f = 0; f < 3; f++) { burnFrame(heavyCanvas()); await wait(30); }
+  await wait(100);
+  api.stopRecording();
+  await wait(400);
+  const panel = shadow.querySelector('.flyout');
+  const rect = panel.getBoundingClientRect();
+  const x = rect.left + rect.width / 2; const y = rect.top + rect.height / 2;
+  const host = document.querySelector('[data-canvas-scan]');
+  const coveredBefore = !panel.hidden && document.elementFromPoint(x, y) === host;
+  host.style.setProperty('pointer-events', 'none', 'important');
+  const coveredWithPointerEventsNone = document.elementFromPoint(x, y) === host;
+  host.style.removeProperty('pointer-events');
+  host.style.pointerEvents = 'none';
+  api.hideOverlay();
+  const coveredAfterHide = document.elementFromPoint(x, y) === host;
+  api.startRecording();
+  for (let f = 0; f < 3; f++) { burnFrame(heavyCanvas()); await wait(30); }
+  await wait(100);
+  const recordsWhileHidden = api.stopRecording()?.windows.length > 0;
+  api.showOverlay();
+  await wait(400);
+  const backAfterShow = document.elementFromPoint(x, y) === host;
+  return { coveredBefore, coveredWithPointerEventsNone, coveredAfterHide, recordsWhileHidden, backAfterShow };
+`);
+
 // ---------------------------------------------------------------- baseline
 check('keeping a baseline after an explanation keeps the investigated session', 'index', `
   // The other triage entry that turned out to be wrong. getLastSession()
@@ -416,6 +447,13 @@ const EXPECTATIONS = {
   'Escape acts only while focus is inside the overlay': r => [
     [r.afterOutside === true, 'Escape from the host application closed the overlay'],
     [r.afterInside === false, 'Escape inside the overlay did not close the flyout'],
+  ],
+  'hideOverlay lets clicks reach the page after a recording': r => [
+    [r.coveredBefore === true, 'the panel did not cover the probe point, so the check proves nothing'],
+    [r.coveredWithPointerEventsNone === true, 'pointer-events:none on the host now works; the hideOverlay advice may be stale'],
+    [r.coveredAfterHide === false, 'the hidden overlay still intercepts pointer events'],
+    [r.recordsWhileHidden === true, 'recording stopped working while the overlay was hidden'],
+    [r.backAfterShow === true, 'showOverlay did not bring the panel back'],
   ],
   'keeping a baseline after an explanation keeps the investigated session': r => [
     [r.skipped === undefined, `check could not run: ${r.skipped}`],

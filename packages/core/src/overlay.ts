@@ -101,6 +101,10 @@ let candidateCount: HTMLSpanElement | null = null;
 let flyout: HTMLDivElement | null = null;
 let popover: HTMLDivElement | null = null;
 let collapsed = false;
+// Set by hideOverlay(). The flyout and toolbar take pointer events on purpose,
+// and a pointer-events rule on the host cannot reach a child that sets its own
+// value, so a hidden overlay is display:none: nothing of it can catch a click.
+let overlayHidden = false;
 let flyoutOpen = false;
 let showAllRows = false;
 let inspectMode = false;
@@ -1245,6 +1249,8 @@ function comparisonMeasureLabel(id: ComparisonMeasureId): string {
     'active-reset-count': 'Active reset count', 'observed-reset-count': 'Observed reset count', 'affected-episode-count': 'Affected episode count',
     'same-command-window-count': 'Same command window count', 'changed-command-window-count': 'Changed command window count',
     'affected-backing-window-count': 'Affected backing window count', 'maximum-backing-area-ratio': 'Maximum backing area ratio',
+    'session-canvas-api-self-time-ms': 'Canvas2D API self-time, all canvases', 'session-raster-operation-count': 'Raster operation count, all canvases',
+    'session-active-window-count': 'Active window count, all canvases', 'session-reset-count': 'Canvas reset count, all canvases',
   };
   if (id.startsWith('method:')) {
     const [, method, kind] = id.split(':');
@@ -1289,6 +1295,7 @@ function updateComparisonPanel(): void {
     appendExplanationLine(panel, `Candidate covers: ${covers(artifact.span.candidate)}`);
     if (artifact.spanMismatch) appendExplanationLine(panel, 'RECORDINGS DIFFER IN LENGTH', artifact.spanMismatch);
     if (artifact.coverageNote) appendExplanationLine(panel, 'CANVASES NOT COMPARED', artifact.coverageNote);
+    if (artifact.observationNote) appendExplanationLine(panel, 'CANVASES NOT OBSERVED', artifact.observationNote);
     const structural = artifact.measures.filter(measure => measure.interpretation === 'structural');
     const timings = artifact.measures.filter(measure => measure.interpretation === 'observed-timing-pair');
     const line = (measure: ComparisonMeasure) => {
@@ -1304,7 +1311,19 @@ function updateComparisonPanel(): void {
       appendExplanationLine(panel, 'TIMES MEASURED ON TWO SEPARATE OCCASIONS', 'Each side was measured in a different recording, so a small difference here can be ordinary variation rather than a change.');
       for (const measure of timings) line(measure);
     }
-  } else for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Couldn't compare: ${reason.replaceAll('-', ' ')}`);
+  } else {
+    for (const reason of artifact.incomparableReasons) appendExplanationLine(panel, `Couldn't compare: ${reason.replaceAll('-', ' ')}`);
+    // The findings did not pair, but the recordings still measured something.
+    // The totals are shown with the reason kept above them.
+    if (artifact.sessionFallback) {
+      appendExplanationLine(panel, 'SESSION TOTALS INSTEAD', artifact.sessionFallback.caveat);
+      if (artifact.observationNote) appendExplanationLine(panel, 'CANVASES NOT OBSERVED', artifact.observationNote);
+      for (const measure of artifact.sessionFallback.measures) {
+        const delta = measure.delta === null ? '' : ` (${measure.delta > 0 ? '+' : ''}${measure.delta}${measure.unit === 'ms' ? ' ms' : ''})`;
+        appendExplanationLine(panel, `${comparisonMeasureLabel(measure.id)}: ${measure.baseline} → ${measure.candidate}${delta}`, 'Measured over the whole recording.');
+      }
+    }
+  }
   const copy = document.createElement('button');
   copy.className = 'comparison-copy'; copy.type = 'button'; copy.dataset.action = 'copy-comparison'; copy.textContent = 'Copy comparison JSON';
   const download = document.createElement('button');
@@ -1631,6 +1650,13 @@ function createSessionView(session: InvestigationSessionV1): HTMLElement {
   }
   for (const [name, count] of droppedEntries(session)) {
     appendLine(coverage, 'Coverage', `${count} ${coverageLabel(name, count)} dropped`);
+  }
+  // A renderer canvas-scan cannot see would otherwise read as a cheap one.
+  const unobserved = session.observationCoverage?.unobservedCanvases ?? [];
+  if (unobserved.length) {
+    const total = session.observationCoverage.unobservedCanvasCount;
+    const reasons = unobserved.map(item => `${item.count} ${item.reason.replaceAll('-', ' ')}`).join(', ');
+    appendLine(coverage, 'Coverage', `${total} ${total === 1 ? 'canvas' : 'canvases'} not observed (${reasons}). Their drawing is not in these totals; use a browser performance trace for it.`);
   }
   // A long animation frame that overlapped no draw episode is the recording's
   // answer to whether the canvas was the slow part of the frame: it was not.
@@ -2095,6 +2121,7 @@ function overlayHasFocus(): boolean {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  if (overlayHidden) return;
   const root = host?.shadowRoot;
   const controls = [...(root?.querySelectorAll<HTMLButtonElement>('.finding-toggle') ?? [])];
   const active = root?.activeElement;
@@ -2472,6 +2499,7 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
     'style',
     'position:fixed;inset:0;pointer-events:none;z-index:2147483646',
   );
+  host.style.display = overlayHidden ? 'none' : '';
   const shadowRoot = host.attachShadow({ mode: 'open' });
 
   const style = document.createElement('style');
@@ -2724,6 +2752,18 @@ export function mountOverlay(options: CanvasScanOptions = {}): void {
   }, 1000);
   markDirty();
 }
+
+// Hide the overlay without stopping anything. Recording, explanation and the
+// API keep working; only the overlay's own elements leave the layout, so a
+// test driver can click application controls the flyout would cover. The
+// choice survives an unmount and a remount, so hiding before start() works.
+export function setOverlayHidden(hidden: boolean): void {
+  overlayHidden = hidden;
+  if (host) host.style.display = hidden ? 'none' : '';
+  if (!hidden && host) markDirty();
+}
+
+export function isOverlayHidden(): boolean { return overlayHidden; }
 
 export function unmountOverlay(): void {
   unsubscribe?.();

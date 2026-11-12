@@ -32,6 +32,7 @@ The two evidence levels you will also see:
 | `stopReason` | `manual` or `max-duration`. The maximum is 30 seconds. |
 | `collectionLimits` and dropped counts | Fixed caps. A reached cap means the recording is incomplete, and the artifact says by how much. |
 | `timeOrigin` | Add it to a session timestamp to line up with a DevTools trace. |
+| `observationCoverage` | What the recording could not see, counted at stop. `unobservedCanvases[]` lists `{ reason, count }` for WebGL, WebGPU, bitmaprenderer, worker-transferred, and main-thread OffscreenCanvas canvases. `undeterminedCanvasCount` counts canvases with no context canvas-scan saw. `limit` states the Canvas2D main-thread scope. Absent in sessions from earlier versions. |
 
 ## ComparisonArtifactV1 fields
 
@@ -42,6 +43,8 @@ The two evidence levels you will also see:
 | `measures[]` | The paired measures, baseline and candidate. Includes `worst-interaction-duration-ms` and `long-animation-frame-count`, each `null` when the browser did not supply the feature. |
 | `span` and `spanMismatch` | Duration, episode count, and user-mark count of each side. `spanMismatch` is set above a 20 percent difference. |
 | `coverageNote` | Set when either side kept a canvas as a summary only. |
+| `observationNote` | Set when either side counted canvases canvas-scan does not observe. Their work is in no measure. |
+| `sessionFallback` | Set only on an `incomparable` result for `finding-not-found`, `finding-type-mismatch`, or `incomplete-evidence`. Carries `caveat` and session-scoped `measures`: `session-canvas-api-self-time-ms`, `session-raster-operation-count`, `session-active-window-count`, and `session-reset-count`, summed over every canvas. Report the caveat with the numbers. `null` otherwise. |
 | `improvementEstablished` | Always `false`. One measured pair does not prove the application improved. |
 
 ## API
@@ -51,13 +54,16 @@ import {
   start, stop, getReports, mark,
   startRecording, stopRecording, getLastSession,
   startExplanation, stopExplanation, getLastExplanation,
-  compareSessions,
+  compareSessions, hideOverlay, showOverlay,
 } from 'canvas-scan';
 ```
 
 `start(options)` accepts `captureEvery`, `minFlashRasterOps`, `minRepeatedRasterOps`,
-`overlay`, `skipOwners`, and `debug`. `stop()` removes the frame loop and the overlay
-without a reload. `mark(label)` adds a labeled marker to the recording. A
+`overlay`, `skipOwners`, and `debug`. With the IIFE, set them on
+`window.__CANVAS_SCAN_OPTS` in an init script that runs before it. `stop()` removes the
+frame loop and the overlay without a reload; the Canvas2D wrappers stay until the page
+reloads. `hideOverlay()` takes the overlay out of the layout so it cannot catch a click,
+and `showOverlay()` brings it back; recording is unaffected by either. `mark(label)` adds a labeled marker to the recording. A
 `performance.mark` or `performance.measure` made during a recording is stored as a
 `user-mark` entry.
 
@@ -76,3 +82,6 @@ JSON and a Download JSON control. Load session JSON opens a saved session.
 - React attribution needs an early load. Callsite mapping needs development source maps, and canvas-scan fetches only same-origin maps.
 - canvas-scan sends no data anywhere.
 - Per-canvas overhead at 300 canvases exceeds one 60 Hz frame. Both the baseline and the candidate pay it, so they still compare.
+- Instrumented timings are not user latency. Wrapping can double script time per input. Measure latency in a separate run without canvas-scan.
+- One session per build is one sample. State how many runs per build a conclusion rests on.
+- WebGL, WebGPU, bitmaprenderer, and OffscreenCanvas rendering are not measured. Report the `observationCoverage` counts; never treat an unobserved renderer as cheap.

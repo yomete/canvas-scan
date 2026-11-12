@@ -5484,3 +5484,62 @@ Run ledger: correction rounds 0/1; full evidence runs 2/2, including one
 confirmed environment failure; final judge rounds 1/2.
 
 CODEX_STATUS: CHANGES_REQUESTED
+
+---
+
+## Fable response — GitHub issues #1 to #7 (2026-11-12)
+
+### Scope
+
+Yomi asked for every open GitHub issue to be resolved and pushed to `main`.
+This slice covers issues #1 to #7 only. The five broader-candidate concerns in
+the 2026-09-05 Codex section (session import boundary, dropped browser entries,
+failed baseline replacement, reset next-check text, top-method sampling) were
+not part of the request and are not addressed here; they remain open.
+
+### Changes
+
+- #2 overlay intercepts clicks (`src/overlay.ts`, `src/index.ts`,
+  `scripts/browser-tests.mjs`). Reproduced in Chromium: an API-driven
+  `stopRecording()` opens the results flyout, which sets `pointer-events: auto`
+  inside the shadow root, so `pointer-events: none` on the host does not reach
+  it. Added `hideOverlay()` / `showOverlay()` (ESM and `__CANVAS_SCAN__`),
+  which set the host to `display: none`; recording is unaffected. New browser
+  check asserts the flyout covers the probe point, that the host rule does not
+  help, that hiding clears the hit test, that recording works while hidden, and
+  that showing restores it.
+- #1 comparison fallback (`src/comparison.ts`, `src/types.ts`, overlay). New
+  `sessionFallback` on `ComparisonArtifactV1`: set only on `incomparable` for
+  `finding-not-found`, `finding-type-mismatch`, `incomplete-evidence`, with a
+  caveat and four session-scoped measures summed over every canvas (self-time,
+  raster operations, active windows, resets). Status stays `incomparable`.
+  No fallback for `unsupported-schema` or `sampling-mismatch`.
+- #4 unobserved canvases (`src/wrap-context.ts`, `src/recording.ts`,
+  `src/types.ts`, comparison, overlay). New `observationCoverage` on the
+  session: counts by reason (webgl, webgl2, webgpu, bitmaprenderer,
+  other-context, transferred-to-worker, main-thread-offscreen-canvas), a
+  separate `undeterminedCanvasCount`, and a fixed scope statement. New
+  `observationNote` on the comparison. Older sessions without the block are
+  accepted.
+- #6 tagged output (`packages/dogfood/investigate-url.mjs`). `--tag=NAME`
+  goes into every written file name. An explicit `--out` that already holds a
+  report under the same name moves to `DIR-2`, `DIR-3`, …. Untagged names are
+  unchanged.
+- #3, #5, #7 documentation: SKILL.md, REFERENCE.md, docs/overhead.md,
+  docs/investigate-url.md, docs/api.md, docs/limits.md, docs/findings.md,
+  docs/investigation-details.md, both READMEs.
+
+### Verification
+
+- Core unit tests: 682 passed, 1 failed. The failure is the pre-existing CLI
+  write-failure test, which also fails on the untouched tree here because the
+  sandbox runs as root.
+- Workspace typecheck: passed. `git diff --check`: passed.
+- `node scripts/browser-tests.mjs` (via `pnpm run test:browser`): 13/13.
+- `node scripts/verify-pack.mjs`: all PASS.
+- Dogfood CI suites (handoff, benchmark, benchmark fixtures, corpus,
+  corpus baseline, minified attribution, network silence, investigate): pass.
+- `scripts/package-integrity-v05.test.mjs` has one failure that also fails on
+  the untouched tree; it is not in CI.
+
+FABLE_STATUS: READY_FOR_CODEX

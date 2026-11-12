@@ -26,6 +26,7 @@
   "browserEntries": [],
   "episodeAssociations": [],
   "findings": [],
+  "observationCoverage": { "observedScope": "main-thread-canvas2d", "limit": "canvas-scan measures synchronous main-thread Canvas2D API calls only. WebGL, WebGPU, bitmaprenderer, OffscreenCanvas, worker rendering, and GPU time are not measured, so an unobserved renderer is not a cheap one. Use a browser performance trace for that work.", "unobservedCanvases": [], "unobservedCanvasCount": 0, "undeterminedCanvasCount": 0 },
   "collectionLimits": { "maxDurationMs": 30000, "maxCanvasWindowReports": 10000, "maxCanvasLifetimes": 128, "maxResetEvents": 10000, "maxLifecycleEvents": 10000, "maxBrowserEvidenceEntries": 2000, "maxLongFrameScriptAttributions": 20 },
   "droppedEntryCounts": { "canvasWindowReports": 0, "canvasLifetimes": 0, "resetEvents": 0, "lifecycleEvents": 0, "documentEvents": 0, "eventTiming": 0, "userMarks": 0, "longAnimationFrames": 0 }
 }

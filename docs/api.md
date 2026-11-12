@@ -15,12 +15,16 @@ import {
   stopExplanation,
   getLastExplanation,   // ExplanationArtifactV1, plain JSON
   compareSessions,      // explicit pair comparison, returns ComparisonArtifactV1
+  hideOverlay,          // take the overlay out of the layout; recording continues
+  showOverlay,          // put it back
 } from 'canvas-scan';
 ```
 
 ## Options
 
 `stop()` — also on `window.__CANVAS_SCAN__` for an `/auto` import — cancels the frame loop and removes the overlay. That removes the per-frame cost without a reload. The Canvas2D prototype patch stays in place, so wrapped calls still have per-call overhead. `start()` runs again after `stop()`.
+
+`hideOverlay()` and `showOverlay()` — also on `window.__CANVAS_SCAN__` — take the overlay out of the layout and put it back. Recording, explanation, and comparison keep working while it is hidden. A browser test needs this: after `stopRecording()` the overlay opens its results panel, and the panel takes pointer events, so it can intercept a Playwright click on the page beneath it. A `pointer-events: none` rule on `[data-canvas-scan]` does not help, because the panel sets its own value inside the shadow root. `hideOverlay()` uses `display: none`, which nothing inside can override. The choice holds across `stop()` and `start()`.
 
 `start(options)` — and `import 'canvas-scan/auto'`, which calls it with the defaults — accepts:
 
@@ -29,9 +33,16 @@ import {
 | `captureEvery` | `1` | Report one window in every *n*. See **Sampling** below. |
 | `minFlashRasterOps` | `2` | The raster operations a repeated window must reach before the overlay flashes its outline. Also sets `minRepeatedRasterOps` when that is absent. |
 | `minRepeatedRasterOps` | `minFlashRasterOps` | The raster operations a repeated window must reach to count towards a `repeated-draw-work` finding. Set it to tune findings without changing the flash, or the flash without changing findings. |
-| `overlay` | `true` | Mount the in-page overlay. |
+| `overlay` | `true` | Mount the in-page overlay. `false` records with no overlay at all. |
 | `skipOwners` | `[]` | Component names to skip when naming a canvas's owner. |
 | `debug` | `false` | Write the frame loop's per-canvas `console.debug` lines. |
+
+`canvas-scan/auto` and the IIFE bundle read options from `window.__CANVAS_SCAN_OPTS` when it is set before they load. With Playwright:
+
+```ts
+await context.addInitScript(() => { window.__CANVAS_SCAN_OPTS = { overlay: false }; }); // first
+await context.addInitScript({ path: 'node_modules/canvas-scan/dist/canvas-scan.iife.js' });
+```
 
 ## Sampling
 

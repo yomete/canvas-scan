@@ -38,6 +38,8 @@ Or, for development without a bundler, a script tag before all other scripts:
 <script src="https://unpkg.com/canvas-scan@0.7.4/dist/canvas-scan.iife.js"></script>
 ```
 
+Or, to investigate without changing the application at all, inject that same IIFE from Playwright with `addInitScript`. It runs before the application's scripts, nothing reaches the production build, and closing the browser context removes it. See [Drive a recording from Playwright](https://github.com/yomete/canvas-scan/blob/main/docs/investigate-url.md#drive-a-recording-from-playwright-without-changing-the-application).
+
 Reload, press **Record investigation** in the overlay, reproduce the slow interaction once, and stop. Findings appear ranked, each with its evidence level, its claim boundary, and its next check.
 
 `canvas-scan/auto` is a development tool, and `init --write` adds the import with no guard. Guard it before you commit: see [Keep it out of production](https://github.com/yomete/canvas-scan/blob/main/docs/production.md).
@@ -84,9 +86,9 @@ canvas-scan ships an agent skill at `skills/canvas-scan/SKILL.md` in the publish
 - [What it finds](https://github.com/yomete/canvas-scan/blob/main/docs/findings.md): the four finding types, and what the comparison can and cannot answer.
 - [Reading the overlay](https://github.com/yomete/canvas-scan/blob/main/docs/overlay.md): finding cards, the Overlaps line, and keyboard use.
 - [API, options, and sampling](https://github.com/yomete/canvas-scan/blob/main/docs/api.md): imports, `start(options)`, and `captureEvery`.
-- [Investigate a URL](https://github.com/yomete/canvas-scan/blob/main/docs/investigate-url.md): the guided run, the agent handoff, and Playwright.
+- [Investigate a URL](https://github.com/yomete/canvas-scan/blob/main/docs/investigate-url.md): the guided run, tagged output, the agent handoff, and Playwright injection.
 - [The artifacts](https://github.com/yomete/canvas-scan/blob/main/docs/artifacts.md): the JSON artifacts, privacy, and network claims.
-- [Overhead](https://github.com/yomete/canvas-scan/blob/main/docs/overhead.md): measured cost and timer resolution.
+- [Overhead](https://github.com/yomete/canvas-scan/blob/main/docs/overhead.md): measured cost, why instrumented timings are not user latency, and timer resolution.
 - [Scope and honest limits](https://github.com/yomete/canvas-scan/blob/main/docs/limits.md): what canvas-scan cannot observe.
 
 ## License

@@ -14,6 +14,19 @@ Those figures are for one canvas. The frame loop walks every tracked canvas on e
 
 The range is the two draw streams the bench runs (mixed and tracked-source). The per-canvas figure includes the 100 operations each canvas draws. At 300 canvases, full capture added 34 to 36 ms per frame, which is more than a 60 Hz frame. If a many-canvas application gets slow with canvas-scan loaded, that is the cost, and `stop()` removes it without a reload. A baseline and a candidate recorded with canvas-scan loaded in both runs are still comparable, because both pay the same cost.
 
+## Instrumented timings are not user latency
+
+canvas-scan wraps every Canvas2D call, and the wrappers cost time on every call. In one flame-graph view, instrumentation roughly doubled script time per input: zoom went from 14.8 ms to 32.2 ms, and pan from 20.4 ms to 46.4 ms. Those are instrumented figures. They say which canvas and which calls dominate. They do not say how long the user waited.
+
+Use two kinds of run, and keep them apart:
+
+1. **Diagnosis, with canvas-scan.** Record, explain, and compare Canvas2D work. A baseline and a candidate that both run with canvas-scan pay the same overhead, so they compare with each other.
+2. **Latency, without canvas-scan.** Measure input latency and frame time in a page that never loaded canvas-scan: a fresh browser context with no `addInitScript`, or a build without the import. Use a browser performance trace or Event Timing.
+
+`stop()` cancels the frame loop and removes the overlay, but the Canvas2D prototype wrappers stay until the page reloads. Leftover wrappers added about 3 ms to one trace. Before an uninstrumented trace, close the browser context, or reload the page without the injection or the import. Nothing short of a reload removes the wrappers.
+
+## Timer resolution
+
 Per-call self-time is a `performance.now()` delta, and the browser sets the
 resolution of that clock. Chrome coarsens it to 0.1 ms when the page is not
 cross-origin isolated, so most single calls read as 0 or 0.1 ms and a
