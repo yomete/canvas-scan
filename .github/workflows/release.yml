@@ -1,0 +1,41 @@
+name: release
+
+# Publishes canvas-scan to npm when a version tag is pushed, for example v0.8.0.
+# It signs in through npm trusted publishing (GitHub OIDC), so there is no npm
+# token in this repository, and the release gets a provenance attestation.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - run: pnpm install --frozen-lockfile
+      - name: The tag must match the package version
+        run: |
+          version="v$(node -p "require('./packages/core/package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package version $version"
+            exit 1
+          fi
+      - run: pnpm -r run typecheck
+      - run: pnpm --filter canvas-scan run test
+      - run: node scripts/verify-pack.mjs
+      # pnpm pack applies publishConfig (the dist exports) and runs prepack;
+      # npm then publishes that exact tarball through OIDC.
+      - run: pnpm --filter canvas-scan pack --pack-destination "$RUNNER_TEMP/pack"
+      - run: npm publish "$RUNNER_TEMP"/pack/canvas-scan-*.tgz --provenance --access public
