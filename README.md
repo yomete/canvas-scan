@@ -33,7 +33,7 @@ import 'canvas-scan/auto';
 Or, for development without a bundler, a script tag before all other scripts:
 
 ```html
-<script src="https://unpkg.com/canvas-scan@0.7.4/dist/canvas-scan.iife.js"></script>
+<script src="https://unpkg.com/canvas-scan@0.8.0/dist/canvas-scan.iife.js"></script>
 ```
 
 Or, to investigate without changing the application at all, inject that same IIFE from Playwright with `addInitScript`. It runs before the application's scripts, nothing reaches the production build, and closing the browser context removes it. See [Drive a recording from Playwright](https://github.com/yomete/canvas-scan/blob/main/docs/investigate-url.md#drive-a-recording-from-playwright-without-changing-the-application).
