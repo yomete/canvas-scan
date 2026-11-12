@@ -1,15 +1,26 @@
 name: release
 
-# Publishes canvas-scan to npm when a version tag is pushed, for example v0.8.0.
-# It signs in through npm trusted publishing (GitHub OIDC), so there is no npm
-# token in this repository, and the release gets a provenance attestation.
+# Publishes canvas-scan to npm when the version in packages/core/package.json
+# changes on main, then tags the commit vX.Y.Z. A version already on npm is
+# skipped, so an ordinary push never republishes. It can also be started by hand
+# from the Actions tab. It signs in through npm trusted publishing (GitHub
+# OIDC), so there is no npm token in this repository, and the release gets a
+# provenance attestation.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths:
+      - packages/core/package.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: read
-  id-token: write
+  contents: write # to push the vX.Y.Z tag
+  id-token: write # npm trusted publishing
 
 jobs:
   publish:
@@ -22,20 +33,37 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later.
-      - run: npm install -g npm@latest
-      - run: pnpm install --frozen-lockfile
-      - name: The tag must match the package version
+      - name: Is this version already on npm?
+        id: version
         run: |
-          version="v$(node -p "require('./packages/core/package.json').version")"
-          if [ "$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package version $version"
-            exit 1
+          version="$(node -p "require('./packages/core/package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "canvas-scan@$version" version >/dev/null 2>&1; then
+            echo "canvas-scan@$version is already on npm; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
-      - run: pnpm -r run typecheck
-      - run: pnpm --filter canvas-scan run test
-      - run: node scripts/verify-pack.mjs
+      # Trusted publishing needs npm 11.5.1 or later.
+      - if: steps.version.outputs.publish == 'true'
+        run: npm install -g npm@latest
+      - if: steps.version.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.version.outputs.publish == 'true'
+        run: pnpm -r run typecheck
+      - if: steps.version.outputs.publish == 'true'
+        run: pnpm --filter canvas-scan run test
+      - if: steps.version.outputs.publish == 'true'
+        run: node scripts/verify-pack.mjs
       # pnpm pack applies publishConfig (the dist exports) and runs prepack;
       # npm then publishes that exact tarball through OIDC.
-      - run: pnpm --filter canvas-scan pack --pack-destination "$RUNNER_TEMP/pack"
-      - run: npm publish "$RUNNER_TEMP"/pack/canvas-scan-*.tgz --provenance --access public
+      - if: steps.version.outputs.publish == 'true'
+        run: pnpm --filter canvas-scan pack --pack-destination "$RUNNER_TEMP/pack"
+      - if: steps.version.outputs.publish == 'true'
+        run: npm publish "$RUNNER_TEMP"/pack/canvas-scan-*.tgz --provenance --access public
+      - if: steps.version.outputs.publish == 'true'
+        name: Tag the release
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          git tag "$tag"
+          git push origin "$tag"
