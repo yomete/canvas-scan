@@ -30,10 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+      # No pnpm cache: on the already-on-npm path nothing is installed, and the
+      # cache's post step then fails the job because the store does not exist.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
           registry-url: https://registry.npmjs.org
       - name: Is this version already on npm?
         id: version
