@@ -1,8 +1,10 @@
 name: release
 
 # Publishes canvas-scan to npm when the version in packages/core/package.json
-# changes on main, then tags the commit vX.Y.Z. A version already on npm is
-# skipped, so an ordinary push never republishes. It can also be started by hand
+# changes on main, tags the commit vX.Y.Z and creates the GitHub Release for
+# that tag. A version already on npm is not published again, so an ordinary push
+# never republishes; the release step still runs and creates the release only if
+# the tag has none, so a re-run is harmless. It can also be started by hand
 # from the Actions tab. It signs in through npm trusted publishing (GitHub
 # OIDC), so there is no npm token in this repository, and the release gets a
 # provenance attestation.
@@ -19,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # to push the vX.Y.Z tag
+  contents: write # to push the vX.Y.Z tag and create its GitHub Release
   id-token: write # npm trusted publishing
 
 jobs:
@@ -67,3 +69,27 @@ jobs:
           tag="v${{ steps.version.outputs.version }}"
           git tag "$tag"
           git push origin "$tag"
+      # Runs on the skip path too: it only creates a release for a tag that has
+      # none, and never creates a tag (--verify-tag). Notes come from
+      # docs/releases/vX.Y.Z-release-notes.md when that file exists.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::warning::$tag does not exist, so there is no release to create."
+            exit 0
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already has a GitHub Release; nothing to create."
+            exit 0
+          fi
+          notes="docs/releases/$tag-release-notes.md"
+          if [ -f "$notes" ]; then
+            set -- --notes-file "$notes"
+          else
+            set -- --generate-notes
+          fi
+          gh release create "$tag" --verify-tag --latest --title "canvas-scan $tag" "$@"
